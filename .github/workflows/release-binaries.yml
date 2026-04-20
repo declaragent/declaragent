@@ -70,8 +70,17 @@ jobs:
       # Build every workspace so each `dist/` exists before the CLI
       # compile step — bun build --compile resolves `@declaragent/core`
       # via its `main: ./dist/index.js`, not the raw source.
+      #
+      # Topological order matters: `bun run --filter '*' build` runs in
+      # parallel, so the source/channel packages race against core and
+      # fail to resolve `@declaragent/core`. Pre-build the shared deps
+      # (core, source-kafka — testkit's peerDep) first; the final pass
+      # is then a mix of no-ops + fresh builds, all of which resolve.
       - name: Build workspaces
-        run: bun run --filter '@declaragent/*' build
+        run: |
+          bun run --filter '@declaragent/core' build
+          bun run --filter '@declaragent/source-kafka' build
+          bun run --filter '@declaragent/*' build
 
       - name: Compile binary
         env:
