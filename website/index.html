@@ -31,7 +31,7 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=2" />
+    <link rel="stylesheet" href="/styles.css?v=3" />
   </head>
 
   <body>
@@ -458,8 +458,22 @@ recorded to .declaragent/fleet-deploys.jsonl</code></pre>
       <section class="install">
         <div class="install__inner">
           <h2>Start in 30 seconds.</h2>
-          <pre class="install__block"><code>npm i -g @declaragent/cli
-declaragent init --fleet my-fleet
+
+          <div class="install__tabs" role="tablist" aria-label="Install method">
+            <button class="install__tab is-active" type="button" data-install="curl" role="tab" aria-selected="true">curl</button>
+            <button class="install__tab" type="button" data-install="npm" role="tab" aria-selected="false">npm</button>
+            <button class="install__tab" type="button" data-install="brew" role="tab" aria-selected="false">brew</button>
+          </div>
+
+          <pre class="install__block" id="install-curl" data-install-panel="curl"><code>curl -fsSL https://declaragent.dev/install.sh | sh</code></pre>
+
+          <pre class="install__block" id="install-npm" data-install-panel="npm" hidden><code>npm i -g @declaragent/cli</code></pre>
+
+          <pre class="install__block" id="install-brew" data-install-panel="brew" hidden><code>brew tap declaragent/tap
+brew install declaragent</code></pre>
+
+          <p class="install__then">Then:</p>
+          <pre class="install__block install__block--sub"><code>declaragent init --fleet my-fleet
 cd my-fleet
 declaragent fleet add --template rpc-server
 declaragent fleet run</code></pre>
@@ -505,6 +519,6 @@ declaragent fleet run</code></pre>
       </div>
     </footer>
 
-    <script type="module" src="/app.js?v=2"></script>
+    <script type="module" src="/app.js?v=3"></script>
   </body>
 </html>

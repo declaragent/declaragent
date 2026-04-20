@@ -609,3 +609,25 @@ if (validateBtn) {
 if (yamlInput) {
   window.addEventListener("load", () => setTimeout(runValidation, 350));
 }
+
+/* ───────────────────────── install method tabs ──────────────────────── */
+
+const installTabs = document.querySelectorAll(".install__tab");
+const installPanels = document.querySelectorAll("[data-install-panel]");
+
+if (installTabs.length > 0 && installPanels.length > 0) {
+  for (const tab of installTabs) {
+    tab.addEventListener("click", () => {
+      const want = tab.dataset.install;
+      for (const t of installTabs) {
+        const active = t === tab;
+        t.classList.toggle("is-active", active);
+        t.setAttribute("aria-selected", active ? "true" : "false");
+      }
+      for (const p of installPanels) {
+        if (p.dataset.installPanel === want) p.removeAttribute("hidden");
+        else p.setAttribute("hidden", "");
+      }
+    });
+  }
+}

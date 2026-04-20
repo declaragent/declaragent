@@ -711,6 +711,30 @@ kbd {
   font-size: clamp(32px, 4vw, 52px);
   margin-bottom: 28px;
 }
+.install__tabs {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+  margin-bottom: 14px;
+}
+.install__tab {
+  padding: 7px 16px;
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg-muted);
+  transition: color 0.15s, background 0.15s;
+}
+.install__tab:hover {
+  color: var(--fg);
+}
+.install__tab.is-active {
+  background: var(--bg-elev-2);
+  color: var(--accent);
+}
 .install__block {
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
@@ -719,7 +743,23 @@ kbd {
   text-align: left;
   font-size: 14px;
   line-height: 1.7;
-  margin: 0 0 28px;
+  margin: 0 0 22px;
+}
+.install__block[hidden] {
+  display: none;
+}
+.install__block--sub {
+  border-color: var(--border);
+  margin-top: 8px;
+}
+.install__then {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg-dim);
+  margin: 8px 0 8px;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .install__block code {
   background: transparent;

@@ -18,6 +18,13 @@
 /*.svg
   Cache-Control: public, max-age=86400, must-revalidate
 
+# install.sh — piped into `sh` via curl. Serve as plain text so
+# browsers don't try to render it, and keep the cache short so a
+# fix to the installer lands fast for everyone.
+/install.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300, must-revalidate
+
 /*.html
   Cache-Control: public, max-age=0, must-revalidate
 
