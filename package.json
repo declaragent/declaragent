@@ -6,8 +6,8 @@
   "license": "Apache-2.0",
   "workspaces": ["packages/*", "examples/*"],
   "scripts": {
-    "build": "bun run --filter '*' build",
-    "typecheck": "bun run --filter '*' typecheck",
+    "build": "bun run --filter '@declaragent/core' build && bun run --filter '@declaragent/channel-*' --filter '@declaragent/source-*' --filter '@declaragent/plugin-*' --filter '@declaragent/testkit' build && bun run --filter '@declaragent/cli' build",
+    "typecheck": "bun run --filter '@declaragent/core' typecheck && bun run --filter '@declaragent/channel-*' --filter '@declaragent/source-*' --filter '@declaragent/plugin-*' --filter '@declaragent/testkit' typecheck && bun run --filter '@declaragent/cli' typecheck",
     "test": "bun test",
     "demo:phase5": "bun test examples/phase5-demo/",
     "lint": "biome check .",
