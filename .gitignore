@@ -21,3 +21,5 @@ coverage
 # Internal planning docs — kept local, not shipped (repo-root only;
 # `docs-site/docs/` is the public Docusaurus surface)
 /docs/
+# Compiled standalone binary (built by `bun build --compile`; 62 MB)
+packages/cli/bin/declaragent-binary/
