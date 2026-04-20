@@ -19,10 +19,14 @@ interface Props {
  * ASCII translation of the web brandmark — lowercase `d` in a rounded
  * square. Rendered in accent (teal) on lines 1–3. Identity info
  * (version / provider+model / cwd) sits to the right on each line.
+ * A tagline on line 4 makes the self-reference explicit: the CLI is
+ * itself an agent, built on the same `@declaragent/core` you'd use to
+ * build yours.
  *
- *   ╭───╮  Declaragent v0.1.3
+ *   ╭───╮  Declaragent v0.1.5
  *   │ d │  anthropic/claude-opus-4-6 · default
  *   ╰───╯  ~/my-agent
+ *          an agent that builds agents — same @declaragent/core
  */
 const GLYPH = ['╭───╮', '│ d │', '╰───╯'];
 
@@ -40,6 +44,12 @@ export function Banner({ providerId, model, mode, source }: Props): JSX.Element 
           <Text color="gray">  {right[i] ?? ''}</Text>
         </Text>
       ))}
+      <Text>
+        <Text>       </Text>
+        <Text color="gray" dimColor>
+          an agent that builds agents — same @declaragent/core
+        </Text>
+      </Text>
     </Box>
   );
 }

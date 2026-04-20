@@ -31,7 +31,7 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=4" />
+    <link rel="stylesheet" href="/styles.css?v=5" />
   </head>
 
   <body>
@@ -111,6 +111,51 @@
             </div>
             <pre class="term__body"><code id="term-body"></code><span class="term__cursor" id="term-cursor">█</span></pre>
           </div>
+        </div>
+      </section>
+
+      <!-- META — declaragent is an agent ──────────────────────────────── -->
+      <section class="meta" aria-labelledby="meta-title">
+        <div class="meta__inner">
+          <p class="eyebrow">Built with itself</p>
+          <h2 id="meta-title">
+            <code>declaragent</code> is an agent.
+          </h2>
+          <p class="lede lede--muted">
+            Launch the REPL, you're talking to an agent built on
+            <code>@declaragent/core</code> — the same runtime, same tools, same audit
+            chain, same permission gate you'd use to build your own. One core, many
+            agents. No second implementation, no "CLI-only" features locked out of
+            your production path.
+          </p>
+          <div class="meta__flow" aria-label="One core, three agents">
+            <div class="meta__node meta__node--core">
+              <span class="meta__node-tag">core</span>
+              <span class="meta__node-title">@declaragent/core</span>
+              <span class="meta__node-sub">engine · tools · audit · permissions</span>
+            </div>
+            <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
+              <path d="M4 12 H36 M30 6 L40 12 L30 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <div class="meta__node meta__node--agent">
+              <span class="meta__node-tag">agent #1</span>
+              <span class="meta__node-title">declaragent REPL</span>
+              <span class="meta__node-sub">the CLI you install — itself an agent</span>
+            </div>
+            <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
+              <path d="M4 12 H36 M30 6 L40 12 L30 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <div class="meta__node meta__node--agent">
+              <span class="meta__node-tag">agent #2…N</span>
+              <span class="meta__node-title">your agent.yaml</span>
+              <span class="meta__node-sub">every agent you declare + ship</span>
+            </div>
+          </div>
+          <p class="meta__foot">
+            Same <code>Tool</code> contract. Same permission gate. Same audit sink.
+            If your agent can do it, so can the CLI. If the CLI does it, your agent
+            can inherit it.
+          </p>
         </div>
       </section>
 
@@ -537,6 +582,6 @@ declaragent</code></pre>
       </div>
     </footer>
 
-    <script type="module" src="/app.js?v=4"></script>
+    <script type="module" src="/app.js?v=5"></script>
   </body>
 </html>

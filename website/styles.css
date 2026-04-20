@@ -336,6 +336,99 @@ kbd {
   color: var(--fg-muted);
 }
 
+/* ───────────────────────── meta — built with itself ───────────────────────── */
+.meta {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 24px 28px 56px;
+}
+.meta__inner {
+  background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 40px 40px 32px;
+  box-shadow: var(--shadow-lg);
+}
+.meta__inner h2 {
+  font-size: clamp(26px, 3.2vw, 36px);
+  margin: 16px 0 14px;
+  letter-spacing: -0.02em;
+}
+.meta__inner h2 code {
+  font-size: 0.95em;
+  color: var(--accent);
+  background: rgb(94 234 212 / 0.1);
+  border: 1px solid rgb(94 234 212 / 0.25);
+  padding: 0.12em 0.45em;
+  border-radius: 6px;
+}
+.meta__inner .lede {
+  font-size: 16px;
+  max-width: 62ch;
+  margin: 0 0 32px;
+}
+.meta__flow {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin: 0 0 24px;
+  overflow-x: auto;
+  padding: 4px 0 14px;
+}
+.meta__node {
+  flex: 1 1 0;
+  min-width: 220px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.2s;
+}
+.meta__node:hover {
+  border-color: var(--accent-dim);
+}
+.meta__node--core {
+  border-color: var(--accent-dim);
+  background: rgb(94 234 212 / 0.04);
+}
+.meta__node-tag {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.meta__node-title {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.meta__node-sub {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+}
+.meta__arrow {
+  width: 42px;
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--fg-dim);
+}
+.meta__foot {
+  margin: 0;
+  font-size: 14px;
+  color: var(--fg-muted);
+  line-height: 1.6;
+  max-width: 64ch;
+  border-top: 1px solid var(--border);
+  padding-top: 22px;
+}
+
 /* ───────────────────────── capabilities grid ───────────────────────── */
 .caps {
   max-width: var(--maxw);
@@ -842,6 +935,7 @@ kbd {
     gap: 20px;
   }
   .hero,
+  .meta,
   .caps,
   .lifecycle,
   .ent,
@@ -854,6 +948,17 @@ kbd {
   .lifecycle__grid,
   .ent__grid {
     grid-template-columns: 1fr;
+  }
+  .meta__inner {
+    padding: 28px 22px 24px;
+  }
+  .meta__flow {
+    flex-direction: column;
+  }
+  .meta__arrow {
+    transform: rotate(90deg);
+    align-self: center;
+    width: 32px;
   }
   .site-footer__inner {
     grid-template-columns: 1fr;
