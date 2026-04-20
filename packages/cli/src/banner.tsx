@@ -1,7 +1,6 @@
 import { homedir } from 'node:os';
 import { Box, Text } from 'ink';
-
-export const APP_VERSION = '0.0.1';
+import { CLI_VERSION } from './version.js';
 
 function shortCwd(cwd = process.cwd(), home = homedir()): string {
   if (cwd === home) return '~';
@@ -16,26 +15,29 @@ interface Props {
   source?: string;
 }
 
-const GLYPH = ['   ___   ', '  (oo)~  ', '   /||\\  '];
-
 /**
- * Startup banner. Three lines: a small elephant glyph on the left and
- * identity / context on the right. Only rendered once at startup; flows
- * with the scrollback above the input box.
+ * ASCII translation of the web brandmark — lowercase `d` in a rounded
+ * square. Rendered in accent (teal) on lines 1–3. Identity info
+ * (version / provider+model / cwd) sits to the right on each line.
+ *
+ *   ╭───╮  Declaragent v0.1.3
+ *   │ d │  anthropic/claude-opus-4-6 · default
+ *   ╰───╯  ~/my-agent
  */
+const GLYPH = ['╭───╮', '│ d │', '╰───╯'];
+
 export function Banner({ providerId, model, mode, source }: Props): JSX.Element {
   const right: string[] = [
-    `Declaragent v${APP_VERSION}`,
+    `Declaragent v${CLI_VERSION}`,
     `${providerId}/${model} · ${mode}${source ? ` (${source})` : ''}`,
     shortCwd(),
   ];
-  // Each glyph row is unique enough to use as its own key.
   return (
     <Box flexDirection="column" marginBottom={1}>
       {GLYPH.map((g, i) => (
         <Text key={g}>
           <Text color="cyan">{g}</Text>
-          <Text color="gray"> {right[i] ?? ''}</Text>
+          <Text color="gray">  {right[i] ?? ''}</Text>
         </Text>
       ))}
     </Box>
