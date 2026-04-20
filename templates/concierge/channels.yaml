@@ -1,0 +1,36 @@
+version: 1
+# Single Slack channel via Socket Mode — no public URL, no inbound webhook.
+# Works on any laptop, behind any NAT; great for the "it works in 2 minutes"
+# first-run experience.
+channels:
+  - id: concierge-slack
+    type: slack
+    transport:
+      mode: socket
+      botToken: ${env:SLACK_BOT_TOKEN}
+      appToken: ${env:SLACK_APP_TOKEN}
+    threadOnMention: auto
+    events:
+      - app_mention
+      - message.im
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: broadcast
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 2
+      retryBackoff:
+        initialMs: 100
+        maxMs: 2000
+        jitter: true
+      idempotency:
+        strategy: transport-natural
+        ttlMs: 60000
+        store: memory
+    limits:
+      concurrency: 4
+      maxInflight: 128

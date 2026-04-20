@@ -1,0 +1,96 @@
+name: Dependency scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly 06:00 UTC — picks up new CVEs published since the last PR.
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  osv-scanner:
+    name: OSV scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check .osv-ignore expiries
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import sys
+          import pathlib
+
+          path = pathlib.Path('.osv-ignore.yml')
+          if not path.exists():
+              sys.exit(0)
+
+          try:
+              import yaml  # type: ignore
+          except ImportError:
+              import subprocess
+              subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyyaml'], check=True)
+              import yaml  # type: ignore
+
+          data = yaml.safe_load(path.read_text()) or {}
+          today = datetime.date.today()
+          failed = []
+          for entry in data.get('ignore', []):
+              eid = entry.get('id', '<missing id>')
+              expires_raw = entry.get('expires')
+              reason = entry.get('reason')
+              if not expires_raw:
+                  failed.append(f"{eid}: missing `expires` (required)")
+                  continue
+              if not reason:
+                  failed.append(f"{eid}: missing `reason` (required)")
+                  continue
+              try:
+                  expires = datetime.date.fromisoformat(str(expires_raw))
+              except ValueError:
+                  failed.append(f"{eid}: `expires` must be YYYY-MM-DD, got {expires_raw!r}")
+                  continue
+              if expires < today:
+                  failed.append(
+                      f"{eid}: expired on {expires} — remediate or renew the ignore with a new expiry"
+                  )
+          if failed:
+              for line in failed:
+                  print(f"::error::osv-ignore: {line}")
+              sys.exit(1)
+          print(f"::notice::osv-ignore ok ({len(data.get('ignore', []))} entries)")
+          PY
+
+      - name: Install osv-scanner
+        run: |
+          curl -sL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 \
+            -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+
+      - name: Scan lockfile + manifests
+        run: |
+          osv-scanner \
+            --lockfile=bun.lock \
+            --config=.osv-ignore.yml \
+            --format=sarif \
+            --output=osv-results.sarif \
+            . || true
+          # Exit 1 on any CRITICAL finding; warn on HIGH via the SARIF.
+          osv-scanner \
+            --lockfile=bun.lock \
+            --config=.osv-ignore.yml \
+            --max-severity=critical \
+            .
+
+      - name: Upload SARIF to code-scanning
+        if: always() && hashFiles('osv-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv-results.sarif
+          category: osv-scanner

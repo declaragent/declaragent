@@ -1,0 +1,68 @@
+---
+id: deploy-cloud-run
+title: Deploy to GCP Cloud Run
+sidebar_label: Deploy to Cloud Run
+---
+
+# Deploy to GCP Cloud Run
+
+`declaragent deploy gcp-cloud-run` takes your `agent.yaml` + secrets and emits a Cloud Run-ready `Dockerfile` + `service.yaml`. We deliberately stop short of invoking `gcloud` ourselves — the user's GCP auth flow is theirs to own.
+
+## Prerequisites
+
+- A GCP project with billing enabled.
+- `gcloud` installed and authenticated (`gcloud auth login`, `gcloud config set project <PROJECT>`).
+- The `roles/run.admin`, `roles/iam.serviceAccountUser`, and `roles/secretmanager.admin` roles on the deploying principal.
+
+## Generate artifacts
+
+```bash
+declaragent deploy gcp-cloud-run
+```
+
+Produces:
+
+```
+.declaragent/deploy/
+├── Dockerfile
+├── service.yaml
+├── .dockerignore
+└── README.md               # the three commands to run
+```
+
+## Verify locally (dry-run)
+
+```bash
+docker build -t declaragent-agent .declaragent/deploy/
+docker run --rm -p 8787:8787 declaragent-agent
+```
+
+## Apply
+
+```bash
+gcloud builds submit .declaragent/deploy/ --tag us-central1-docker.pkg.dev/<PROJECT>/declaragent/agent:latest
+gcloud run services replace .declaragent/deploy/service.yaml --region us-central1
+declaragent deploy gcp-cloud-run --verify
+```
+
+The `--verify` step hits the daemon's `/health` endpoint + runs `gcloud run services describe`. On 200, the command prints a shareable URL + the Slack / Telegram / WhatsApp webhook configuration snippet.
+
+## Cost
+
+Cloud Run at the baseline preset (`cpu=1, memory=512MiB, minInstances=1`) costs roughly $40–$60 / month before provider tokens. Daemons need `minInstances = 1` so webhooks can arrive at any time. Users running infrequent workloads can drop `minInstances` to `0` but must accept cold-start latency on inbound events.
+
+## Troubleshooting
+
+- **403 at deploy.** See [Troubleshooting → my deploy got 403](/troubleshooting/deploy-403). The preflight hint from `declaragent deploy --verify` names the missing IAM role.
+- **Secret Manager binding failed.** Each `${secret:...}` reference maps to a Secret Manager binding in `service.yaml`. If the service account lacks `roles/secretmanager.secretAccessor`, the revision fails to start.
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] End-to-end walkthrough with a synthetic
+Slack workspace ping. The nightly Cloud Run soak test (slice-6
+`.github/workflows/cloud-run-soak.yml`) exercises this path.
+</div>
+
+## Related
+
+- [Troubleshooting → my deploy got 403](/troubleshooting/deploy-403).
+- [Phase 7 plan §9 — Cloud Run deployment](https://github.com/declaragent/declaragent/blob/main/docs/PHASE_7_PLAN.md).

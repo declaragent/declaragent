@@ -1,0 +1,62 @@
+---
+id: index
+title: Quickstart
+slug: /quickstart
+sidebar_label: Overview
+sidebar_position: 1
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Quickstart — 10-minute path
+
+From an empty laptop to an agent running on **GCP Cloud Run**, in under ten minutes. Measured, not estimated.
+
+The short version:
+
+```bash
+# 1. Install
+curl -sSL https://get.declaragent.dev | sh
+
+# 2. Scaffold
+declaragent init
+
+# 3. Deploy
+declaragent deploy gcp-cloud-run
+```
+
+Every step has an escape hatch for non-Linux / offline / non-GCP environments — see the linked pages below.
+
+## Walkthrough
+
+1. **[Install](/quickstart/installing)** — pick one of curl, npm, or Homebrew.
+2. **[Your first agent](/quickstart/first-agent)** — run `declaragent init`, pick the `concierge` template, and talk to the agent locally.
+3. **[Deploy to Cloud Run](/cookbook/deploy-cloud-run)** — takes the scaffolded `agent.yaml` to a running Cloud Run service.
+
+## What you'll end up with
+
+```
+my-agent/
+├── agent.yaml               # identity + system prompt
+├── .env.example             # credentials template
+├── channels.yaml            # optional — only when a channel is picked
+├── event-sources.yaml       # optional — only for webhook/Kafka/etc templates
+└── skills/
+    └── concierge.md
+```
+
+Everything here is plain text. Commit it, branch it, `git revert` it — that's the entire point.
+
+## Screenshots
+
+_Screenshot: `declaragent init` walkthrough — placeholder, landing 2026-Q2._
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Real screenshots of the init wizard, REPL, and deploy verify step land with slice 9.
+</div>
+
+## Cross-links
+
+- Full [template catalog](/cookbook) in the Cookbook.
+- If anything goes wrong, start with [Troubleshooting → install failed](/troubleshooting).

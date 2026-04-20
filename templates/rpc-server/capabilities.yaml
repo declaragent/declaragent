@@ -1,0 +1,48 @@
+# Declares the capabilities this agent exposes to the rest of the
+# fleet. Producer-side `RequestAgent` callers don't need this file —
+# they use `rpc-peers.yaml` for routing — but operators use it to
+# document the API surface, and future (v1.2) registry aggregation
+# will pull from here.
+version: 1
+agent: agent://pr-reviewer
+transports:
+  - kind: memory
+    topics:
+      requests: agents.pr-reviewer.requests
+      responses: agents.pr-reviewer.responses
+  # Kafka variant — uncomment when running across processes:
+  # - kind: kafka
+  #   brokers: ["${env:KAFKA_BROKERS}"]
+  #   topics:
+  #     requests: agents.pr-reviewer.requests
+  #     responses: agents.pr-reviewer.responses
+capabilities:
+  - name: review-pr
+    description: "Review a GitHub pull request and emit structured findings."
+    timeoutMs: 60000
+    idempotent: true
+    since: "1.1.0"
+    inputSchema:
+      type: object
+      properties:
+        prUrl:
+          type: string
+          description: GitHub PR URL.
+      required: [prUrl]
+    outputSchema:
+      type: object
+      properties:
+        verdict:
+          enum: [approve, request-changes, comment]
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              file: { type: string }
+              line: { type: integer }
+              severity:
+                enum: [blocker, major, minor, nit]
+              message: { type: string }
+        summary: { type: string }
+      required: [verdict, findings, summary]

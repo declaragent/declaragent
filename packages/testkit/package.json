@@ -1,0 +1,44 @@
+{
+  "name": "@declaragent/testkit",
+  "version": "0.1.0",
+  "description": "Load testing + acceptance harness for Declaragent event sources (Phase 4 slice 16).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./load": {
+      "types": "./dist/load/index.d.ts",
+      "import": "./dist/load/index.js"
+    },
+    "./channels": {
+      "types": "./dist/channels/index.d.ts",
+      "import": "./dist/channels/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "clean": "rm -rf dist",
+    "load:kafka": "bun run scripts/load-kafka.ts",
+    "chaos:quick": "bun run scripts/chaos-quick.ts"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@declaragent/core": "^0.1.0",
+    "@declaragent/source-kafka": "^0.1.0"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4",
+    "yaml": "^2.8.3"
+  },
+  "private": false
+}

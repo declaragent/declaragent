@@ -1,0 +1,20 @@
+node_modules
+dist
+build
+coverage
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+.turbo
+.cache
+*.tsbuildinfo
+# Docusaurus cache (docs-site/)
+.docusaurus
+# Credentials — defensive, should never land in the repo
+.npmrc
+# Runtime state created by `declaragent fleet run` + the daemon
+.declaragent/
+# macOS noise
+.DS_Store

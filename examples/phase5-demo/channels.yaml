@@ -1,0 +1,137 @@
+version: 1
+# Phase 5 acceptance demo. Every transport field comes from an env var so
+# the file is safe to commit; `declaragent channels validate` expands the
+# refs at load time.
+#
+# Only one channel entry per platform. Real deployments would register
+# multiple channel ids (staging + prod, multi-workspace, etc.).
+channels:
+  - id: telegram-demo
+    type: telegram
+    transport:
+      mode: long-polling
+      botToken: ${env:DEMO_TELEGRAM_BOT_TOKEN}
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: broadcast
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 2
+      retryBackoff:
+        initialMs: 50
+        maxMs: 500
+        jitter: true
+      idempotency:
+        strategy: transport-natural
+        ttlMs: 60000
+        store: memory
+    limits:
+      concurrency: 4
+      maxInflight: 256
+
+  - id: discord-demo
+    type: discord
+    transport:
+      botToken: ${env:DEMO_DISCORD_BOT_TOKEN}
+      applicationId: ${env:DEMO_DISCORD_APP_ID}
+      intents:
+        - Guilds
+        - GuildMessages
+        - DirectMessages
+        - MessageContent
+      privileged: true
+    archivedThreadPolicy: unarchive
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: broadcast
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 2
+      retryBackoff:
+        initialMs: 50
+        maxMs: 500
+        jitter: true
+      idempotency:
+        strategy: transport-natural
+        ttlMs: 60000
+        store: memory
+    limits:
+      concurrency: 4
+      maxInflight: 256
+
+  - id: slack-demo
+    type: slack
+    transport:
+      mode: socket
+      botToken: ${env:DEMO_SLACK_BOT_TOKEN}
+      appToken: ${env:DEMO_SLACK_APP_TOKEN}
+    threadOnMention: auto
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: broadcast
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 2
+      retryBackoff:
+        initialMs: 50
+        maxMs: 500
+        jitter: true
+      idempotency:
+        strategy: transport-natural
+        ttlMs: 60000
+        store: memory
+    limits:
+      concurrency: 4
+      maxInflight: 256
+
+  - id: whatsapp-demo
+    type: whatsapp
+    transport:
+      provider: meta-cloud
+      phoneNumberId: ${env:DEMO_WHATSAPP_PHONE_NUMBER_ID}
+      businessAccountId: ${env:DEMO_WHATSAPP_BUSINESS_ID}
+      accessToken: ${env:DEMO_WHATSAPP_ACCESS_TOKEN}
+      webhookVerifyToken: ${env:DEMO_WHATSAPP_WEBHOOK_VERIFY_TOKEN}
+      webhookAppSecret: ${env:DEMO_WHATSAPP_WEBHOOK_APP_SECRET}
+    policy:
+      enforceConversationWindow: true
+      outsideWindowAction: template
+      defaultTemplate: checkin_reminder_v1
+    templates:
+      - name: checkin_reminder_v1
+        language: en
+        parameterNames:
+          - firstName
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: broadcast
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 2
+      retryBackoff:
+        initialMs: 50
+        maxMs: 500
+        jitter: true
+      idempotency:
+        strategy: transport-natural
+        ttlMs: 60000
+        store: memory
+    limits:
+      concurrency: 4
+      maxInflight: 256

@@ -1,0 +1,181 @@
+name: Installer smoke
+
+# Phase 7 slice 2. Hermetic end-to-end test for `scripts/install.sh`.
+#
+# Each runner:
+#   1. Builds a `declaragent` binary for its own target via
+#      `scripts/build-binary.sh` (slice 1).
+#   2. Serves the resulting `dist/bin/` tree as a release-layout static
+#      directory (`download/<tag>/<asset>`).
+#   3. Invokes `scripts/install.sh` pointed at the local server via
+#      `DECLARAGENT_BASE_URL`.
+#   4. Asserts the installed binary prints the expected version + that
+#      `shellcheck` has no findings against the installer itself.
+#
+# Triggers:
+#   - push to `main`           — guards against installer regressions.
+#   - pull request              — catches breakage before merge.
+#   - `workflow_dispatch`       — manual re-runs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/build-binary.sh'
+      - 'packages/cli/**'
+      - 'packages/core/**'
+      - '.github/workflows/installer-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/build-binary.sh'
+      - 'packages/cli/**'
+      - 'packages/core/**'
+      - '.github/workflows/installer-smoke.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: installer-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: shellcheck install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint install.sh
+        run: shellcheck -s sh scripts/install.sh
+      - name: Lint build-binary.sh
+        run: shellcheck -s bash scripts/build-binary.sh
+
+  install:
+    name: Install smoke (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [linux-x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile release tarball
+        run: bash scripts/build-binary.sh ${{ matrix.target }}
+
+      - name: Stage release layout
+        run: |
+          # Mirror the `github.com/<org>/<repo>/releases/download/<tag>/<asset>`
+          # path shape that install.sh hits.
+          TAG="v0.0.1-smoke"
+          STAGE="$GITHUB_WORKSPACE/dist/serve"
+          mkdir -p "$STAGE/download/$TAG"
+          cp dist/bin/declaragent-${{ matrix.target }}.tar.gz "$STAGE/download/$TAG/"
+          cp dist/bin/declaragent-${{ matrix.target }}.sha256 "$STAGE/download/$TAG/"
+          ls -la "$STAGE/download/$TAG/"
+          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo "SMOKE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Serve locally + run install.sh
+        run: |
+          set -euo pipefail
+          python3 -m http.server --directory "$STAGE" 8765 >/tmp/http.log 2>&1 &
+          SERVER_PID=$!
+          # Wait for the port to listen. Plain bash; no bats required.
+          for _ in $(seq 1 40); do
+            if (echo >"/dev/tcp/127.0.0.1/8765") 2>/dev/null; then break; fi
+            sleep 0.25
+          done
+
+          export DECLARAGENT_VERSION="$SMOKE_TAG"
+          export DECLARAGENT_PREFIX="$GITHUB_WORKSPACE/install-prefix"
+          export DECLARAGENT_BASE_URL="http://127.0.0.1:8765"
+          rm -rf "$DECLARAGENT_PREFIX"
+
+          bash scripts/install.sh
+
+          # Guarantee cleanup even on failure below.
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          BIN="$DECLARAGENT_PREFIX/bin/declaragent"
+          test -x "$BIN"
+          output="$("$BIN" --version)"
+          echo "$output"
+          echo "$output" | grep -qE '^declaragent [0-9]+\.[0-9]+\.[0-9]+$'
+
+      - name: Show http server log (on failure)
+        if: failure()
+        run: cat /tmp/http.log || true
+
+  checksum-mismatch:
+    name: Rejects checksum mismatch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile + corrupt checksum
+        run: |
+          bash scripts/build-binary.sh linux-x64
+          STAGE="$GITHUB_WORKSPACE/dist/serve"
+          TAG="v0.0.1-corrupt"
+          mkdir -p "$STAGE/download/$TAG"
+          cp dist/bin/declaragent-linux-x64.tar.gz "$STAGE/download/$TAG/"
+          # Stamp a known-wrong hash into the .sha256 file.
+          echo "0000000000000000000000000000000000000000000000000000000000000000  declaragent-linux-x64.tar.gz" \
+            > "$STAGE/download/$TAG/declaragent-linux-x64.sha256"
+          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo "SMOKE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Install must abort
+        run: |
+          set -uo pipefail
+          python3 -m http.server --directory "$STAGE" 8766 >/tmp/http.log 2>&1 &
+          SERVER_PID=$!
+          for _ in $(seq 1 40); do
+            if (echo >"/dev/tcp/127.0.0.1/8766") 2>/dev/null; then break; fi
+            sleep 0.25
+          done
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          export DECLARAGENT_VERSION="$SMOKE_TAG"
+          export DECLARAGENT_PREFIX="$GITHUB_WORKSPACE/install-corrupt"
+          export DECLARAGENT_BASE_URL="http://127.0.0.1:8766"
+          rm -rf "$DECLARAGENT_PREFIX"
+
+          set +e
+          bash scripts/install.sh
+          exit_code=$?
+          set -e
+
+          if [ "$exit_code" -eq 0 ]; then
+            echo "✗ installer exited 0 on a bad checksum — that's a regression" >&2
+            exit 1
+          fi
+          echo "✓ installer aborted with exit $exit_code"
+          # The binary must NOT be installed when the checksum fails.
+          if [ -f "$DECLARAGENT_PREFIX/bin/declaragent" ]; then
+            echo "✗ binary was installed despite the checksum mismatch" >&2
+            exit 1
+          fi
+          echo "✓ no binary installed on checksum mismatch"

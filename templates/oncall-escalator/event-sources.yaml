@@ -1,0 +1,25 @@
+# Alertmanager → Declaragent webhook. Alertmanager posts JSON to
+# `/webhook/alertmanager`; each request carries a stable fingerprint in
+# the `X-Alertmanager-Fingerprint` header that we use as an idempotency
+# key so retries don't double-page.
+- type: webhook
+  config:
+    id: alertmanager
+    path: /webhook/alertmanager
+    auth:
+      kind: hmac
+      algorithm: sha256
+      # Alertmanager signs the body with a shared secret if you configure
+      # a `http_config.authorization` block — we accept that here.
+      secretEnv: ALERTMANAGER_WEBHOOK_SECRET
+      headerName: X-Alertmanager-Signature
+      timestampHeader: X-Alertmanager-Timestamp
+      replayWindowSec: 300
+    bodyAs: json
+    idempotencyKeyHeader: X-Alertmanager-Fingerprint
+    rateLimit:
+      max: 60
+      windowMs: 60000
+    target:
+      kind: skill
+      name: triage

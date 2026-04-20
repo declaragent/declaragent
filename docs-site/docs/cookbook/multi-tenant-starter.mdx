@@ -1,0 +1,61 @@
+---
+id: multi-tenant-starter
+title: Multi-tenant starter — two tenants, one daemon
+sidebar_label: Multi-tenant
+---
+
+# `multi-tenant-starter` template
+
+`tenants.yaml` with `acme-prod` (US residency, enterprise quotas) + `beta-tenant` (EU residency, trial quotas). Demonstrates `per-tenant` bus strategy, per-tenant `extensions.allow`/`deny`, scoped Vault secrets, and a smoke-test block in the README that walks the user through `declaragent tenants list / show` + `declaragent audit verify`.
+
+## Scaffold
+
+```bash
+declaragent init --template multi-tenant-starter --multi-tenant \
+  --tenant-id acme-prod
+```
+
+Canonical starter: [`templates/multi-tenant-starter/`](https://github.com/declaragent/declaragent/tree/main/templates/multi-tenant-starter).
+
+## Configure
+
+1. Provision Vault paths `secret/data/acme-prod/*` and `secret/data/beta-tenant/*`.
+2. Set `VAULT_ADDR` + a short-lived token in `.env`.
+3. Each tenant's `agent.yaml` references secrets via `${secret:tenant:...}` — the resolver scopes to the current tenant context at runtime.
+
+## Smoke-test
+
+```bash
+declaragent daemon &
+declaragent tenants list
+declaragent tenants show acme-prod
+declaragent tenants diff                  # shows pending config changes
+declaragent audit verify --tenant acme-prod --json
+declaragent secrets list --provider vault --json
+```
+
+Cross-tenant boundary-violation test:
+
+```bash
+declaragent audit query --tenant beta-tenant --kind tenant_boundary_denied
+```
+
+Should emit zero rows on a healthy deployment.
+
+## Key points
+
+- **Per-tenant bus strategy.** Each tenant has its own in-memory bus; no message can cross the boundary without a `tenant_boundary_denied` audit record.
+- **Scoped extensions.** The `acme-prod` tenant has `extensions.allow: [slack, kafka]`; `beta-tenant` has `extensions.deny: [whatsapp]`.
+- **Audit.** `declaragent audit verify` walks the Merkle-chained audit log per tenant — a tamper drops a signed-row check failure.
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Cross-tenant quota enforcement demo
+(beta-tenant bursting into `EQUOTA` while acme-prod stays green).
+</div>
+
+## Related
+
+- [Run two tenants on one daemon recipe](/cookbook/two-tenants-one-daemon).
+- [Troubleshooting → tenant-boundary-violation](/troubleshooting/runbooks/tenant-boundary-violation).
+- [CLI → `declaragent tenants`](/reference/cli).
+- [CLI → `declaragent audit`](/reference/cli).

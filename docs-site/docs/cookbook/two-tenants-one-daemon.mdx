@@ -1,0 +1,79 @@
+---
+id: two-tenants-one-daemon
+title: Run two tenants on one daemon
+sidebar_label: Two tenants, one daemon
+---
+
+# Run two tenants on one daemon
+
+Multi-tenancy is a first-class primitive. One `declaragent daemon` process can host N tenants with isolated:
+
+- Session state (`(tenantId, sessionId)` is the composite key after slice 0).
+- Message bus (per-tenant bus strategy — no cross-tenant leaks).
+- Extensions (`extensions.allow` / `extensions.deny` per tenant).
+- Quotas (cost + rate limits per tenant).
+- Audit log (separate Merkle chains per tenant).
+- Metrics (every Prometheus series gets a `tenant=` label).
+
+## Minimal setup
+
+Scaffold from the template:
+
+```bash
+declaragent init --template multi-tenant-starter --multi-tenant --tenant-id acme-prod
+```
+
+Then edit `tenants.yaml` to add a second tenant:
+
+```yaml
+tenants:
+  - id: acme-prod
+    residency: us
+    extensions:
+      allow: [slack, kafka]
+    quotas:
+      dailyTokenUSD: 100
+      requestsPerMinute: 1000
+  - id: beta-tenant
+    residency: eu
+    extensions:
+      deny: [whatsapp]
+    quotas:
+      dailyTokenUSD: 5
+      requestsPerMinute: 60
+```
+
+## Verify
+
+```bash
+declaragent daemon &
+declaragent tenants list
+declaragent tenants show acme-prod
+declaragent tenants show beta-tenant
+declaragent tenants diff           # shows pending config vs. loaded config
+```
+
+## Audit
+
+```bash
+declaragent audit query --tenant acme-prod --since $(($(date +%s%3N) - 3600000))
+declaragent audit verify --tenant acme-prod
+declaragent audit verify --tenant beta-tenant
+```
+
+Boundary violations are visible per-tenant:
+
+```bash
+declaragent audit query --kind tenant_boundary_denied
+```
+
+## Key points
+
+- **Boundary enforcement.** Any attempt to route a message across tenants emits a `tenant_boundary_denied` audit record + a `TENANT_BOUNDARY` alert.
+- **Per-tenant metrics labels.** Slice 0 auto-stamps `tenant=` on every series emitted by the Prometheus exporter.
+- **Independent rotations.** `declaragent secrets rotate --tenant <id>` scopes the rotation. Other tenants are undisturbed.
+
+## Related
+
+- [Template → multi-tenant-starter](/cookbook/multi-tenant-starter).
+- [Troubleshooting → tenant-boundary-violation](/troubleshooting/runbooks/tenant-boundary-violation).

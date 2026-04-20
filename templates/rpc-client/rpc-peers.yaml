@@ -1,0 +1,19 @@
+# Peer table resolved by the producer-side RequestAgent tool. Each entry
+# maps an `agent://<id>` to the concrete transport + topic the consumer's
+# `agent-inbox` is subscribed to.
+#
+# For local / CI: `kind: memory` — both daemons share an in-memory bus.
+# For prod: swap to `kind: kafka` / `kind: nats` / etc. The envelope,
+# tool, and source stay byte-identical.
+version: 1
+peers:
+  - agent: agent://pr-reviewer
+    transports:
+      - kind: memory
+        topics:
+          requests: agents.pr-reviewer.requests
+      # Kafka variant — uncomment and fill KAFKA_BROKERS in .env:
+      # - kind: kafka
+      #   brokers: ["${env:KAFKA_BROKERS}"]
+      #   topics:
+      #     requests: agents.pr-reviewer.requests

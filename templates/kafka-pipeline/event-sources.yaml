@@ -1,0 +1,49 @@
+# Kafka source: consume `orders.created`, enrich, re-emit. JSON-path
+# routing pulls out the `id` field as the idempotency key so Kafka's
+# at-least-once delivery + our DLQ fallback don't produce duplicates.
+# Dead-letter topic receives any message the skill couldn't process
+# after `delivery.maxRetries` attempts.
+- type: kafka
+  config:
+    id: orders-enricher
+    transport:
+      brokers:
+        - ${env:KAFKA_BROKER_URL}
+      clientId: declaragent-kafka-pipeline
+      consumerGroup: declaragent-orders-enricher
+      topics:
+        - orders.created
+      sessionTimeoutMs: 30000
+      heartbeatIntervalMs: 3000
+      fromBeginning: false
+    security:
+      sasl:
+        mechanism: SCRAM-SHA-256
+        username: ${env:KAFKA_SASL_USERNAME}
+        password: ${env:KAFKA_SASL_PASSWORD}
+      ssl: true
+    routing:
+      format: json
+      kindSelector:
+        const: order.created
+      # Pull the stable order id out of the payload for dedup.
+      idempotencyKey:
+        path: $.id
+      targetSelector:
+        type: skill
+        name: enrich
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-handler
+      maxRetries: 3
+      retryBackoff:
+        initialMs: 500
+        maxMs: 10000
+        jitter: true
+    limits:
+      concurrency: 8
+      maxInflight: 256
+    # DLQ: after 3 retries, the record gets produced to orders.dlq with
+    # original headers + a `x-error` header describing the failure.
+    dlq:
+      topic: orders.dlq

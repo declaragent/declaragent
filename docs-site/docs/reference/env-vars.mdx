@@ -1,0 +1,84 @@
+---
+id: env-vars
+title: Environment variables
+sidebar_label: Env vars
+sidebar_position: 4
+---
+
+# Environment variables
+
+The CLI and runtime read a small set of environment variables. All of them have safe defaults.
+
+## Core runtime
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DECLARAGENT_CONFIG_DIR` | `$HOME/.declaragent` | Overrides the per-user config directory. Used by the Cloud Run Dockerfile to mount `/etc/declaragent`. |
+| `DECLARAGENT_TELEMETRY` | `1` | Set to `0` to opt out of the three first-run telemetry events (`installed`, `wizard_completed`, `deploy_invoked`). |
+| `DECLARAGENT_LOG_LEVEL` | `info` | One of `trace`, `debug`, `info`, `warn`, `error`. Runbooks frequently set `debug` to trace connection errors. |
+| `DECLARAGENT_OFFLINE` | unset | If set, skips any network calls outside the configured provider. Affects the wizard's verify step + `declaragent upgrade` (post-v1.0). |
+
+## Installer
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DECLARAGENT_VERSION` | `latest` | Tag to install. `curl` + `npm` paths both honor it. |
+| `DECLARAGENT_PREFIX` | `$HOME/.local` | Install prefix for the `curl` installer. Binary lands at `$PREFIX/bin/declaragent`. |
+| `DECLARAGENT_BASE_URL` | GitHub releases | Release origin override. Used by CI smoke tests to stage a local mirror. |
+| `DECLARAGENT_NO_CHECKSUM` | unset | Skips the SHA-256 verify. Never set this in production. |
+| `DECLARAGENT_NO_POSTINSTALL` | unset | npm path only. Skips the binary download; the launcher prints a hint. |
+| `DECLARAGENT_SIZE_BUDGET_MB` | `120` | Build-only. Used by `scripts/build-binary.sh` to fail the release if the compiled binary exceeds the budget. |
+
+## Chaos / integration harnesses
+
+Flags for the Phase 6 chaos + integration suites. Not used in normal operation.
+
+| Variable | Purpose |
+| --- | --- |
+| `DECLARAGENT_CHAOS=1` | Enables the chaos harness when running the daemon under test. |
+| `DECLARAGENT_CHANNEL_IT=1` | Enables nightly real-platform channel integration tests. |
+| `DECLARAGENT_SECRETS_IT=1` | Enables real Vault / AWS SM / GCP SM integration tests. |
+| `DECLARAGENT_E2E=1` | Runs the Phase-1 live-Anthropic smoke test. |
+| `DECLARAGENT_INTEGRATION=1` | Gates adapter Docker Compose suites (Kafka, SQS, AMQP, MQTT, NATS). |
+
+## Provider API keys
+
+Each provider preset declares a canonical `envVar`. If set, the CLI picks it up automatically — no need to run `declaragent auth login`.
+
+| Provider | Env var |
+| --- | --- |
+| Anthropic | `ANTHROPIC_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY` |
+| Groq | `GROQ_API_KEY` |
+| DeepSeek | `DEEPSEEK_API_KEY` |
+| Together | `TOGETHER_API_KEY` |
+| Mistral | `MISTRAL_API_KEY` |
+| xAI (Grok) | `XAI_API_KEY` |
+| Ollama (local) | `OLLAMA_API_KEY` (usually empty) |
+| LM Studio (local) | `LMSTUDIO_API_KEY` (usually empty) |
+| llama.cpp (local) | `LLAMACPP_API_KEY` (usually empty) |
+
+See [Provider matrix](/reference/providers) for per-provider features.
+
+## Cloud / secrets
+
+Inherit from each provider SDK. Listed for completeness:
+
+| Variable | Used by |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | AWS Secrets Manager resolver, SQS source. |
+| `KUBERNETES_SERVICE_HOST` / `KUBERNETES_SERVICE_PORT_HTTPS` | Kubernetes secret resolver (auto-detected when pod-mounted). |
+| `WEBHOOK_SECRET` / `TEST_WEBHOOK_SECRET` / `TEST_WEBHOOK_TOKEN` | Webhook source HMAC verification. |
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Slice 7.5 polish: every remaining
+adapter-specific env var (Slack bot tokens, Telegram tokens, etc.) will be
+auto-extracted from each adapter's README.md so this table stays in sync.
+</div>
+
+## Related
+
+- [Installing Declaragent](/quickstart/installing) — installer knobs in context.
+- [Cookbook → Rotate a Vault secret](/cookbook/rotate-vault-secret).
+- [CLI → `declaragent secrets`](/reference/cli).

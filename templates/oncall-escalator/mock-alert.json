@@ -1,0 +1,31 @@
+{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"HighLatency\"}",
+  "truncatedAlerts": 0,
+  "status": "firing",
+  "receiver": "declaragent",
+  "groupLabels": { "alertname": "HighLatency" },
+  "commonLabels": { "alertname": "HighLatency", "severity": "critical" },
+  "commonAnnotations": { "runbook_url": "https://runbooks.example.com/HighLatency" },
+  "externalURL": "https://alertmanager.example.com",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HighLatency",
+        "severity": "critical",
+        "service": "checkout-api",
+        "cluster": "us-east-prod",
+        "namespace": "payments"
+      },
+      "annotations": {
+        "description": "checkout-api p99 latency has been above 500ms for 10 minutes.",
+        "runbook_url": "https://runbooks.example.com/HighLatency"
+      },
+      "startsAt": "2026-04-18T17:42:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "https://prometheus.example.com/graph?g0.expr=...",
+      "fingerprint": "d41d8cd98f00b204"
+    }
+  ]
+}

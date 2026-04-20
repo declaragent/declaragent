@@ -1,0 +1,24 @@
+version: '3.8'
+
+# RabbitMQ 3.13 with the management plugin. AMQP on 5672, UI on 15672.
+#
+# Usage (from the package root):
+#   docker compose -f test/fixtures/docker-compose.yml up -d
+#   AMQP_INTEGRATION=1 AMQP_URL=amqp://guest:guest@localhost:5672 bun test test/integration.test.ts
+#   docker compose -f test/fixtures/docker-compose.yml down -v
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: declaragent-amqp-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 20

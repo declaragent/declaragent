@@ -1,0 +1,94 @@
+---
+id: installing
+title: Installing Declaragent
+sidebar_label: Install
+sidebar_position: 2
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Installing
+
+Three install paths. Pick whichever fits your machine — all three produce the same `declaragent` binary on your `$PATH`.
+
+<Tabs groupId="installer">
+<TabItem value="curl" label="curl">
+
+```bash
+curl -sSL https://get.declaragent.dev | sh
+```
+
+The installer:
+
+1. Detects `(os, arch)` — Linux x64, Linux arm64, macOS x64, macOS arm64.
+2. Downloads the matching tarball + `.sha256` from the GitHub release.
+3. Verifies the checksum.
+4. Extracts `declaragent` into `$HOME/.local/bin` (overridable via `DECLARAGENT_PREFIX`).
+
+Environment knobs:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DECLARAGENT_VERSION` | `latest` | Pin to a tag. Example: `v1.0.2`. |
+| `DECLARAGENT_PREFIX` | `$HOME/.local` | Install prefix. Binary lands at `$PREFIX/bin/declaragent`. |
+| `DECLARAGENT_BASE_URL` | GitHub releases | Release mirror. Used by CI smoke tests against staging. |
+| `DECLARAGENT_NO_CHECKSUM` | unset | Skip the SHA-256 verify. Never advised. |
+
+The installer source lives at `scripts/install.sh` in the repo.
+
+</TabItem>
+<TabItem value="npm" label="npm">
+
+```bash
+npm install -g @declaragent/cli
+```
+
+The npm package is a thin wrapper: its `postinstall` script downloads the same single-binary that the `curl` installer uses. You do **not** need Bun on your machine.
+
+Knobs:
+
+| Variable | Effect |
+| --- | --- |
+| `DECLARAGENT_NO_POSTINSTALL=1` | Skip the download. `npm install` still succeeds; the launcher prints a hint on first use. |
+| `DECLARAGENT_BASE_URL=<url>` | Override the release origin (use `file://<dir>` for offline mirrors). |
+| `DECLARAGENT_VERSION=vX.Y.Z` | Pin a specific tag. Defaults to `v<package.version>`. |
+
+See `packages/cli/bin/README.md` for the full flow, including re-running the postinstall manually.
+
+</TabItem>
+<TabItem value="brew" label="Homebrew">
+
+```bash
+brew install declaragent/tap/declaragent
+```
+
+The `declaragent/homebrew-tap` repo ships a stamped formula for every release. A homebrew-core submission is a v1.0.1 follow-up.
+
+Knobs are delegated to the curl installer — the formula's `install` block simply drops the pre-built binary into `#{bin}/declaragent`.
+
+</TabItem>
+</Tabs>
+
+## Verify
+
+```bash
+declaragent --version
+# declaragent 1.0.0
+```
+
+If the binary is on your `$PATH` and prints a version, you're done. Next: [your first agent](/quickstart/first-agent).
+
+## Troubleshooting
+
+- If the postinstall failed (npm path), re-run it by hand:
+  ```sh
+  cd $(npm root -g)/@declaragent/cli
+  node bin/postinstall.js
+  ```
+- If the curl installer bailed with a checksum mismatch, retry — transient CDN corruption is the usual culprit. Don't set `DECLARAGENT_NO_CHECKSUM`.
+- See [Troubleshooting → my install failed](/troubleshooting) for the flowchart.
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Windows-native binary is a post-v1.0 concern. For now, run under WSL2 + the npm-global path.
+</div>

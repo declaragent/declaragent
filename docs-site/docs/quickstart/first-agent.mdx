@@ -1,0 +1,73 @@
+---
+id: first-agent
+title: Your first agent
+sidebar_label: First agent
+sidebar_position: 3
+---
+
+# Your first agent
+
+After `declaragent --version` prints cleanly, scaffold an agent from the built-in template catalog.
+
+## Run the wizard
+
+```bash
+declaragent init
+```
+
+The wizard walks you through:
+
+1. **Pick a provider.** Anthropic (recommended — Claude), OpenAI, or OpenRouter. Local providers (Ollama, LM Studio, llama.cpp) are also offered for offline laptops.
+2. **Authenticate.** Browser PKCE for OpenRouter, paste-key for the rest.
+3. **Pick a template.** Start with `concierge` — it has no webhook, so it runs on any laptop behind NAT.
+4. **Verify.** The wizard fires one `hello` call at the selected model to confirm the API key works.
+
+Non-interactive mode (for CI):
+
+```bash
+declaragent init \
+  --template concierge \
+  --provider anthropic \
+  --skip-verify
+```
+
+See `declaragent init --help` for every flag.
+
+## What got scaffolded
+
+The [`concierge`](/cookbook/concierge) template produces:
+
+```
+./
+├── agent.yaml
+├── .env.example
+├── skills/
+│   └── concierge.md
+└── README.md           # quickstart for THIS agent
+```
+
+`agent.yaml` is the only file you edit regularly. Everything else is starter scaffolding you can re-generate.
+
+## Talk to it
+
+```bash
+declaragent
+```
+
+This starts the interactive REPL. Ask it anything about the current directory — the `concierge` template lets the agent use the built-in `Read` / `Glob` / `Grep` tools to find answers.
+
+## Screenshots
+
+_Screenshot: init wizard provider picker — placeholder, landing 2026-Q2._
+
+_Screenshot: REPL hello message — placeholder, landing 2026-Q2._
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Real screenshots captured against the v1.0 build.
+</div>
+
+## Next steps
+
+- Deploy it: [Deploy to Cloud Run](/cookbook/deploy-cloud-run).
+- Add a channel: see the per-template cookbook pages — [Slack concierge](/cookbook/concierge), [on-call webhook](/cookbook/oncall-escalator), [PR review](/cookbook/pr-review).
+- Reference the full [CLI](/reference/cli) and [`agent.yaml` schema](/reference/agent-yaml).

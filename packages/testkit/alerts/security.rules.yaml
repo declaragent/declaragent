@@ -1,0 +1,72 @@
+# Security alerts. Most rules key on metrics emitted by slices 3-5
+# (secret resolver + unified audit sink). The rules are safe to load
+# before those emitters ship: Prometheus treats a non-existent metric as
+# an empty vector — no rule will fire until the producer is live.
+
+groups:
+  - name: declaragent.security
+    interval: 30s
+    rules:
+      - alert: SecretAccessDeniedBurst
+        expr: |
+          sum by (tenant_id) (rate(secret_access_denied_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} secret_access denial burst"
+          description: |
+            More than 0.1 denials/s on {{ $labels.tenant_id }}. Either
+            a misconfigured ref is being hammered in a retry loop or
+            someone is probing the secret-scope boundary. Check the
+            audit log for the offending `requester` + `ref`.
+          runbook_url: "docs/runbooks/secret-access-denied-spike.md"
+
+      - alert: TenantBoundaryViolationObserved
+        expr: |
+          sum by (source_tenant_id, resource) (increase(tenant_boundary_violation_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "Tenant boundary violation from {{ $labels.source_tenant_id }}"
+          description: |
+            Any boundary violation is a Phase-6 red-line event. The
+            source tenant attempted to access a {{ $labels.resource }}
+            belonging to another tenant. Check the full audit record
+            for attacker intent (misconfig vs malicious).
+          runbook_url: "docs/runbooks/tenant-boundary-violation.md"
+
+      - alert: SecretRotationOverdue
+        expr: |
+          max by (provider, ref) (secret_rotation_age_seconds) > 180 * 86400
+        for: 10m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "Secret {{ $labels.ref }} not rotated in > 180d"
+          description: |
+            The secret at {{ $labels.ref }} on provider
+            {{ $labels.provider }} has not rotated in over 180 days.
+            Schedule rotation before it hits the hard-error threshold
+            (defaults to 180d → error).
+          runbook_url: "docs/runbooks/secret-rotation-overdue.md"
+
+      - alert: WebhookAuthFailureSpike
+        expr: |
+          sum by (triggerId) (rate(webhook_auth_failures_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "Webhook {{ $labels.triggerId }} auth failure burst"
+          description: |
+            HMAC / bearer failures exceeding 0.5/s for 5 minutes — the
+            webhook endpoint is likely being probed. Verify the
+            configured secret has not rotated; check upstream sender
+            config.
+          runbook_url: "docs/runbooks/webhook-auth-failure-spike.md"

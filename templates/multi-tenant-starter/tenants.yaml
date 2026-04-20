@@ -1,0 +1,57 @@
+version: 1
+strategy:
+  # Per-tenant bus keeps each tenant's in-flight events fully isolated.
+  # Use `shared-with-filter` only when the event volume is low enough
+  # that a single bus with tenant-id filters is sufficient.
+  bus: per-tenant
+  secretProvider: vault
+
+tenants:
+  # Tenant 1: the ACME production workspace. Tight quotas, US residency,
+  # strict extension allowlist. Uses the `acme/` Vault path for secrets.
+  - id: acme-prod
+    displayName: "ACME Production"
+    residency: us
+    auditRetentionDays: 365
+    quotas:
+      maxActiveSessions: 500
+      dailyTokenUSD: 250
+      maxConcurrentToolCalls: 20
+    labels:
+      env: production
+      plan: enterprise
+    secretScopes:
+      - secret/data/acme/*
+    extensions:
+      allow:
+        - "channel-slack"
+        - "tool:Read"
+        - "tool:Glob"
+        - "tool:Grep"
+      deny:
+        - "plugin-experimental-*"
+
+  # Tenant 2: the Beta customer. Softer quotas, EU residency, looser
+  # allowlist so they can try more extensions during the evaluation
+  # period. Audit retention is short — matches a 90-day GDPR window.
+  - id: beta-tenant
+    displayName: "Beta Customer"
+    residency: eu
+    auditRetentionDays: 90
+    quotas:
+      maxActiveSessions: 50
+      dailyTokenUSD: 25
+      maxConcurrentToolCalls: 5
+    labels:
+      env: beta
+      plan: trial
+    secretScopes:
+      - secret/data/beta/*
+    extensions:
+      allow:
+        - "channel-slack"
+        - "channel-telegram"
+        - "source-webhook"
+        - "tool:*"
+      deny:
+        - "tool:Bash"

@@ -1,0 +1,31 @@
+version: '3.8'
+
+# Mosquitto 2.x requires explicit anonymous + listener config. The inline
+# command flags below are the minimum to run an anonymous-access MQTT
+# broker on localhost:1883 suitable for the integration test.
+#
+# Usage (from the package root):
+#   docker compose -f test/fixtures/docker-compose.yml up -d
+#   MQTT_INTEGRATION=1 MQTT_BROKER_URL=mqtt://localhost:1883 bun test test/integration.test.ts
+#   docker compose -f test/fixtures/docker-compose.yml down -v
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: declaragent-mqtt-mosquitto
+    command: |
+      sh -c '
+      cat >/mosquitto/config/mosquitto.conf <<EOF
+      listener 1883 0.0.0.0
+      allow_anonymous true
+      persistence false
+      EOF
+      exec mosquitto -c /mosquitto/config/mosquitto.conf
+      '
+    ports:
+      - '1883:1883'
+    healthcheck:
+      test: ['CMD-SHELL', 'mosquitto_sub -h localhost -t ping -E -i health -W 1 || exit 0']
+      interval: 3s
+      timeout: 3s
+      retries: 10

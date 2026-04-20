@@ -1,0 +1,288 @@
+---
+id: rpc
+title: Agent RPC
+sidebar_label: Agent RPC
+sidebar_position: 7
+---
+
+# Agent RPC
+
+Agents in separate deployments call each other like typed functions.
+The runtime ships a versioned envelope, a producer tool, a consumer
+source, and a transport-agnostic `RpcTransport` interface every broker
+plugin implements.
+
+:::info Since v1.1
+Introduced in v1.1. Frozen surfaces are tagged `@since 1.1.0`.
+:::
+
+## At a glance
+
+```
+  Producer daemon                                  Consumer daemon
+  ───────────────                                  ───────────────
+       tool call                                   source adapter
+  ┌────────────────┐        ┌─────────┐        ┌──────────────────┐
+  │ RequestAgent   ├───────▶│  broker ├───────▶│ agent-inbox      │
+  │  (sync mode)   │        │  (Kafka │        │ (decode + route) │
+  └────────────────┘        │  / NATS │        └────────┬─────────┘
+          ▲                 │  /  …)  │                 │
+          │                 └────┬────┘                 ▼
+          │   (response)         │            ┌──────────────────┐
+          └─────────────────────┴────────────▶│ review-pr skill  │
+                                              │  ctx.respond(…)  │
+                                              └──────────────────┘
+```
+
+Every hop carries the same `correlationId`. `tenantId` is enforced on
+both sides.
+
+## The envelope
+
+Wire format frozen as `AgentRpcEnvelope` v1:
+
+```ts
+interface AgentRpcEnvelope {
+  version: 1;
+  kind: 'request' | 'response' | 'event';
+  messageId: string;
+  correlationId: string;
+  causedBy?: string;
+  from: `agent://${string}`;
+  to: `agent://${string}`;
+  capability: string;
+  replyTo?: `kafka://…` | `nats://…` | `sqs://…` | `amqp://…` | `mqtt://…` | `memory://…`;
+  deadline?: number;       // ms-epoch
+  tenantId?: string;
+  headers?: Record<string, string>;
+  payload: unknown;
+  auth?: { kind: 'internal' } | { kind: 'hmac'; keyId: string; signature: string };
+}
+```
+
+- **Strict mode.** Unknown top-level fields are rejected. A typo'd field
+  fails closed on the receiver rather than being silently ignored.
+- **Additive evolution.** v1.x adds new optional fields only. Breaking
+  changes bump to `version: 2`.
+- **Canonical HMAC form.** `canonicalizeForSigning(envelope)` produces
+  the byte string signed by `auth.hmac`. The `auth` field itself is
+  excluded; key order is deterministic.
+
+Implemented in `@declaragent/core/src/rpc/envelope.ts`.
+
+## Topic convention
+
+Defaults, overridable per-agent:
+
+| Topic | Purpose |
+| --- | --- |
+| `agents.<agent-id>.requests` | Durable inbox. Receives `request` envelopes. |
+| `agents.<agent-id>.responses` | Ephemeral replyTo target. |
+| `agents.<agent-id>.events` | Optional pub/sub fan-out. |
+
+Multi-tenant extension:
+
+```
+agents.<agent-id>.<tenantId>.requests
+agents.<agent-id>.<tenantId>.responses
+```
+
+Per-transport quirks (Kafka partition keys, SQS FIFO, NATS JetStream,
+etc.) are documented in each transport plugin's README.
+
+## `RequestAgent` tool
+
+```yaml
+# agent.yaml
+tools:
+  defaults:
+    - RequestAgent
+```
+
+```ts
+// From a skill:
+const { status, response, correlationId, latencyMs, error } =
+  await RequestAgent({
+    to: 'agent://pr-reviewer',
+    capability: 'review-pr',
+    payload: { prUrl: '…' },
+    timeoutMs: 60_000,   // default 30_000; clamped to [1, 600_000]
+    mode: 'sync',        // or 'async' | 'fire-and-forget'
+  });
+```
+
+| Mode | Behavior |
+| --- | --- |
+| `sync` (default) | Publishes the request, registers a pending entry, `await`s a matching response. Returns `{ status: 'ok' \| 'error' \| 'timeout' \| 'abandoned' \| 'busy', … }`. |
+| `async` | Publishes and returns `{ status: 'ok', correlationId }` immediately. Response lands as an `agent.rpc.response` event on the local bus. |
+| `fire-and-forget` | Publishes an `event`-kind envelope. No `replyTo`, no correlation. |
+
+**Permission key**: `RequestAgent:<to>/<capability>`. Glob-matched, so
+operators can scope calls:
+
+```yaml
+permissions:
+  allow:
+    - "RequestAgent:agent://pr-reviewer/*"
+  deny:
+    - "RequestAgent:agent://billing-bot/*"
+```
+
+## `agent-inbox` source
+
+```yaml
+# event-sources.yaml
+- type: agent-inbox
+  config:
+    id: inbox
+    agentId: pr-reviewer
+    # Defaults to `agents.<agentId>.requests` / `.responses`.
+    # requestsTopic: agents.pr-reviewer.requests
+    # responsesTopic: agents.pr-reviewer.responses
+    # eventsTopic: agents.pr-reviewer.events   # optional
+  delivery:
+    mode: at-least-once
+    ackStrategy: after-dispatch
+    idempotency:
+      strategy: transport-natural
+      store: sqlite
+      ttlMs: 900000
+  limits:
+    concurrency: 4
+    maxInflight: 64
+```
+
+Internally, the adapter:
+
+1. Decodes + Zod-validates the envelope. Failure → DLQ.
+2. Verifies `envelope.tenantId` against the local bus scope (multi-tenant). Mismatch → audit + drop.
+3. Verifies `envelope.auth` when the agent's config requires it.
+4. Dispatches by envelope `kind`:
+   - `request` → publish `AgentEvent { target: { type: 'skill', name: capability } }`.
+   - `response` → settle the producer-side pending-RPC registry.
+   - `event` → broadcast on the local bus.
+
+## `ctx.respond` — the reply hook
+
+When a skill is invoked via an RPC request, the engine wires
+`ctx.respond` onto the `ToolContext`:
+
+```ts
+await ctx.respond?.({
+  ok: true,
+  data: { verdict: 'comment', findings: [/* … */], summary: '…' },
+});
+// or:
+await ctx.respond?.({
+  ok: false,
+  error: { code: 'EINVAL', message: 'prUrl is required' },
+});
+```
+
+- **Default hook.** Skip `ctx.respond` and the runtime publishes
+  `{ ok: true, data: assistant.final.content }` automatically on
+  turn-end. REPL-style skills "just work" over RPC.
+- **Streaming.** `ctx.respond` is idempotent per correlationId —
+  multiple calls produce successive response-kind envelopes, useful for
+  progress updates.
+
+## Discovery — `capabilities.yaml`
+
+Optional per-agent declaration of the RPC surface. Operators use it to
+document the API; future (v1.2) registry aggregation pulls from it.
+
+```yaml
+version: 1
+agent: agent://pr-reviewer
+transports:
+  - kind: kafka
+    brokers: ["${env:KAFKA_BROKERS}"]
+    topics:
+      requests: agents.pr-reviewer.requests
+      responses: agents.pr-reviewer.responses
+capabilities:
+  - name: review-pr
+    description: "Review a GitHub pull request and emit structured findings."
+    timeoutMs: 60000
+    idempotent: true
+    since: "1.1.0"
+    inputSchema:
+      type: object
+      properties:
+        prUrl: { type: string }
+      required: [prUrl]
+    outputSchema:
+      type: object
+      properties:
+        verdict: { enum: [approve, request-changes, comment] }
+        findings: { type: array }
+        summary: { type: string }
+```
+
+## Peer table — `rpc-peers.yaml`
+
+Producer-side routing. Resolves `agent://<id>` to concrete transport +
+topic.
+
+```yaml
+version: 1
+peers:
+  - agent: agent://pr-reviewer
+    transports:
+      - kind: kafka
+        brokers: ["${env:KAFKA_BROKERS}"]
+        topics:
+          requests: agents.pr-reviewer.requests
+  - agent: agent://translator
+    transports:
+      - kind: nats
+        servers: ["nats://nats.internal:4222"]
+        subjects:
+          requests: agents.translator.requests
+```
+
+Inspect at runtime:
+
+```bash
+declaragent rpc peers              # print the effective peer table
+declaragent rpc peers --verify     # live-ping every peer's inbox
+declaragent rpc capabilities       # print this agent's capabilities
+```
+
+## Security
+
+| Mode | When to use |
+| --- | --- |
+| `auth: { kind: 'internal' }` | Intra-cluster deployments that trust the bus scope + broker ACLs. Default. |
+| `auth: { kind: 'hmac', keyId, signature }` | Shared-secret envelope integrity. Receiver canonicalizes via `canonicalizeForSigning` and compares SHA-256. |
+
+Agents that require signed envelopes declare it in `agent.yaml`:
+
+```yaml
+rpc:
+  auth:
+    required: hmac
+    keysRef: ${secret:vault:kv/acme/rpc-keys}
+```
+
+mTLS / JWT / SPIFFE are transport-layer concerns — each transport
+plugin exposes a `validateAuth(envelope, raw, transportCtx)` hook.
+
+## Error codes
+
+See [Troubleshooting → error codes](/troubleshooting/error-codes) for
+the full list. The RPC-specific codes:
+
+- `EAGENTRPC_TIMEOUT` — sync-mode deadline elapsed before a response.
+- `EAGENTRPC_ABANDONED` — daemon shutdown or connection loss.
+- `EAGENTRPC_BUSY` — pending-RPC registry at capacity.
+- `EAGENTRPC_NO_PEER` — `agent://<id>` not in `rpc-peers.yaml`.
+- `EAGENTRPC_NO_TRANSPORT` — resolved transport kind has no plugin.
+
+## Related
+
+- [Cookbook → Agent RPC](/cookbook/agent-rpc) — walkthrough with the
+  `rpc-client` + `rpc-server` templates.
+- [Reference → extensions](/reference/extensions) — `@declaragent/plugin-agent-rpc`
+  and per-transport plugins.
+- `docs/AGENT_RPC_PLAN.md` in the repo — design doc.

@@ -1,0 +1,59 @@
+---
+id: concierge
+title: Concierge — Slack Q&A bot
+sidebar_label: Concierge
+---
+
+# `concierge` template
+
+Minimal Slack Q&A bot via Socket Mode. One skill (`concierge.md`) uses the provider-default `Read` / `Glob` / `Grep` tools to answer questions about the local repo. No webhook — works on any laptop behind NAT.
+
+## Scaffold
+
+```bash
+declaragent init --template concierge --provider anthropic
+```
+
+Files produced:
+
+```
+./
+├── agent.yaml
+├── skills/concierge.md
+├── channels.yaml            # Slack Socket Mode config
+├── .env.example
+└── README.md
+```
+
+See the canonical starter at [`templates/concierge/`](https://github.com/declaragent/declaragent/tree/main/templates/concierge) — the wizard unpacks that directory verbatim.
+
+## Configure
+
+1. Create a Slack app with Socket Mode enabled.
+2. Grant `app_mentions:read`, `chat:write`, `im:history`, `reactions:write`.
+3. Copy the bot token + app-level token into `.env` (see `.env.example`).
+
+## Run locally
+
+```bash
+declaragent daemon &
+declaragent
+```
+
+Mention the bot in a channel — the agent greets, reads the repo, and replies in-thread.
+
+## Key points
+
+- `temperature: 0` keeps Q&A answers reproducible.
+- Tools are restricted to `Read` / `Glob` / `Grep` — no shell, no outbound HTTP.
+- The `eyes` emoji reaction fires immediately so senders know the agent saw the message.
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Slack app manifest with one-click install
+button + screenshot of the running bot.
+</div>
+
+## Related
+
+- [Quickstart](/quickstart/first-agent) — this is the template the wizard walkthrough uses.
+- [Deploy to Cloud Run](/cookbook/deploy-cloud-run) — Cloud Run deploy path tested against this template.

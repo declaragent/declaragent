@@ -1,0 +1,29 @@
+# PR-reviewer inbox: every `review-pr` request lands here. The adapter
+# decodes the envelope, verifies tenant scope (if multi-tenant), and
+# dispatches to the `review-pr` skill with `inputs.payload` carrying the
+# caller's payload.
+- type: agent-inbox
+  config:
+    id: inbox
+    agentId: pr-reviewer
+    # Swap memory → kafka below when running across processes:
+    # requestsTopic: agents.pr-reviewer.requests
+    # responsesTopic: agents.pr-reviewer.responses
+  delivery:
+    # `after-dispatch` means we only ack the broker after the skill (and
+    # its `ctx.respond`) completes. If the reviewer crashes mid-turn,
+    # the broker redelivers.
+    mode: at-least-once
+    ackStrategy: after-dispatch
+    maxRetries: 3
+    retryBackoff:
+      initialMs: 500
+      maxMs: 10000
+      jitter: true
+    idempotency:
+      strategy: transport-natural
+      store: sqlite
+      ttlMs: 900000
+  limits:
+    concurrency: 4
+    maxInflight: 64

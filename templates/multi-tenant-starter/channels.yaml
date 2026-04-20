@@ -1,0 +1,62 @@
+version: 1
+# Per-tenant Slack channels. The daemon binds each channel to its
+# matching tenant by the `tenantId` field. `meta.tenantId` stamps
+# through to every downstream event automatically.
+channels:
+  - id: acme-slack
+    tenantId: acme-prod
+    type: slack
+    transport:
+      mode: socket
+      botToken: ${env:ACME_SLACK_BOT_TOKEN}
+      appToken: ${env:ACME_SLACK_APP_TOKEN}
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: broadcast
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 2
+      retryBackoff:
+        initialMs: 100
+        maxMs: 2000
+        jitter: true
+      idempotency:
+        strategy: transport-natural
+        ttlMs: 60000
+        store: memory
+    limits:
+      concurrency: 4
+      maxInflight: 128
+
+  - id: beta-slack
+    tenantId: beta-tenant
+    type: slack
+    transport:
+      mode: socket
+      botToken: ${env:BETA_SLACK_BOT_TOKEN}
+      appToken: ${env:BETA_SLACK_APP_TOKEN}
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: broadcast
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 2
+      retryBackoff:
+        initialMs: 100
+        maxMs: 2000
+        jitter: true
+      idempotency:
+        strategy: transport-natural
+        ttlMs: 60000
+        store: memory
+    limits:
+      concurrency: 2
+      maxInflight: 64

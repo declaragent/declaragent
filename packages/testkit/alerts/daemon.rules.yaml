@@ -1,0 +1,78 @@
+# Daemon-level alerts — bus, session, and control-plane health signals.
+# Some metrics here are drafts: the daemon emits
+# `source_inflight`-style gauges today; session spawn + heartbeat
+# counters land with slices 6-8. Rules stay dormant on missing metrics.
+
+groups:
+  - name: declaragent.daemon
+    interval: 30s
+    rules:
+      - alert: BusInflightStuckHigh
+        expr: |
+          max_over_time(bus_inflight[10m]) > 100
+            and
+          rate(bus_publishes_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+          component: daemon
+        annotations:
+          summary: "Event bus is stuck with high in-flight count"
+          description: |
+            The bus has > 100 in-flight publishes but zero publish rate
+            over the last 10 minutes. A subscriber is hung — inspect
+            `declaragent status` for slow subscribers and consider
+            restarting the affected handler.
+          runbook_url: "docs/runbooks/daemon-bus-inflight-stuck.md"
+
+      - alert: DaemonHeartbeatTimeout
+        expr: |
+          time() - max(daemon_last_heartbeat_seconds) > 60
+        for: 2m
+        labels:
+          severity: critical
+          component: daemon
+        annotations:
+          summary: "Daemon heartbeat stale by > 60s"
+          description: |
+            The daemon hasn't emitted a heartbeat in over a minute.
+            Either the process is hung, paused under breakpoints, or
+            the metrics pipeline is dropping samples. Page oncall.
+          runbook_url: "docs/runbooks/daemon-heartbeat-timeout.md"
+
+      - alert: SessionSpawnStall
+        expr: |
+          sum(session_active) > 0
+            and
+          sum(rate(session_spawned_total[10m])) == 0
+            and
+          sum(rate(source_messages_received[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: daemon
+        annotations:
+          summary: "Sessions are active but none are spawning"
+          description: |
+            The daemon still has active sessions but hasn't spawned a
+            new one in 10 minutes despite inbound traffic. Likely
+            causes: dispatcher idempotency cache full, session-busy
+            backpressure, or a hung session factory.
+          runbook_url: "docs/runbooks/daemon-session-spawn-stall.md"
+
+      - alert: BusPressureSustained
+        expr: |
+          min_over_time(bus_inflight[10m]) > 200
+        for: 10m
+        labels:
+          severity: warning
+          component: daemon
+        annotations:
+          summary: "Event bus sustained > 200 in-flight publishes"
+          description: |
+            Bus backpressure has held above 200 in-flight for 10
+            minutes. Source adapters with bus-pressure wiring will be
+            paused continuously; non-wired sources may be dropping
+            messages on the floor. Scale handlers or add adapters to
+            the pressure listener.
+          runbook_url: "docs/runbooks/daemon-bus-pressure-sustained.md"

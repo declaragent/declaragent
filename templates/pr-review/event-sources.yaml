@@ -1,0 +1,24 @@
+# GitHub `pull_request` webhook. GitHub signs the body with the secret
+# you configure in the repo's webhook settings; we verify it server-side
+# with HMAC-SHA256 on the `X-Hub-Signature-256` header. The
+# `X-GitHub-Delivery` UUID doubles as the idempotency key so GitHub's
+# at-least-once retry policy doesn't produce duplicate reviews.
+- type: webhook
+  config:
+    id: github-pr
+    path: /webhook/github
+    auth:
+      kind: hmac
+      algorithm: sha256
+      secretEnv: GITHUB_WEBHOOK_SECRET
+      headerName: X-Hub-Signature-256
+    bodyAs: json
+    idempotencyKeyHeader: X-GitHub-Delivery
+    # Generous limit — GitHub's PR payload can be tens of KB on large diffs.
+    maxBodyBytes: 524288
+    rateLimit:
+      max: 120
+      windowMs: 60000
+    target:
+      kind: skill
+      name: review

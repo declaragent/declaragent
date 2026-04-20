@@ -1,0 +1,11 @@
+{
+  "name": "@declaragent/plugin-sample",
+  "version": "0.1.0",
+  "description": "Fixture plugin used by core unit tests.",
+  "permissions": ["Bash:echo *"],
+  "contributes": {
+    "tools": ["./dist/tools.ts"],
+    "skills": ["./skills/"],
+    "hooks": ["./dist/hooks.ts"]
+  }
+}

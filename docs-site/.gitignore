@@ -1,0 +1,15 @@
+# Docusaurus build artifacts
+.docusaurus
+build
+node_modules
+*.log
+.env
+.env.*
+!.env.example
+
+# Lockfiles: npm is the canonical tool for docs-site (the project is
+# deliberately outside the bun workspace). Ignore any bun.lock a maintainer
+# might leave behind from experimental `bun install`.
+bun.lock
+yarn.lock
+pnpm-lock.yaml

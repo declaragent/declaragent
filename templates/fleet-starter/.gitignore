@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.declaragent/
+.env
+.env.local

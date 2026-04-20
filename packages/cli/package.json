@@ -1,0 +1,44 @@
+{
+  "name": "@declaragent/cli",
+  "version": "0.1.0",
+  "description": "Interactive REPL for Declaragent.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "declaragent": "./bin/declaragent.js"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "bin/declaragent.js",
+    "bin/postinstall.js",
+    "bin/README.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "dev": "bun run src/index.tsx",
+    "clean": "rm -rf dist bin/declaragent-binary",
+    "postinstall": "node ./bin/postinstall.js"
+  },
+  "dependencies": {
+    "@declaragent/core": "workspace:*",
+    "@declaragent/plugin-agent-rpc": "workspace:*",
+    "ink": "^5.0.1",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1"
+  },
+  "optionalDependencies": {
+    "@declaragent/channel-whatsapp": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

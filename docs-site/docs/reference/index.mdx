@@ -1,0 +1,31 @@
+---
+id: index
+title: Reference
+slug: /reference
+sidebar_label: Overview
+sidebar_position: 1
+---
+
+# Reference
+
+Canonical source-of-truth for every public surface the v1.0 spec pins.
+
+| Page | What it covers |
+| --- | --- |
+| [`agent.yaml` schema](/reference/agent-yaml) | Every field validated by the Zod schema, with examples and `since` versions. |
+| [CLI](/reference/cli) | Every `declaragent <verb>`, auto-extracted from the binary's help strings. |
+| [Environment variables](/reference/env-vars) | Every `DECLARAGENT_*` (plus provider keys + adapter-specific keys) read at runtime. |
+| [Provider matrix](/reference/providers) | Streaming, tools, images, audio support per provider. |
+| [Extension registry](/reference/extensions) | Channel + source + plugin packages shipped by the monorepo. |
+| [Agent RPC](/reference/rpc) | Envelope, topic conventions, `RequestAgent`, `agent-inbox`, `ctx.respond`. _v1.1._ |
+| [Fleet](/reference/fleet) | `fleet.yaml` manifest, precedence rules, promote flow, deploy strategies, version skew. _v1.2._ |
+
+## Stability promise
+
+From v1.0 onwards, every surface in this section follows SemVer:
+
+- **Patch** (`v1.0.x`) — bug fixes, doc tweaks, new validation rules that accept a strict superset of existing configs.
+- **Minor** (`v1.1.0`) — new optional fields on `agent.yaml`, new CLI verbs, new adapter kinds.
+- **Major** (`v2.0.0`) — any breaking change. Requires a migration and a lead time.
+
+If you spot a surface that is under-documented, file an issue in [github.com/declaragent/declaragent](https://github.com/declaragent/declaragent/issues).

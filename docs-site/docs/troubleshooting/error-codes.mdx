@@ -1,0 +1,44 @@
+---
+id: error-codes
+title: Error-code reference
+sidebar_label: Error codes
+sidebar_position: 2
+---
+
+# Error-code reference
+
+Every `E*` code emitted by the core runtime. When a CLI command exits non-zero or a session aborts, the enclosing audit record carries one of these values.
+
+| Code | Meaning | Common cause | First action |
+| --- | --- | --- | --- |
+| `EINVAL` | Invalid input — config schema violation, malformed argument. | `agent.yaml` Zod validation failed, or a CLI flag was malformed. | Re-run with `--help`; compare against the [`agent.yaml` schema](/reference/agent-yaml). |
+| `EPERM` | Permission denied. | Permission gate blocked a tool call, or an external API returned 401/403. | Check the REPL's permission-mode dialog; see [Install](/quickstart/installing) for `--mode` flags. |
+| `EEXTCONFLICT` | Two extensions register the same id or the same channel name. | A plugin + a bundled adapter both claim, e.g., `Read`. | `declaragent extensions` — check the conflict report; remove one. |
+| `TENANT_BOUNDARY` | A message tried to cross tenant boundaries. | Per-tenant bus strategy detected a leak — usually a mis-wired channel. | See [runbook → tenant-boundary-violation](/troubleshooting/runbooks/tenant-boundary-violation). |
+| `EQUOTA` | Daily token budget or rate limit exceeded. | `dailyTokenUSD` or `requestsPerMinute` on the tenant/agent tripped. | Either bump the quota or wait for the UTC rollover. |
+| `ENOTOOL` | Tool id not registered. | Skill references a tool that isn't in `tools.defaults` / `tools.allow`. | Add the tool id to `agent.yaml` or remove the reference. |
+| `ENOSESSION` | Session id not found. | CLI command referenced a session that expired / was pruned. | `declaragent events list` to find an active session id. |
+| `EABORT` | Operation aborted. | User hit Ctrl-C, or the permission gate rejected a prompt. | None — expected on user abort. Inspect stderr if unexpected. |
+| `EAGENTRPC_TIMEOUT` | Sync-mode `RequestAgent` call deadline elapsed. | Peer didn't respond within `timeoutMs`. | Bump `timeoutMs`; check peer health with `declaragent rpc peers --verify`. |
+| `EAGENTRPC_ABANDONED` | Pending RPC lost (daemon shutdown / connection loss). | Producer daemon restarted while awaiting a response. | Retry — the caller owns retry policy. |
+| `EAGENTRPC_BUSY` | Pending-RPC registry at capacity. | Producer is issuing `RequestAgent` faster than responses return. | Back off, retry; if chronic, increase `pending` registry capacity or use `mode: 'async'`. |
+| `EAGENTRPC_NO_PEER` | Target `agent://<id>` not in `rpc-peers.yaml`. | Peer table missing or misspelled. | `declaragent rpc peers` — add the peer. |
+| `EAGENTRPC_NO_TRANSPORT` | Resolved transport kind has no plugin registered. | Peer table references, e.g., Kafka, but `@declaragent/plugin-agent-rpc-kafka` isn't installed. | Install the transport plugin or swap to an installed one. |
+
+## How error codes surface
+
+- **CLI exit code.** Non-zero exit + stderr text naming the code.
+- **Audit log.** Each failure is written to the tenant's audit log with the code, timestamp, and a sanitized cause.
+- **Metrics.** Codes are grouped into counters (`engine.errors.total{code=...}`, `channel.outbound.errors.total{code=...}`).
+- **Alerts.** The `security.rules.yaml` and `daemon.rules.yaml` rule files fire on sustained spikes of `EPERM`, `TENANT_BOUNDARY`, `EQUOTA`.
+
+## Related
+
+- [Runbook index](/troubleshooting/runbook-index) — runbook per alert.
+- [CLI → `declaragent audit query`](/reference/cli) — search audit records by code.
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] One dedicated MDX page per code with the
+full signal chain (emission path → audit kind → metric → alert →
+runbook).
+</div>

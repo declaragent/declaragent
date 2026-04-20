@@ -1,0 +1,40 @@
+---
+id: index
+title: Cookbook
+slug: /cookbook
+sidebar_label: Overview
+sidebar_position: 1
+---
+
+# Cookbook
+
+Hands-on, task-shaped guides. Each page is a complete working example — `curl`-able, forkable, re-runnable.
+
+## Templates
+
+Five starter packs ship with the `declaragent init` wizard. Each page walks the template end-to-end.
+
+| Template | What it demonstrates |
+| --- | --- |
+| [`concierge`](/cookbook/concierge) | Minimal Slack Q&A bot (Socket Mode, provider-default tools) |
+| [`oncall-escalator`](/cookbook/oncall-escalator) | Alertmanager webhook → Claude triage → Slack DM |
+| [`pr-review`](/cookbook/pr-review) | GitHub webhook → Claude reviews the diff → inline review comments |
+| [`kafka-pipeline`](/cookbook/kafka-pipeline) | Kafka source + DLQ + daily cost budget |
+| [`multi-tenant-starter`](/cookbook/multi-tenant-starter) | Two tenants on one daemon, scoped extensions + quotas |
+| [`rpc-client` + `rpc-server`](/cookbook/agent-rpc) | Paired agents exchanging typed requests over agent-rpc _(v1.1)_ |
+| [`fleet-starter`](/cookbook/fleet-starter) | Two agents under one manifest + the full `declaragent fleet` workflow _(v1.2)_ |
+
+## Recipes
+
+Cross-cutting how-tos built on top of the runtime.
+
+| Recipe | Goal |
+| --- | --- |
+| [Deploy to GCP Cloud Run](/cookbook/deploy-cloud-run) | Get the `concierge` template live on Cloud Run in ten minutes. |
+| [Rotate a Vault secret](/cookbook/rotate-vault-secret) | Zero-downtime secret rotation using `declaragent secrets rotate`. |
+| [Run two tenants on one daemon](/cookbook/two-tenants-one-daemon) | Isolated state, extensions, and quotas — one process. |
+| [Trace a request in Grafana](/cookbook/grafana-tracing) | End-to-end OTel span from inbound → engine → outbound. |
+
+## Missing something?
+
+Open a discussion at [github.com/declaragent/declaragent/discussions](https://github.com/declaragent/declaragent/discussions) — cookbook pages are the quickest way to ship knowledge back to the community.

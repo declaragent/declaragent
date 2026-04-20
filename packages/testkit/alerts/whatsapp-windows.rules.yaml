@@ -1,0 +1,64 @@
+# WhatsApp conversation-window + template health alerts.
+#
+# Metrics referenced here match the Grafana dashboard in
+# packages/testkit/dashboards/whatsapp-windows.json. The dashboard was
+# drafted ahead of the channel-whatsapp adapter emitting them; these
+# alerts stay dormant until the adapter wires the metrics up (no rule
+# fires on an empty vector). That way the ops config for the adapter is
+# complete from day 1 of telemetry wiring.
+
+groups:
+  - name: declaragent.whatsapp
+    interval: 30s
+    rules:
+      - alert: WhatsAppTemplateRejectSpike
+        expr: |
+          sum by (id) (
+            rate(channel_template_sent_total{type="whatsapp", status=~"rejected|error"}[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: channels
+          platform: whatsapp
+        annotations:
+          summary: "WhatsApp {{ $labels.id }} template rejection rate > 5%"
+          description: |
+            Meta is rejecting > 5% of template sends. Likely causes:
+            template not approved, parameter mismatch, or opted-out
+            recipient. Tier health is at risk if sustained.
+          runbook_url: "docs/runbooks/whatsapp-template-reject-spike.md"
+
+      - alert: WhatsAppConversationWindowExpirySurge
+        expr: |
+          sum by (id) (rate(channel_conversation_window_expired_total{type="whatsapp"}[15m])) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+          component: channels
+          platform: whatsapp
+        annotations:
+          summary: "WhatsApp {{ $labels.id }} conversation windows expiring fast"
+          description: |
+            Conversation windows on {{ $labels.id }} are expiring at > 0.01/s
+            sustained. Either user engagement is dropping or the agent
+            is holding conversations open past Meta's 24h service window
+            without a template-initiated re-open.
+          runbook_url: "docs/runbooks/whatsapp-window-expiry-surge.md"
+
+      - alert: WhatsAppTierHealthDrop
+        expr: |
+          min_over_time(channel_whatsapp_tier_health[30m]) < 0.5
+        for: 30m
+        labels:
+          severity: critical
+          component: channels
+          platform: whatsapp
+        annotations:
+          summary: "WhatsApp {{ $labels.id }} tier health degraded"
+          description: |
+            Meta's reported tier health for {{ $labels.id }} has dropped
+            below 0.5 (yellow → red). Quality risk to the business
+            account — investigate template rejections + opt-out trends
+            immediately.
+          runbook_url: "docs/runbooks/whatsapp-tier-health-drop.md"

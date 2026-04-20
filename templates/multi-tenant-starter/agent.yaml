@@ -1,0 +1,28 @@
+name: multi-tenant-starter
+model: claude-sonnet-4-5
+temperature: 0
+maxTokens: 2048
+subagentDepthCap: 2
+systemPrompt: |
+  You are a shared agent running for multiple tenants behind the same
+  daemon. Every inbound event arrives with a `meta.tenantId` — never
+  cross tenant boundaries. Do not aggregate data across tenants, do
+  not log payloads with tenant ids visible to other tenants, do not
+  read or write files scoped to another tenant's data dir.
+
+  Hard rules:
+  - NEVER mention another tenant by name in a reply.
+  - NEVER reuse a conversation context across tenants.
+  - If the inbound event's `tenantId` is missing, refuse to process
+    and escalate to the audit log with kind `tenant.missing`.
+skills:
+  - skills/hello.md
+tools:
+  defaults:
+    - Read
+    - Glob
+    - Grep
+# Points the daemon at the per-tenant config. Per-tenant quotas,
+# scoped extensions, and residency all live in tenants.yaml.
+tenants:
+  - ./tenants.yaml

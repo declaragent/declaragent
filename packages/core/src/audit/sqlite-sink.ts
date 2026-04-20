@@ -1,0 +1,205 @@
+import { Database } from 'bun:sqlite';
+import { canonicalizeRecord, computeRecordHash, verifyEntries } from './chain-verify.js';
+import type {
+  EraseOptions,
+  ErasedAuditRecord,
+  RetentionPruneOptions,
+  StoredAuditEntry,
+  TenantAuditQuery,
+  TenantAuditRecord,
+  TenantAuditRecordKind,
+  TenantAuditSink,
+  VerifyReport,
+} from './types.js';
+
+/**
+ * Phase 6 slice-5 sqlite-backed {@link TenantAuditSink}.
+ *
+ * Every record lands in a single append-only table with a SHA-256 hash
+ * chain. The schema is deliberately minimal — one table, two indexes —
+ * so the sink can be swapped for Postgres / Kafka later without
+ * leaking storage details into callers.
+ *
+ * Threading model: `bun:sqlite` is synchronous + single-threaded, which
+ * matches our daemon's single-process model. All public methods are
+ * async for interface symmetry but perform a single synchronous
+ * transaction internally.
+ */
+
+export interface CreateSqliteAuditSinkOptions {
+  /** `:memory:` for tests, absolute path in production. */
+  path: string;
+  /** Injected clock (only used for timestamps the caller omits). */
+  now?: () => number;
+}
+
+interface RowShape {
+  seq: number;
+  ts: number;
+  tenant_id: string;
+  kind: string;
+  record_json: string;
+  prev_hash: string;
+  record_hash: string;
+}
+
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS audit_records (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    tenant_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    prev_hash TEXT NOT NULL,
+    record_hash TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_audit_tenant_ts
+    ON audit_records (tenant_id, ts);
+  CREATE INDEX IF NOT EXISTS idx_audit_tenant_kind
+    ON audit_records (tenant_id, kind);
+`;
+
+function tenantIdOf(record: TenantAuditRecord): string {
+  if (record.kind === 'tenant_boundary_violation') return record.sourceTenantId;
+  return record.tenantId;
+}
+
+export async function createSqliteAuditSink(
+  options: CreateSqliteAuditSinkOptions,
+): Promise<TenantAuditSink> {
+  const db = new Database(options.path);
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA synchronous = NORMAL;');
+  db.exec(SCHEMA);
+  const now = options.now ?? Date.now;
+
+  const tailStmt = db.prepare('SELECT record_hash FROM audit_records ORDER BY seq DESC LIMIT 1');
+  function latestHash(): string {
+    const row = tailStmt.get() as { record_hash: string } | null;
+    return row?.record_hash ?? '';
+  }
+
+  const insertStmt = db.prepare(
+    `INSERT INTO audit_records (ts, tenant_id, kind, record_json, prev_hash, record_hash)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+
+  async function record(input: TenantAuditRecord): Promise<void> {
+    const ts = (input as { ts?: number }).ts ?? now();
+    const stamped: TenantAuditRecord = { ...input, ts } as TenantAuditRecord;
+    const json = canonicalizeRecord(stamped);
+    const prev = latestHash();
+    const hash = await computeRecordHash(prev, stamped);
+    insertStmt.run(ts, tenantIdOf(stamped), stamped.kind, json, prev, hash);
+  }
+
+  function rowToEntry(row: RowShape): StoredAuditEntry {
+    const record = JSON.parse(row.record_json) as TenantAuditRecord;
+    return {
+      seq: row.seq,
+      record,
+      prevHash: row.prev_hash,
+      recordHash: row.record_hash,
+    };
+  }
+
+  async function query(q: TenantAuditQuery = {}): Promise<readonly StoredAuditEntry[]> {
+    const conditions: string[] = [];
+    const args: (string | number)[] = [];
+    if (q.tenantId) {
+      conditions.push('tenant_id = ?');
+      args.push(q.tenantId);
+    }
+    if (q.kind) {
+      const kinds = Array.isArray(q.kind) ? q.kind : [q.kind];
+      const placeholders = kinds.map(() => '?').join(',');
+      conditions.push(`kind IN (${placeholders})`);
+      for (const k of kinds) args.push(k);
+    }
+    if (q.sinceMs !== undefined) {
+      conditions.push('ts >= ?');
+      args.push(q.sinceMs);
+    }
+    if (q.untilMs !== undefined) {
+      conditions.push('ts <= ?');
+      args.push(q.untilMs);
+    }
+    if (q.search) {
+      conditions.push('record_json LIKE ?');
+      args.push(`%${q.search}%`);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const order = q.order === 'desc' ? 'DESC' : 'ASC';
+    const limit = q.limit ?? 1000;
+    const offset = q.offset ?? 0;
+    args.push(limit);
+    args.push(offset);
+    const sql = `SELECT * FROM audit_records ${where} ORDER BY seq ${order} LIMIT ? OFFSET ?`;
+    const rows = db.prepare(sql).all(...args) as RowShape[];
+    return rows.map(rowToEntry);
+  }
+
+  async function erase(options: EraseOptions): Promise<number> {
+    const rows = db.prepare('SELECT * FROM audit_records ORDER BY seq ASC').all() as RowShape[];
+    const update = db.prepare(
+      `UPDATE audit_records
+         SET kind = ?,
+             record_json = ?
+         WHERE seq = ?`,
+    );
+    let erased = 0;
+    const tx = db.transaction((targets: RowShape[]) => {
+      for (const row of targets) {
+        const original = JSON.parse(row.record_json) as TenantAuditRecord;
+        if (!options.matches(original)) continue;
+        const tombstone: ErasedAuditRecord = {
+          kind: 'erased',
+          ts: row.ts,
+          tenantId: row.tenant_id,
+          originalKind: row.kind,
+          erasedAt: now(),
+          reason: options.reason,
+        };
+        update.run('erased', canonicalizeRecord(tombstone), row.seq);
+        erased += 1;
+      }
+    });
+    tx(rows);
+    return erased;
+  }
+
+  async function verify(tenantId?: string): Promise<VerifyReport> {
+    const rows = tenantId
+      ? (db
+          .prepare('SELECT * FROM audit_records WHERE tenant_id = ? ORDER BY seq ASC')
+          .all(tenantId) as RowShape[])
+      : (db.prepare('SELECT * FROM audit_records ORDER BY seq ASC').all() as RowShape[]);
+    return verifyEntries(rows.map(rowToEntry));
+  }
+
+  async function prune(opts: RetentionPruneOptions): Promise<number> {
+    const clock = opts.now ?? now;
+    const cutoff = clock() - opts.retentionDays * 24 * 60 * 60 * 1000;
+    const res = db
+      .prepare('DELETE FROM audit_records WHERE tenant_id = ? AND ts < ?')
+      .run(opts.tenantId, cutoff);
+    // Bun exposes `changes` on the run result.
+    return Number((res as { changes?: number }).changes ?? 0);
+  }
+
+  async function close(): Promise<void> {
+    db.close();
+  }
+
+  return { record, query, erase, verify, prune, close };
+}
+
+/**
+ * Minimal sentinel so consumers can guard on "is the record a tombstone".
+ */
+export function isErasedRecord(record: TenantAuditRecord): record is ErasedAuditRecord {
+  return record.kind === 'erased';
+}
+
+export type { TenantAuditRecordKind };

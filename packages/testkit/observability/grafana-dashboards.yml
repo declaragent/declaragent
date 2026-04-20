@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: Declaragent
+    orgId: 1
+    folder: Declaragent
+    type: file
+    disableDeletion: false
+    editable: true
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

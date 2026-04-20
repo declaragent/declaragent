@@ -1,0 +1,73 @@
+name: Cloud Run soak
+
+# Phase 7 slice 6. Nightly smoke for `declaragent deploy gcp-cloud-run`.
+#
+# Slice 6 scope: run the artifact generator against the `concierge`
+# template in a scratch directory and assert the four expected artifacts
+# exist (Dockerfile, .dockerignore, service.yaml, README.md). This does
+# NOT deploy to a real GCP project — that's the aspirational nightly
+# tracked for post-v1.0 once a scratch GCP project + service account is
+# wired through GitHub OIDC:
+#
+#   TODO(post-v1.0): `gcloud run services replace` → Slack ping → assert
+#   the daemon's /health returns 200. Gated behind a separate workflow
+#   secret so forks never accidentally burn GCP credits.
+
+on:
+  schedule:
+    # 03:00 UTC every day — off-peak for every timezone we're likely to
+    # wake up in when an artifact generator regresses.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: cloud-run-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    name: Generate deploy artifacts for concierge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Stage concierge template into scratch dir
+        run: |
+          mkdir -p /tmp/soak-concierge
+          cp templates/concierge/agent.yaml /tmp/soak-concierge/
+          cp templates/concierge/channels.yaml /tmp/soak-concierge/
+
+      - name: Run deployGcpCloudRun against the concierge template
+        run: |
+          bun --cwd /tmp/soak-concierge -e '
+            import { deployGcpCloudRun } from "${{ github.workspace }}/packages/cli/src/deploy-cli.ts";
+            const code = await deployGcpCloudRun({
+              agentYamlPath: "/tmp/soak-concierge/agent.yaml",
+              outDir: "/tmp/soak-concierge/.declaragent/deploy",
+              project: "soak-test-project",
+              region: "us-central1",
+              force: true,
+            });
+            if (code !== 0) { console.error("deploy exited", code); process.exit(1); }
+          '
+
+      - name: Assert the four artifacts exist
+        run: |
+          set -euo pipefail
+          for f in Dockerfile .dockerignore service.yaml README.md; do
+            path="/tmp/soak-concierge/.declaragent/deploy/$f"
+            test -s "$path" || { echo "missing or empty: $path"; exit 1; }
+          done
+          echo "all four deploy artifacts present and non-empty"
+
+      - name: Dump service.yaml for manual inspection on failure
+        if: failure()
+        run: cat /tmp/soak-concierge/.declaragent/deploy/service.yaml || true

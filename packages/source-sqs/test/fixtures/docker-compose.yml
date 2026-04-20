@@ -1,0 +1,29 @@
+version: '3.8'
+
+# LocalStack exposes an SQS-compatible endpoint at http://localhost:4566.
+# `SERVICES=sqs` boots only the SQS service, keeping startup around 3s.
+#
+# Usage (from the package root):
+#   docker compose -f test/fixtures/docker-compose.yml up -d
+#   SQS_INTEGRATION=1 bun test test/integration.test.ts
+#   docker compose -f test/fixtures/docker-compose.yml down -v
+
+services:
+  localstack:
+    image: localstack/localstack:3.7
+    container_name: declaragent-sqs-localstack
+    environment:
+      SERVICES: sqs
+      DEBUG: '0'
+      LS_LOG: warn
+      AWS_DEFAULT_REGION: us-east-1
+      # Match AWS credential chain for test purposes.
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    ports:
+      - '4566:4566'
+    healthcheck:
+      test: ['CMD-SHELL', "curl -fsS http://localhost:4566/_localstack/health | grep -q '\"sqs\": \"available\"'"]
+      interval: 3s
+      timeout: 3s
+      retries: 20

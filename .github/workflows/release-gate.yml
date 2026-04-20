@@ -1,0 +1,157 @@
+name: Release gate
+
+# Phase 6 slice-8 release gate. Every PR targeting `main` must pass:
+#   - chaos:quick      (in-process fault injection; 10s window)
+#   - isolation tests  (tenant boundary + registry + quota tests)
+#   - dep scan         (osv-scanner invocation; reuses deps-scan config)
+#   - secret-leak scan (grep-based sanity + the property test suite)
+#
+# Failures block merge. Alongside the per-concern workflows (ci,
+# deps-scan, npm-audit) this gate is the "all or nothing" signal that
+# the platform team looks at before shipping anything to main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  chaos-quick:
+    name: chaos:quick smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install deps
+        run: bun install --frozen-lockfile
+      - name: Run chaos:quick
+        working-directory: packages/testkit
+        run: bun run chaos:quick
+      - name: Upload chaos report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-quick-report
+          path: packages/testkit/chaos-report.*
+          if-no-files-found: warn
+
+  isolation-tests:
+    name: Tenant isolation + quota
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install deps
+        run: bun install --frozen-lockfile
+      - name: Run tenancy test suite
+        run: bun test packages/core/src/tenancy packages/core/src/audit packages/core/src/secrets
+
+  secret-leak-scan:
+    name: Secret-leak property tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install deps
+        run: bun install --frozen-lockfile
+      - name: No-secret-in-logs property test
+        run: bun test packages/core/src/secrets/no-secret-in-logs.test.ts
+      - name: HMAC anti-pattern guard
+        run: bun test packages/core/src/events/sources/hmac-properties.test.ts
+
+  dep-scan:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install osv-scanner
+        run: |
+          curl -sL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 \
+            -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+      - name: Check .osv-ignore expiries
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import pathlib
+          import sys
+
+          path = pathlib.Path('.osv-ignore.yml')
+          if not path.exists():
+              sys.exit(0)
+
+          try:
+              import yaml  # type: ignore
+          except ImportError:
+              import subprocess
+              subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyyaml'], check=True)
+              import yaml  # type: ignore
+
+          data = yaml.safe_load(path.read_text()) or {}
+          today = datetime.date.today()
+          failed = []
+          for entry in data.get('ignore', []):
+              eid = entry.get('id', '<missing id>')
+              expires_raw = entry.get('expires')
+              reason = entry.get('reason')
+              if not expires_raw:
+                  failed.append(f"{eid}: missing `expires`")
+                  continue
+              if not reason:
+                  failed.append(f"{eid}: missing `reason`")
+                  continue
+              try:
+                  expires = datetime.date.fromisoformat(str(expires_raw))
+              except ValueError:
+                  failed.append(f"{eid}: invalid expires {expires_raw}")
+                  continue
+              if expires < today:
+                  failed.append(f"{eid}: expired on {expires}")
+          if failed:
+              for line in failed:
+                  print(f"::error::{line}")
+              sys.exit(1)
+          PY
+      - name: osv-scanner (CRITICAL only for gate)
+        run: |
+          osv-scanner \
+            --lockfile=bun.lock \
+            --config=.osv-ignore.yml \
+            --max-severity=critical \
+            .
+
+  summary:
+    name: Release gate summary
+    runs-on: ubuntu-latest
+    needs: [chaos-quick, isolation-tests, secret-leak-scan, dep-scan]
+    if: always()
+    steps:
+      - name: Gate status
+        run: |
+          chaos="${{ needs.chaos-quick.result }}"
+          iso="${{ needs.isolation-tests.result }}"
+          leak="${{ needs.secret-leak-scan.result }}"
+          dep="${{ needs.dep-scan.result }}"
+          echo "chaos:quick=$chaos"
+          echo "isolation=$iso"
+          echo "secret-leak=$leak"
+          echo "dep-scan=$dep"
+          if [ "$chaos" != "success" ] || [ "$iso" != "success" ] || [ "$leak" != "success" ] || [ "$dep" != "success" ]; then
+            echo "::error::release gate failed"
+            exit 1
+          fi
+          echo "release gate passed"

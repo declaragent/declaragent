@@ -1,0 +1,23 @@
+version: '3.8'
+
+# NATS server 2.10 with JetStream enabled. Client port on 4222, HTTP
+# monitor on 8222.
+#
+# Usage (from the package root):
+#   docker compose -f test/fixtures/docker-compose.yml up -d
+#   NATS_INTEGRATION=1 NATS_SERVERS=nats://localhost:4222 bun test test/integration.test.ts
+#   docker compose -f test/fixtures/docker-compose.yml down -v
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    container_name: declaragent-nats-server
+    command: ['-js', '-m', '8222']
+    ports:
+      - '4222:4222'
+      - '8222:8222'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:8222/healthz | grep -q ok']
+      interval: 3s
+      timeout: 3s
+      retries: 20

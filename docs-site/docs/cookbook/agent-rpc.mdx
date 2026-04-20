@@ -1,0 +1,186 @@
+---
+id: agent-rpc
+title: Agent RPC — paired client + server
+sidebar_label: Agent RPC
+---
+
+# `rpc-client` + `rpc-server`
+
+Paired agents exchanging typed requests over the agent-rpc bus. A
+concierge agent delegates PR-review work to a specialist agent; the
+specialist responds with structured findings. One process in dev, two
+processes over Kafka in prod — the envelope stays byte-identical.
+
+:::info Since v1.1
+Introduced in v1.1. See [Reference → Agent RPC](/reference/rpc) for
+the frozen surfaces.
+:::
+
+## Scaffold
+
+```bash
+declaragent init --template rpc-client --provider anthropic
+declaragent init --template rpc-server --provider anthropic
+```
+
+Canonical starters:
+[`templates/rpc-client/`](https://github.com/declaragent/declaragent/tree/main/templates/rpc-client),
+[`templates/rpc-server/`](https://github.com/declaragent/declaragent/tree/main/templates/rpc-server).
+
+## Flow
+
+```
+User → concierge ──(RequestAgent)──► broker ──(request)──► pr-reviewer
+                                                             │
+                                                             ▼
+                                                    review-pr skill
+                                                             │
+                                                             ▼
+User ◄── concierge ◄──(response)── broker ◄──(ctx.respond)───┘
+```
+
+Every hop carries the same `correlationId`.
+`declaragent events list --correlation <id>` on either daemon surfaces
+the whole chain.
+
+## Run locally — single process
+
+Leave `KAFKA_BROKERS` unset in both `.env` files. Both agents share an
+in-memory broker:
+
+```bash
+declaragent run \
+  --agent rpc-client/agent.yaml \
+  --agent rpc-server/agent.yaml
+```
+
+Use the REPL to trigger a review:
+
+```
+> Please review https://github.com/acme/app/pull/42
+```
+
+The concierge calls `RequestAgent`; the pr-reviewer's skill runs; the
+response comes back as a Markdown summary for the user.
+
+## Run across two processes — Kafka
+
+Set `KAFKA_BROKERS` in both `.env` files. Swap the `kind: memory` block
+in `rpc-peers.yaml` (client side) + `capabilities.yaml` (server side)
+for the commented-out `kind: kafka` block.
+
+Terminal 1 (server first):
+
+```bash
+cd rpc-server && declaragent run
+```
+
+Terminal 2:
+
+```bash
+cd rpc-client && declaragent run
+```
+
+## What's in the client
+
+`rpc-client/agent.yaml`:
+
+```yaml
+name: concierge
+model: claude-haiku-4-5
+tools:
+  defaults:
+    - RequestAgent
+```
+
+The `delegate` skill uses `RequestAgent`:
+
+```yaml
+to: agent://pr-reviewer
+capability: review-pr
+payload: { prUrl: "{{prUrl}}" }
+timeoutMs: 60000
+# mode omitted → defaults to "sync"
+```
+
+A status-handling table tells the LLM how to react to each possible
+outcome (`ok` / `timeout` / `error` / `busy` / `abandoned`).
+
+## What's in the server
+
+`rpc-server/capabilities.yaml` declares `review-pr` with input + output
+JSON schemas:
+
+```yaml
+version: 1
+agent: agent://pr-reviewer
+transports:
+  - kind: memory
+    topics:
+      requests: agents.pr-reviewer.requests
+      responses: agents.pr-reviewer.responses
+capabilities:
+  - name: review-pr
+    timeoutMs: 60000
+    idempotent: true
+    inputSchema: { type: object, properties: { prUrl: { type: string } }, required: [prUrl] }
+    outputSchema:
+      type: object
+      properties:
+        verdict: { enum: [approve, request-changes, comment] }
+        findings: { type: array }
+        summary: { type: string }
+      required: [verdict, findings, summary]
+```
+
+The `review-pr` skill calls `ctx.respond` explicitly to return
+structured data instead of free-form text:
+
+```js
+ctx.respond({
+  ok: true,
+  data: {
+    verdict: "comment",
+    findings: [/* … */],
+    summary: "…",
+  },
+});
+```
+
+## Key points
+
+- **Transport pluggability.** The envelope is broker-agnostic.
+  Replacing `kind: memory` with `kind: kafka` (or `nats` / `sqs` /
+  `amqp` / `mqtt`) is the only change needed to go cross-process.
+- **`ctx.respond` default.** Skip it and the runtime publishes
+  `{ ok: true, data: assistant.final.content }`. Good for REPL-first
+  iteration; explicit calls let you return structured data.
+- **Timeouts.** `timeoutMs` on the caller is authoritative. The
+  receiver's work is discarded when the caller's deadline elapses.
+- **Correlation threading.** `ctx.correlationId` on the concierge's
+  skill flows into the request envelope's `correlationId`, and the
+  response carries it back. One trace id across both daemons.
+
+## Inspect
+
+```bash
+declaragent rpc peers                     # effective peer table
+declaragent rpc capabilities              # this agent's capabilities
+declaragent events list --correlation <cid>    # all hops for one request
+```
+
+## Deferred
+
+- `@declaragent/plugin-github` (diff fetching) is not yet published.
+  The `review-pr` skill ships a stub response until the plugin lands.
+- Per-transport plugins (`@declaragent/plugin-agent-rpc-kafka`, -nats,
+  -sqs, -amqp, -mqtt) follow the envelope in subsequent v1.1 slices.
+
+## Related
+
+- [Reference → Agent RPC](/reference/rpc) — envelope schema, topic
+  conventions, permission-key format.
+- [Reference → extensions](/reference/extensions) — the
+  `@declaragent/plugin-agent-rpc` runtime package.
+- [Troubleshooting → error codes](/troubleshooting/error-codes) — the
+  `EAGENTRPC_*` codes.

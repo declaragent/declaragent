@@ -1,0 +1,33 @@
+version: 1
+# Outbound-only Slack channel. The agent never listens for inbound
+# Slack messages; it only calls the SendMessage tool to DM the
+# on-call user.
+channels:
+  - id: oncall-dm
+    type: slack
+    transport:
+      mode: socket
+      botToken: ${env:SLACK_BOT_TOKEN}
+      appToken: ${env:SLACK_APP_TOKEN}
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: static
+        conversationId: ${env:SLACK_ONCALL_USER_ID}
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 3
+      retryBackoff:
+        initialMs: 200
+        maxMs: 5000
+        jitter: true
+      idempotency:
+        strategy: natural-key
+        ttlMs: 300000
+        store: memory
+    limits:
+      concurrency: 2
+      maxInflight: 64

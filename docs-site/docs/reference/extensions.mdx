@@ -1,0 +1,60 @@
+---
+id: extensions
+title: Extension registry
+sidebar_label: Extensions
+sidebar_position: 6
+---
+
+# Extension registry
+
+The monorepo ships a catalog of first-party adapters. Every adapter follows one of three contracts:
+
+- **Channel adapter** (`ChannelAdapter<C>`) — inbound + outbound platform bridge.
+- **Event-source adapter** (`EventSourceAdapter<C>`) — pulls or subscribes to a message bus / queue / webhook.
+- **Plugin** — exposes new tools or skills via a plugin manifest.
+
+All three are verified in CI (`templates-verify.yml`, per-adapter unit tests, chaos integration tests).
+
+## Channels
+
+| Package | Platform | Status |
+| --- | --- | --- |
+| [`@declaragent/channel-slack`](https://github.com/declaragent/declaragent/tree/main/packages/channel-slack) | Slack | v1.0 |
+| [`@declaragent/channel-discord`](https://github.com/declaragent/declaragent/tree/main/packages/channel-discord) | Discord | v1.0 |
+| [`@declaragent/channel-telegram`](https://github.com/declaragent/declaragent/tree/main/packages/channel-telegram) | Telegram | v1.0 |
+| [`@declaragent/channel-whatsapp`](https://github.com/declaragent/declaragent/tree/main/packages/channel-whatsapp) | WhatsApp Cloud API | v1.0 |
+
+## Event sources
+
+| Package | Transport | Status |
+| --- | --- | --- |
+| Built-in | Webhook (HTTPS + HMAC) | v1.0 |
+| [`@declaragent/source-kafka`](https://github.com/declaragent/declaragent/tree/main/packages/source-kafka) | Kafka / Redpanda | v1.0 |
+| [`@declaragent/source-sqs`](https://github.com/declaragent/declaragent/tree/main/packages/source-sqs) | AWS SQS | v1.0 |
+| [`@declaragent/source-amqp`](https://github.com/declaragent/declaragent/tree/main/packages/source-amqp) | AMQP 0.9.1 / RabbitMQ | v1.0 |
+| [`@declaragent/source-mqtt`](https://github.com/declaragent/declaragent/tree/main/packages/source-mqtt) | MQTT 3.1.1 / 5.0 | v1.0 |
+| [`@declaragent/source-nats`](https://github.com/declaragent/declaragent/tree/main/packages/source-nats) | NATS + JetStream | v1.0 |
+
+## Plugins
+
+| Package | Exposes | Status |
+| --- | --- | --- |
+| [`@declaragent/plugin-agent-rpc`](https://github.com/declaragent/declaragent/tree/main/packages/plugin-agent-rpc) | `RequestAgent` tool + `agent-inbox` source + `ctx.respond` hook + in-memory transport. See [Agent RPC](/reference/rpc). | v1.1 |
+| `@declaragent/plugin-github` _(TBD)_ | GitHub PR review tools — used by the `pr-review` template | planned — lands post-v1.0 |
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] The `@declaragent/plugin-github` package
+is referenced by the `pr-review` template but is not yet published.
+`declaragent run` on that template will fail plugin load until the
+Phase-2 ecosystem publishes the package.
+</div>
+
+## Adding your own
+
+See the **Extending your agent** document in the repo root (`docs/EXTENDING_YOUR_AGENT.md`) for the full channel / source / plugin contract walkthrough. A cookbook page lands in a post-slice update.
+
+## Related
+
+- [CLI → `declaragent extensions`](/reference/cli).
+- [CLI → `declaragent source-adapters`](/reference/cli).
+- [CLI → `declaragent plugin`](/reference/cli).

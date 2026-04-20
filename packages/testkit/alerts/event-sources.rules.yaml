@@ -1,0 +1,92 @@
+# Event source adapter alerts — keyed on metrics emitted by
+# BaseSourceInstance (packages/core/src/events/base-source.ts).
+
+groups:
+  - name: declaragent.event-sources
+    interval: 30s
+    rules:
+      - alert: SourceSustainedLag
+        expr: |
+          sum by (id, type) (rate(source_messages_received[5m]))
+            -
+          sum by (id, type) (rate(source_messages_processed[5m]))
+            > 1
+        for: 10m
+        labels:
+          severity: warning
+          component: event-sources
+        annotations:
+          summary: "Source {{ $labels.id }} ({{ $labels.type }}) is falling behind"
+          description: |
+            Ingress exceeds egress by > 1 msg/s for 10 minutes. The
+            source has a growing in-flight queue — either the downstream
+            handler is slow or a dispatch failure is retrying without
+            acking.
+          runbook_url: "docs/runbooks/event-sources-sustained-lag.md"
+
+      - alert: SourceDLQGrowing
+        expr: |
+          sum by (id, type) (rate(source_messages_dlq[10m])) > 0.01
+        for: 15m
+        labels:
+          severity: critical
+          component: event-sources
+        annotations:
+          summary: "Source {{ $labels.id }} DLQ growing > 0.01/s"
+          description: |
+            {{ $labels.id }} ({{ $labels.type }}) is producing DLQ
+            entries at > 0.01/s sustained. Messages are exhausting the
+            retry budget — triage via `declaragent dlq list --source
+            {{ $labels.id }}`.
+          runbook_url: "docs/runbooks/event-sources-dlq-growing.md"
+
+      - alert: SourceConnectionErrorStorm
+        expr: |
+          sum by (id, type) (rate(source_connection_errors[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: event-sources
+        annotations:
+          summary: "Source {{ $labels.id }} connection error storm"
+          description: |
+            {{ $labels.id }} ({{ $labels.type }}) is logging transport
+            connection errors faster than 0.1/s. The adapter will
+            likely trip its circuit breaker soon; check network + broker
+            health.
+          runbook_url: "docs/runbooks/event-sources-connection-errors.md"
+
+      - alert: SourceInflightStuck
+        expr: |
+          max_over_time(source_inflight[10m]) > 0
+            and
+          rate(source_messages_processed[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+          component: event-sources
+        annotations:
+          summary: "Source {{ $labels.id }} inflight stuck with no egress"
+          description: |
+            {{ $labels.id }} has > 0 in-flight messages but hasn't
+            published a single event to the bus in 10 minutes. The
+            handler is deadlocked or hung — page oncall.
+          runbook_url: "docs/runbooks/event-sources-inflight-stuck.md"
+
+      - alert: SourceP99LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (id, type, le) (rate(source_process_duration_ms_bucket[5m]))
+          ) > 10000
+        for: 10m
+        labels:
+          severity: warning
+          component: event-sources
+        annotations:
+          summary: "Source {{ $labels.id }} p99 process latency > 10s"
+          description: |
+            End-to-end processing latency on {{ $labels.id }} is
+            exceeding 10 seconds at p99. Expect dispatch back-pressure
+            and growing in-flight counts.
+          runbook_url: "docs/runbooks/event-sources-latency.md"

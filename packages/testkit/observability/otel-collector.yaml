@@ -1,0 +1,39 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+  # Drop redundant counter `_total` suffixes so Prometheus naming lines
+  # up with the dashboard queries.
+  transform/prometheus:
+    metric_statements:
+      - context: metric
+        statements:
+          - set(description, "") where description == ""
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:9464
+    # Empty namespace keeps `source_messages_received_total` clean. Set
+    # it to `declaragent` in multi-tenant collectors where the namespace
+    # is useful for routing.
+    namespace: ''
+    send_timestamps: true
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch, transform/prometheus]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger]

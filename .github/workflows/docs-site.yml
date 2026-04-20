@@ -1,0 +1,109 @@
+name: Docs site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs-site/**'
+      - 'scripts/docs-cli-extract.ts'
+      - 'packages/cli/src/index.tsx'
+      - '.github/workflows/docs-site.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs-site/**'
+      - 'scripts/docs-cli-extract.ts'
+      - 'packages/cli/src/index.tsx'
+      - '.github/workflows/docs-site.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: docs-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-build:
+    # PR gate. Fails a PR that breaks the docs site build.
+    name: Build docs (PR gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node (for Docusaurus)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # NOTE: switch to `cache: 'npm'` + `cache-dependency-path:
+          # docs-site/package-lock.json` once a maintainer commits a
+          # lockfile from `cd docs-site && npm install`.
+
+      - name: Regenerate CLI reference
+        # The committed cli.mdx must match a fresh extraction. If someone
+        # changed the CLI help text but forgot to run the script, this
+        # step's diff check fails the build.
+        run: |
+          bun run scripts/docs-cli-extract.ts
+          if ! git diff --exit-code docs-site/docs/reference/cli.mdx; then
+            echo "::error::docs-site/docs/reference/cli.mdx is out of date."
+            echo "Run: bun run scripts/docs-cli-extract.ts"
+            exit 1
+          fi
+
+      - name: Install docs-site deps
+        working-directory: docs-site
+        # Use `npm ci` once a committed `package-lock.json` ships with
+        # this workflow. Until then `npm install` regenerates one per
+        # run.
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build docs
+        working-directory: docs-site
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site-build
+          path: docs-site/build
+          retention-days: 7
+
+  deploy:
+    # Only deploys on push to main. PRs run docs-build above as a gate.
+    name: Deploy to Cloudflare Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: docs-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-site-build
+          path: docs-site/build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          # Stub — the repo owner wires these once the Cloudflare account
+          # + Pages project exist. Until then the step fails loudly on
+          # main but leaves the PR-gate build intact.
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: declaragent-docs
+          directory: docs-site/build
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          branch: main

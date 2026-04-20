@@ -1,0 +1,17 @@
+{
+  "plugins": [
+    {
+      "id": "@declaragent/plugin-github",
+      "version": "^0.1.0",
+      "permissions": ["GitHubFetchDiff:*", "GitHubReviewComment:owner/*"],
+      "contributes": {
+        "tools": ["GitHubFetchDiff", "GitHubReviewComment"]
+      },
+      "config": {
+        "tokenEnv": "GITHUB_TOKEN",
+        "apiBaseUrl": "https://api.github.com",
+        "userAgent": "declaragent-pr-review/1.0"
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "@declaragent/source-amqp",
+  "version": "0.1.0",
+  "description": "AMQP (RabbitMQ) event source adapter for Declaragent (Phase 4).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "clean": "rm -rf dist"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@declaragent/core": "^0.1.0"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.5"
+  },
+  "declaragent": {
+    "kind": "event-source-adapter",
+    "type": "amqp",
+    "agent_compat": ">=0.0.1"
+  }
+}

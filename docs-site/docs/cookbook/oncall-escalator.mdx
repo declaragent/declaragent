@@ -1,0 +1,68 @@
+---
+id: oncall-escalator
+title: On-call escalator — Alertmanager → Slack
+sidebar_label: On-call escalator
+---
+
+# `oncall-escalator` template
+
+Alertmanager webhook → Claude triage → Slack DM. Demonstrates the `webhook` source with HMAC verification, `X-Alertmanager-Fingerprint` as an idempotency key, and the `SendMessage` tool on an outbound-only channel.
+
+## Scaffold
+
+```bash
+declaragent init --template oncall-escalator --provider anthropic
+```
+
+Files produced:
+
+```
+./
+├── agent.yaml
+├── event-sources.yaml       # webhook source + HMAC secret ref
+├── channels.yaml            # outbound Slack DM
+├── skills/triage.md
+├── fixtures/mock-alert.json
+├── .env.example
+└── README.md
+```
+
+Canonical starter: [`templates/oncall-escalator/`](https://github.com/declaragent/declaragent/tree/main/templates/oncall-escalator).
+
+## Configure
+
+1. Generate a webhook HMAC secret and store it in Vault / AWS SM / env:
+   ```
+   ${secret:oncall/webhook-hmac}
+   ```
+2. Point Alertmanager at `https://<your-host>/webhooks/alertmanager`.
+3. Create a Slack app with `chat:write` + `im:write` and install it to the workspace.
+
+## Run locally
+
+```bash
+declaragent daemon &
+# simulate an alert:
+curl -X POST http://localhost:8787/webhooks/alertmanager \
+  -H "X-Alertmanager-Fingerprint: test-123" \
+  -H "X-Signature: $(cat fixtures/mock-alert.sig)" \
+  --data @fixtures/mock-alert.json
+```
+
+The agent triages the alert (reads the runbook links, checks severity) and DMs the on-call engineer on Slack.
+
+## Key points
+
+- **Idempotency.** Alertmanager retries on 5xx. The `X-Alertmanager-Fingerprint` header doubles as the idempotency key — duplicate fingerprints within a 15-minute window are dropped at ingress.
+- **HMAC.** The `webhook` source verifies the `X-Signature` header against the configured secret. Missing or mismatched signature → `401 EUNAUTHORIZED`.
+- **Outbound-only channel.** The Slack channel is configured with `direction: outbound` — inbound `@mentions` are ignored.
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Full Alertmanager `route:` snippet +
+screenshot of a triaged alert in Slack.
+</div>
+
+## Related
+
+- [Troubleshooting → webhook-auth-failure-spike](/troubleshooting/runbooks/webhook-auth-failure-spike) when HMAC fails in prod.
+- [Reference → env vars](/reference/env-vars) — `WEBHOOK_SECRET` / `TEST_WEBHOOK_SECRET`.

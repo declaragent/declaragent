@@ -1,0 +1,55 @@
+version: "3.8"
+
+# Local Redpanda single-broker setup for the kafka-pipeline template.
+# Redpanda is Kafka-API-compatible and boots in ~3 seconds without
+# needing a Zookeeper sidecar.
+#
+# Bring up:
+#   docker compose up -d
+# Wait ~5s for the broker, then:
+#   declaragent run
+# To publish a test message:
+#   docker compose exec redpanda rpk topic create orders.created
+#   echo '{"id":"ord_1","total":75,"items":[{"sku":"BW","name":"Blue Widget","quantity":3}],"shipTo":{"country":"US","city":"Austin","region":"TX"}}' \
+#     | docker compose exec -T redpanda rpk topic produce orders.created
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.1
+    container_name: declaragent-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --overprovisioned
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  # Optional: the Redpanda console. Useful for eyeballing the
+  # `orders.enriched` and `orders.dlq` topics as messages flow through.
+  console:
+    image: docker.redpanda.com/redpandadata/console:v2.7.0
+    container_name: declaragent-redpanda-console
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"

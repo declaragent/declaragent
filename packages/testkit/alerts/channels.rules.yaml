@@ -1,0 +1,75 @@
+# Channel adapter alerts — keyed on metrics emitted by BaseChannelInstance
+# (packages/core/src/channels/base-channel.ts). Metric names are shown in
+# their Prometheus wire form (dots → underscores via the exporter's name
+# normalizer).
+
+groups:
+  - name: declaragent.channels
+    interval: 30s
+    rules:
+      - alert: ChannelOutboundFailureRateHigh
+        expr: |
+          sum by (id) (rate(channel_outbound_failed[5m]))
+            /
+          (sum by (id) (rate(channel_outbound_sent[5m])) + sum by (id) (rate(channel_outbound_failed[5m])) + 1e-9)
+            > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          component: channels
+        annotations:
+          summary: "Channel {{ $labels.id }} outbound failure rate > 1% (5m)"
+          description: |
+            {{ $labels.id }} is failing more than 1% of outbound sends over
+            a rolling 5-minute window. Either the downstream platform is
+            rate-limiting beyond the retry budget or the adapter is hitting
+            an auth / payload issue.
+          runbook_url: "docs/runbooks/channels-outbound-failure-rate.md"
+
+      - alert: ChannelRateLimitRetriesSustained
+        expr: |
+          sum by (id) (rate(channel_outbound_rate_limit_retries[10m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: channels
+        annotations:
+          summary: "Channel {{ $labels.id }} sustained rate-limit retries"
+          description: |
+            {{ $labels.id }} is triggering the one-shot 429 retry path at
+            > 0.5 req/s for 10 minutes. The upstream platform is
+            continuously rate-limiting us — review send volume + audience
+            targeting before the adapter's retry budget exhausts.
+          runbook_url: "docs/runbooks/channels-rate-limit-sustained.md"
+
+      - alert: ChannelInboundFailureRateHigh
+        expr: |
+          sum by (id) (rate(channel_inbound_failed[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: channels
+        annotations:
+          summary: "Channel {{ $labels.id }} inbound publish failure > 0.1/s (5m)"
+          description: |
+            Inbound events from {{ $labels.id }} are failing to publish
+            onto the bus. Check bus health + subscriber backpressure.
+          runbook_url: "docs/runbooks/channels-inbound-failure.md"
+
+      - alert: ChannelOutboundP99LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (id, le) (rate(channel_outbound_latency_ms_bucket[5m]))
+          ) > 5000
+        for: 10m
+        labels:
+          severity: warning
+          component: channels
+        annotations:
+          summary: "Channel {{ $labels.id }} p99 outbound latency > 5s"
+          description: |
+            Outbound sends on {{ $labels.id }} are exceeding the p99
+            budget. Expect streaming send-then-edit experiences to
+            degrade. Check platform-side latency + adapter hot path.
+          runbook_url: "docs/runbooks/channels-latency-degraded.md"

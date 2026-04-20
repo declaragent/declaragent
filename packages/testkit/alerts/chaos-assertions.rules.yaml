@@ -1,0 +1,73 @@
+# Chaos-run assertions. These rules are only meaningful during a chaos
+# soak — they compare observed behavior against the Phase-6 SLOs. The
+# chaos harness (slice 7) tags its run with `chaos_run="true"`; the
+# alerts only fire when that tag is present, so they stay quiet during
+# normal operation.
+#
+# Labels on the producing metrics are assumed to flow through the
+# exporter's const-labels mechanism during a chaos run — see
+# packages/testkit/src/chaos/driver.ts (slice 7) for the wiring.
+
+groups:
+  - name: declaragent.chaos
+    interval: 30s
+    rules:
+      - alert: ChaosNoEventLoss
+        expr: |
+          (
+            sum(rate(source_messages_received{chaos_run="true"}[5m]))
+              -
+            (
+              sum(rate(source_messages_processed{chaos_run="true"}[5m]))
+                +
+              sum(rate(source_messages_dlq{chaos_run="true"}[5m]))
+            )
+          ) > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: chaos
+        annotations:
+          summary: "Chaos run is leaking events (ingress > processed + DLQ)"
+          description: |
+            During the current chaos run, messages received exceeds the
+            sum of processed + DLQ'd. An event has been silently lost —
+            the `no-event-loss` assertion has failed. Capture the chaos
+            report and file a Phase-6 regression.
+          runbook_url: "docs/runbooks/chaos-event-loss.md"
+
+      - alert: ChaosSLOP99OutboundLatencyBreached
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(channel_outbound_latency_ms_bucket{chaos_run="true"}[5m]))
+          ) > 10000
+        for: 5m
+        labels:
+          severity: critical
+          component: chaos
+        annotations:
+          summary: "Chaos: p99 outbound latency > 10s"
+          description: |
+            The chaos soak's `slos-held` assertion: p99 outbound
+            latency must stay under 10s even during fault injection.
+          runbook_url: "docs/runbooks/chaos-p99-latency-breach.md"
+
+      - alert: ChaosDLQRateExceeded
+        expr: |
+          sum(rate(source_messages_dlq{chaos_run="true"}[5m]))
+            /
+          (sum(rate(source_messages_received{chaos_run="true"}[5m])) + 1e-9)
+            > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          component: chaos
+        annotations:
+          summary: "Chaos: DLQ rate > 1% of ingress"
+          description: |
+            The chaos soak's `slos-held` assertion: DLQ volume must
+            stay below 1% of ingress during the soak. A sustained
+            breach means retry / idempotency wiring didn't absorb the
+            injected fault cleanly.
+          runbook_url: "docs/runbooks/chaos-dlq-rate-breach.md"

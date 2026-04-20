@@ -1,0 +1,45 @@
+version: 1
+name: fleet-starter
+description: >-
+  Two-agent starter fleet pairing a concierge (RPC producer) with a
+  pr-reviewer (RPC consumer). Run in one process via
+  `declaragent fleet run`, or split across hosts via `fleet deploy` + a
+  broker swap in `rpc-peers.yaml`.
+
+runtime:
+  declaragent: "^1.2.0"
+  bun: ">=1.1"
+
+agents:
+  - id: concierge
+    path: ./agents/concierge
+    env: shared
+  - id: pr-reviewer
+    path: ./agents/pr-reviewer
+    env: shared
+    deploy:
+      target: cloud-run-reviewer
+
+environments:
+  shared:
+    peersRef: ./rpc-peers.yaml
+    envFiles:
+      - ./.env
+
+# Opt-in RPC knobs. Uncomment `stampFleetVersion` once every agent ships a
+# `DECLARAGENT_FLEET_VERSION` from `fleet deploy` — tested fleets default
+# to off so pinned-old callers don't spuriously fail closed.
+rpc:
+  stampFleetVersion: false
+  # minFleetVersion: v1.2.0-cut
+
+deploy:
+  strategy: rolling
+  rollbackOnFailure: true
+  healthGate:
+    timeoutMs: 120000
+    probe: /healthz
+  targets:
+    cloud-run-reviewer:
+      kind: gcp-cloud-run
+      region: us-central1

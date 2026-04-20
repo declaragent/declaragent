@@ -1,0 +1,195 @@
+name: npm + Homebrew smoke
+
+# Phase 7 slice 3. End-to-end test of the npm postinstall shim and
+# the Homebrew formula stamper.
+#
+# Each runner:
+#   1. Compiles the per-target single-file binary via
+#      `scripts/build-binary.sh` (slice 1).
+#   2. Stages a release-layout dir locally so the postinstall can hit
+#      it through `DECLARAGENT_BASE_URL=file://<stage>`.
+#   3. `npm pack`s `@declaragent/cli`, `npm install -g`s the tarball,
+#      asserts `declaragent --version` prints `declaragent X.Y.Z`.
+#
+# A parallel job exercises `scripts/stamp-homebrew-formula.sh` with
+# fixture hashes and verifies the stamped file is valid Ruby.
+#
+# Triggers:
+#   - push to main — guards against regressions.
+#   - pull_request — catches breakage before merge.
+#   - workflow_dispatch — manual re-runs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/cli/package.json'
+      - 'packages/cli/bin/**'
+      - 'scripts/build-binary.sh'
+      - 'scripts/stamp-homebrew-formula.sh'
+      - 'homebrew-tap/Formula/**'
+      - '.github/workflows/npm-install-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/cli/package.json'
+      - 'packages/cli/bin/**'
+      - 'scripts/build-binary.sh'
+      - 'scripts/stamp-homebrew-formula.sh'
+      - 'homebrew-tap/Formula/**'
+      - '.github/workflows/npm-install-smoke.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: npm-install-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  npm-install:
+    name: npm install (${{ matrix.os }} / ${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-13
+            target: darwin-x64
+          - os: macos-14
+            target: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build CLI dist
+        run: bun run --filter '@declaragent/cli' build
+
+      - name: Compile release tarball
+        run: bash scripts/build-binary.sh ${{ matrix.target }}
+
+      - name: Stage release layout
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./packages/cli/package.json').version")"
+          TAG="v${VERSION}"
+          STAGE="${RUNNER_TEMP}/declaragent-npm-stage"
+          mkdir -p "${STAGE}/download/${TAG}"
+          cp "dist/bin/declaragent-${{ matrix.target }}.tar.gz" "${STAGE}/download/${TAG}/"
+          cp "dist/bin/declaragent-${{ matrix.target }}.sha256" "${STAGE}/download/${TAG}/"
+          ls -la "${STAGE}/download/${TAG}/"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Pack npm tarball
+        id: pack
+        shell: bash
+        working-directory: packages/cli
+        run: |
+          set -euo pipefail
+          # Verify bin/ files are in the pack set before producing the
+          # tarball. Catches a stale `files` field before it ships.
+          npm pack --dry-run 2>&1 | tee /tmp/npm-pack-dryrun.log
+          grep -q 'bin/declaragent.js' /tmp/npm-pack-dryrun.log
+          grep -q 'bin/postinstall.js' /tmp/npm-pack-dryrun.log
+          TGZ="$(npm pack --silent)"
+          echo "tgz=${PWD}/${TGZ}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install globally
+        shell: bash
+        env:
+          DECLARAGENT_BASE_URL: file://${{ steps.stage.outputs.stage }}
+          DECLARAGENT_VERSION: ${{ steps.stage.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Use a user-writable global prefix to avoid needing sudo.
+          NPM_PREFIX="${RUNNER_TEMP}/npm-global"
+          mkdir -p "${NPM_PREFIX}"
+          npm config set prefix "${NPM_PREFIX}"
+          echo "${NPM_PREFIX}/bin" >> "${GITHUB_PATH}"
+          export PATH="${NPM_PREFIX}/bin:${PATH}"
+          npm install -g "${{ steps.pack.outputs.tgz }}"
+
+      - name: Run declaragent --version
+        shell: bash
+        run: |
+          set -euo pipefail
+          which declaragent
+          output="$(declaragent --version)"
+          echo "${output}"
+          expected="declaragent ${{ steps.stage.outputs.version }}"
+          if [ "${output}" != "${expected}" ]; then
+            echo "✗ unexpected output" >&2
+            echo "  expected: ${expected}" >&2
+            echo "  actual:   ${output}" >&2
+            exit 1
+          fi
+          echo "✓ version output matches"
+
+  stamp-formula:
+    name: stamp-homebrew-formula.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck ruby
+
+      - name: Lint stamp-homebrew-formula.sh
+        run: shellcheck -s sh scripts/stamp-homebrew-formula.sh
+
+      - name: Stamp with fixture SHAs
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/declaragent-stamped.rb"
+          bash scripts/stamp-homebrew-formula.sh \
+            --version v9.8.7 \
+            --sha256-darwin-arm64 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --sha256-darwin-x64   bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            --sha256-linux-arm64  cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+            --sha256-linux-x64    dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+            --output "${OUT}"
+          test -f "${OUT}"
+
+      - name: Assert placeholders are gone
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/declaragent-stamped.rb"
+          if grep -n '{{[A-Z0-9_]*}}' "${OUT}"; then
+            echo "✗ stamped formula still contains placeholders" >&2
+            exit 1
+          fi
+
+      - name: Assert Ruby syntax
+        run: ruby -c "${RUNNER_TEMP}/declaragent-stamped.rb"
+
+      - name: Idempotency check
+        run: |
+          set -euo pipefail
+          OUT1="${RUNNER_TEMP}/declaragent-stamped.rb"
+          OUT2="${RUNNER_TEMP}/declaragent-stamped-2.rb"
+          bash scripts/stamp-homebrew-formula.sh \
+            --version v9.8.7 \
+            --sha256-darwin-arm64 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --sha256-darwin-x64   bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            --sha256-linux-arm64  cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+            --sha256-linux-x64    dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+            --output "${OUT2}"
+          diff -u "${OUT1}" "${OUT2}"

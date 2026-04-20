@@ -1,0 +1,18 @@
+# Fleet-level peer table. Every `agent://` address used by an in-fleet
+# RPC client resolves through this file.
+#
+# For local / CI: `kind: memory` — both agents share an in-memory bus
+# via `declaragent fleet run`. For prod: swap to `kind: kafka` (or nats /
+# sqs / amqp / mqtt). The envelope, tool, and source stay byte-identical.
+version: 1
+peers:
+  - agent: agent://pr-reviewer
+    transports:
+      - kind: memory
+        topics:
+          requests: agents.pr-reviewer.requests
+      # Kafka variant — uncomment and fill KAFKA_BROKERS in .env:
+      # - kind: kafka
+      #   brokers: ["${env:KAFKA_BROKERS}"]
+      #   topics:
+      #     requests: agents.pr-reviewer.requests

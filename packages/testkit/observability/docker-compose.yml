@@ -1,0 +1,68 @@
+version: '3.8'
+
+# End-to-end observability stack for declaragent event sources.
+#
+# Usage:
+#   docker compose up -d
+#
+# Endpoints:
+#   OTel collector:  http://localhost:4318  (OTLP HTTP)
+#   Prometheus:      http://localhost:9090
+#   Grafana:         http://localhost:3000  (admin/admin)
+#   Jaeger UI:       http://localhost:16686
+#
+# Pointing your host: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`
+# then `createOtelBridge()` wired into `SourceDependencies.metrics` +
+# `.tracer`.
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    container_name: declaragent-otel-collector
+    command: ['--config=/etc/otel-collector.yaml']
+    volumes:
+      - ./otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - '4318:4318'  # OTLP HTTP
+      - '9464:9464'  # Prometheus scrape
+    depends_on:
+      - jaeger
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: declaragent-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+      - '--storage.tsdb.retention.size=1GB'
+    ports:
+      - '9090:9090'
+    depends_on:
+      - otel-collector
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: declaragent-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ../dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+    ports:
+      - '3000:3000'
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.61
+    container_name: declaragent-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: 'true'
+    ports:
+      - '16686:16686'  # UI
+      - '4317:4317'    # OTLP gRPC receiver (internal to the collector)

@@ -1,0 +1,52 @@
+---
+id: kafka-pipeline
+title: Kafka pipeline — enrichment + DLQ
+sidebar_label: Kafka pipeline
+---
+
+# `kafka-pipeline` template
+
+Kafka source consuming `orders.created`, enrichment via Haiku, re-emit to `orders.enriched`, DLQ on `orders.dlq`. Declares `dailyTokenUSD: 5` to exercise Phase-6 cost enforcement.
+
+## Scaffold
+
+```bash
+declaragent init --template kafka-pipeline --provider anthropic
+```
+
+Ships with a Redpanda `docker-compose.yaml` for the local dev loop.
+
+Canonical starter: [`templates/kafka-pipeline/`](https://github.com/declaragent/declaragent/tree/main/templates/kafka-pipeline).
+
+## Run locally
+
+```bash
+cd kafka-pipeline
+docker compose up -d                       # Redpanda single-broker
+declaragent daemon &
+# produce a test event
+rpk topic produce orders.created --brokers localhost:19092 \
+  < fixtures/order.json
+```
+
+Expected flow:
+
+1. Source adapter consumes `orders.created`.
+2. Engine runs the `enrich-order` skill.
+3. Engine emits the enriched JSON to `orders.enriched`.
+4. On error, the message goes to `orders.dlq` with the failure metadata.
+
+## Key points
+
+- **DLQ.** Every source declares its DLQ topic. See [`declaragent dlq list / show / redrive`](/reference/cli).
+- **Cost budget.** `dailyTokenUSD: 5` trips `EQUOTA` when exceeded. The source pauses consumption until the next UTC rollover.
+- **Idempotency.** The message's Kafka `(topic, partition, offset)` is the idempotency key — re-processing is safe on restart.
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Grafana screenshot: `source.messages.processed` climbing against the DLQ gauge.
+</div>
+
+## Related
+
+- [Troubleshooting → event-sources-dlq-growing](/troubleshooting/runbooks/event-sources-dlq-growing).
+- [Troubleshooting → error-codes → `EQUOTA`](/troubleshooting/error-codes).

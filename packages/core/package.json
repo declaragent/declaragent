@@ -1,0 +1,31 @@
+{
+  "name": "@declaragent/core",
+  "version": "0.1.0",
+  "description": "Runtime core for Declaragent — declarative AI agent platform.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.89.0",
+    "chokidar": "^5.0.0",
+    "yaml": "^2.8.3",
+    "zod": "^4.3.6"
+  }
+}

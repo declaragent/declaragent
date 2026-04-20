@@ -1,0 +1,216 @@
+name: Release binaries
+
+# Phase 7 slice 1. Matrix-builds single-file `declaragent` binaries for
+# linux / darwin × x64 / arm64 via `bun build --compile`, checksums
+# them, and attaches them to the corresponding GitHub release.
+#
+# Triggers:
+#   - push of a `v*` tag               → real release; uploads assets to
+#                                         the matching release, creating
+#                                         it if the changesets workflow
+#                                         hasn't already.
+#   - manual `workflow_dispatch`       → dry-run; builds every target +
+#                                         prints checksums, never touches
+#                                         the release.
+#
+# Notes:
+#   - Runs on ubuntu-latest; Bun's `--target=bun-*` cross-compiles all
+#     four triples from a single x64 Linux runner.
+#   - macOS binaries are NOT notarized here — slice 1.5 adds the Apple
+#     Developer / `codesign` / `notarytool` pipeline. Until then the
+#     macOS tarballs surface Gatekeeper warnings on first run; the
+#     install script in slice 2 will document the `xattr -d` workaround.
+#   - Size budget lives in scripts/build-binary.sh (default 120 MiB per
+#     target). A breach fails the job with a pointer to `bun build
+#     --analyze`.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run (build + checksum only, never upload).'
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - linux-x64
+          - linux-arm64
+          - darwin-x64
+          - darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile binary
+        env:
+          DECLARAGENT_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: bash scripts/build-binary.sh ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: declaragent-${{ matrix.target }}
+          path: |
+            dist/bin/declaragent-${{ matrix.target }}.tar.gz
+            dist/bin/declaragent-${{ matrix.target }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release assets
+    runs-on: ubuntu-latest
+    needs: build
+    # Only attach assets on a real tag push. `workflow_dispatch` stops
+    # at the build matrix so we can exercise the compile path without
+    # creating half-finished GitHub releases.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          merge-multiple: true
+
+      - name: Aggregate checksums
+        working-directory: dist/release
+        run: |
+          cat *.sha256 > SHA256SUMS
+          echo "--- aggregated checksums ---"
+          cat SHA256SUMS
+
+      - name: Publish to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        working-directory: dist/release
+        run: |
+          set -euo pipefail
+          # Create the release if the changesets workflow hasn't
+          # already. `gh release create` with `--notes-from-tag` and
+          # `--generate-notes` together pulls the tag annotation AND
+          # computes the auto-notes; harmless if the release exists.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
+          # Upload (or replace) every tarball + checksum. `--clobber`
+          # lets the workflow be re-run safely on the same tag.
+          gh release upload "$TAG" \
+            declaragent-*.tar.gz \
+            *.sha256 \
+            SHA256SUMS \
+            --clobber
+
+  dry-run-summary:
+    name: Dry-run summary
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          merge-multiple: true
+
+      - name: Report
+        working-directory: dist/release
+        run: |
+          echo "### Dry-run checksums" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat *.sha256 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -la >> "$GITHUB_STEP_SUMMARY"
+
+  stamp-homebrew:
+    name: Stamp Homebrew formula
+    runs-on: ubuntu-latest
+    needs: build
+    # Only run on a real tag push. Dry-runs via workflow_dispatch stop
+    # at the build matrix + summary — they don't need a stamped formula
+    # because the PR-open step below doesn't fire either.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          merge-multiple: true
+
+      - name: Extract per-target SHA-256s
+        id: shas
+        working-directory: dist/release
+        run: |
+          set -euo pipefail
+          read_sha() {
+            awk '{print $1}' < "declaragent-$1.sha256"
+          }
+          echo "darwin_arm64=$(read_sha darwin-arm64)" >> "${GITHUB_OUTPUT}"
+          echo "darwin_x64=$(read_sha darwin-x64)"     >> "${GITHUB_OUTPUT}"
+          echo "linux_arm64=$(read_sha linux-arm64)"   >> "${GITHUB_OUTPUT}"
+          echo "linux_x64=$(read_sha linux-x64)"       >> "${GITHUB_OUTPUT}"
+
+      - name: Stamp formula
+        run: |
+          bash scripts/stamp-homebrew-formula.sh \
+            --version "${{ github.ref_name }}" \
+            --sha256-darwin-arm64 "${{ steps.shas.outputs.darwin_arm64 }}" \
+            --sha256-darwin-x64   "${{ steps.shas.outputs.darwin_x64 }}" \
+            --sha256-linux-arm64  "${{ steps.shas.outputs.linux_arm64 }}" \
+            --sha256-linux-x64    "${{ steps.shas.outputs.linux_x64 }}" \
+            --output dist/homebrew/declaragent.rb
+
+      - name: Validate stamped formula
+        run: |
+          sudo apt-get update && sudo apt-get install -y ruby
+          ruby -c dist/homebrew/declaragent.rb
+
+      - name: Upload stamped formula artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: dist/homebrew/declaragent.rb
+          if-no-files-found: error
+          retention-days: 30
+
+      # The actual PR-open against `declaragent/homebrew-tap` is
+      # stubbed for this slice — the tap repo doesn't exist yet and
+      # the workflow needs a scoped deploy token. The stamped formula
+      # ships as an artifact so a maintainer can cherry-pick it into
+      # the tap repo by hand until the automation lands.
+      - name: PR-open placeholder
+        run: |
+          echo "Stamped formula attached as the 'homebrew-formula' artifact."
+          echo "Automated PR-open against declaragent/homebrew-tap is deferred."

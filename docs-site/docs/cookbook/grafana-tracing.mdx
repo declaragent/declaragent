@@ -1,0 +1,57 @@
+---
+id: grafana-tracing
+title: Trace a request in Grafana
+sidebar_label: Grafana tracing
+---
+
+# Trace a request in Grafana
+
+Declaragent emits OpenTelemetry spans + Prometheus metrics by default. The testkit ships a `docker-compose.yaml` with Prometheus, Tempo, and Grafana pre-wired so you can see the full inbound → engine → outbound trace out of the box.
+
+## Bring up the observability stack
+
+```bash
+cd packages/testkit/observability
+docker compose up -d
+# Grafana on http://localhost:3000 (admin / admin)
+# Tempo on http://localhost:3200
+# Prometheus on http://localhost:9090
+```
+
+See [`packages/testkit/alerts/README.md`](https://github.com/declaragent/declaragent/tree/main/packages/testkit/alerts) for the alert rules bundled with the stack.
+
+## OTel pointing
+
+Point Declaragent at the collector:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_SERVICE_NAME=declaragent-agent
+declaragent daemon
+```
+
+See [`docs/OTEL_SETUP.md`](https://github.com/declaragent/declaragent/blob/main/docs/OTEL_SETUP.md) for the full set of OTel env vars.
+
+## Explore
+
+Send a test message. In Grafana → Explore → pick the `Tempo` data source → paste the span id or search by service name → you'll see a single trace with:
+
+- `channel.inbound.<platform>` — raw inbound decode.
+- `bus.dispatch` — message handed to the engine.
+- `engine.turn` — one per LLM call (with `turn_number`, `model`, `tokens_in`, `tokens_out`).
+- `tool.invoke` — one per tool call (`Read`, `Glob`, `Grep`, etc.).
+- `channel.outbound.<platform>` — outbound send with latency + status code.
+
+## Alert rules
+
+The six shipped rule files live under [`packages/testkit/alerts/`](https://github.com/declaragent/declaragent/tree/main/packages/testkit/alerts). Every alert carries a `runbook_url` that surfaces in this site's [runbook index](/troubleshooting/runbook-index).
+
+## Related
+
+- [Troubleshooting → runbook index](/troubleshooting/runbook-index).
+- [Reference → env vars → OTel](/reference/env-vars).
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] Sample Grafana dashboard JSON (engine
+latency + channel outbound failure rate + DLQ depth).
+</div>

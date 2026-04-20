@@ -1,0 +1,58 @@
+---
+id: runbook-index
+title: Runbook index
+sidebar_label: Runbook index
+sidebar_position: 4
+---
+
+# Runbook index
+
+Every `runbook_url` shipped in the Phase 6 Prometheus alert rules surfaces here as a dedicated page. Source of truth: [`packages/testkit/alerts/`](https://github.com/declaragent/declaragent/tree/main/packages/testkit/alerts).
+
+## Channels
+
+- [channels-outbound-failure-rate](/troubleshooting/runbooks/channels-outbound-failure-rate)
+- [channels-rate-limit-sustained](/troubleshooting/runbooks/channels-rate-limit-sustained)
+- [channels-inbound-failure](/troubleshooting/runbooks/channels-inbound-failure)
+- [channels-latency-degraded](/troubleshooting/runbooks/channels-latency-degraded)
+
+## Event sources
+
+- [event-sources-sustained-lag](/troubleshooting/runbooks/event-sources-sustained-lag)
+- [event-sources-dlq-growing](/troubleshooting/runbooks/event-sources-dlq-growing)
+- [event-sources-connection-errors](/troubleshooting/runbooks/event-sources-connection-errors)
+- [event-sources-inflight-stuck](/troubleshooting/runbooks/event-sources-inflight-stuck)
+- [event-sources-latency](/troubleshooting/runbooks/event-sources-latency)
+
+## Daemon
+
+- [daemon-bus-inflight-stuck](/troubleshooting/runbooks/daemon-bus-inflight-stuck)
+- [daemon-heartbeat-timeout](/troubleshooting/runbooks/daemon-heartbeat-timeout)
+- [daemon-session-spawn-stall](/troubleshooting/runbooks/daemon-session-spawn-stall)
+- [daemon-bus-pressure-sustained](/troubleshooting/runbooks/daemon-bus-pressure-sustained)
+
+## Security
+
+- [secret-access-denied-spike](/troubleshooting/runbooks/secret-access-denied-spike)
+- [tenant-boundary-violation](/troubleshooting/runbooks/tenant-boundary-violation)
+- [secret-rotation-overdue](/troubleshooting/runbooks/secret-rotation-overdue)
+- [webhook-auth-failure-spike](/troubleshooting/runbooks/webhook-auth-failure-spike)
+
+## Chaos-suite assertions
+
+- [chaos-event-loss](/troubleshooting/runbooks/chaos-event-loss)
+- [chaos-p99-latency-breach](/troubleshooting/runbooks/chaos-p99-latency-breach)
+- [chaos-dlq-rate-breach](/troubleshooting/runbooks/chaos-dlq-rate-breach)
+
+## WhatsApp
+
+- [whatsapp-template-reject-spike](/troubleshooting/runbooks/whatsapp-template-reject-spike)
+- [whatsapp-window-expiry-surge](/troubleshooting/runbooks/whatsapp-window-expiry-surge)
+- [whatsapp-tier-health-drop](/troubleshooting/runbooks/whatsapp-tier-health-drop)
+
+<div className="todo-block">
+Every runbook page currently references the canonical markdown source
+under [`docs/runbooks/`](https://github.com/declaragent/declaragent/tree/main/docs/runbooks).
+Slice 7.5 will inline the canonical content into each MDX page; until
+then, these stubs are navigation aids only.
+</div>

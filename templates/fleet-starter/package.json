@@ -1,0 +1,17 @@
+{
+  "name": "fleet-starter",
+  "private": true,
+  "type": "module",
+  "workspaces": ["agents/*"],
+  "scripts": {
+    "fleet:run": "declaragent fleet run",
+    "fleet:validate": "declaragent fleet validate",
+    "fleet:deploy": "declaragent fleet deploy",
+    "fleet:list": "declaragent fleet list",
+    "fleet:status": "declaragent fleet status"
+  },
+  "dependencies": {
+    "@declaragent/core": "^1.2.0",
+    "@declaragent/plugin-agent-rpc": "^1.1.0"
+  }
+}

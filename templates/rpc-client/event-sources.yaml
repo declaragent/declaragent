@@ -1,0 +1,24 @@
+# Concierge's inbox. Subscribes to the responses topic so `RequestAgent`
+# (sync mode) can match incoming responses against its pending-RPC registry.
+#
+# The requests topic is here too — the same daemon can both call + be
+# called without any config change, though this template doesn't expose
+# a capability itself.
+- type: agent-inbox
+  config:
+    id: inbox
+    agentId: concierge
+    # Default topics are `agents.<agentId>.requests` + `.responses`.
+    # requestsTopic: agents.concierge.requests
+    # responsesTopic: agents.concierge.responses
+  delivery:
+    mode: at-least-once
+    ackStrategy: after-dispatch
+    maxRetries: 3
+    retryBackoff:
+      initialMs: 500
+      maxMs: 10000
+      jitter: true
+  limits:
+    concurrency: 8
+    maxInflight: 256

@@ -1,0 +1,50 @@
+---
+id: index
+title: Troubleshooting
+slug: /troubleshooting
+sidebar_label: Overview
+sidebar_position: 1
+---
+
+# Troubleshooting
+
+Three layers:
+
+1. **[Error codes](/troubleshooting/error-codes)** — every `E*` / boundary / quota code the runtime emits.
+2. **[Runbook index](/troubleshooting/runbook-index)** — every `runbook_url` from the shipped Prometheus alert rules.
+3. **Flowcharts** — scoped to the two high-value first-week questions:
+   - "My install failed" (below).
+   - "[My `declaragent deploy` got 403](/troubleshooting/deploy-403)".
+
+## My install failed
+
+```mermaid
+flowchart TD
+    A[Installer command failed] --> B{Which installer?}
+    B -->|curl| C{SHA-256 mismatch?}
+    B -->|npm| D{Postinstall crashed?}
+    B -->|brew| E{Formula error?}
+    C -->|yes| C1[Retry — transient CDN issue.<br/>Do NOT set DECLARAGENT_NO_CHECKSUM.]
+    C -->|no| C2{Download 404?}
+    C2 -->|yes| C3[Check DECLARAGENT_VERSION.<br/>v1.0.x and later are expected.]
+    C2 -->|no| C4[Check DECLARAGENT_PREFIX<br/>write permissions.]
+    D -->|yes| D1[Re-run: cd $(npm root -g)/@declaragent/cli<br/>&& node bin/postinstall.js]
+    D -->|no| D2[Check DECLARAGENT_BASE_URL +<br/>corporate proxy.]
+    E --> E1[Ensure you're on the tap:<br/>brew tap declaragent/tap]
+    style A fill:#fee2e2
+```
+
+If none of those branches match, open an issue with the full installer output.
+
+## Logging
+
+Every runbook expects `DECLARAGENT_LOG_LEVEL=debug` when reproducing an issue:
+
+```bash
+DECLARAGENT_LOG_LEVEL=debug declaragent daemon
+```
+
+## Still stuck?
+
+- Open a discussion at [github.com/declaragent/declaragent/discussions](https://github.com/declaragent/declaragent/discussions).
+- File an issue at [github.com/declaragent/declaragent/issues](https://github.com/declaragent/declaragent/issues) — include `declaragent --version`, the full command, the full output, and your OS + arch.

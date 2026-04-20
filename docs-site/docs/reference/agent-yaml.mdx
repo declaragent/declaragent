@@ -1,0 +1,73 @@
+---
+id: agent-yaml
+title: agent.yaml schema
+sidebar_label: agent.yaml
+sidebar_position: 2
+---
+
+# `agent.yaml` schema
+
+Every declarative runtime lives or dies by its spec. `agent.yaml` is that spec.
+
+<div className="todo-block">
+**Auto-generated from the Zod schema in slice 8.** This page is currently a
+hand-curated subset of the frozen fields. The complete per-field table
+(with types, defaults, `since` markers, and examples) lands when slice 8
+wires the `scripts/docs-schema-extract.ts` generator into CI.
+</div>
+
+## Required fields (v1.0)
+
+Pulled from `AgentSpec` in `packages/core/src/types/session.ts`:
+
+| Field | Type | Required? | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | Agent identity. Must be unique per tenant. Appears in metrics + logs. |
+| `model` | `string` | yes | Model id as the provider understands it (`claude-sonnet-4-5`, `openai/gpt-4o-mini`, etc.). |
+| `systemPrompt` | `string` (multi-line) | yes | Baseline instructions. Loaded once per session. |
+| `temperature` | `number` | no | Provider sampling temperature. Defaults to the provider's own default (often `0.7`). |
+| `maxTokens` | `number` | no | Per-turn cap. Defaults to the provider's ceiling. |
+| `subagentDepthCap` | `number` | no | Max depth for sub-agent spawning. Defaults to `3`. |
+
+## Example
+
+```yaml
+name: concierge
+model: claude-sonnet-4-5
+temperature: 0
+maxTokens: 2048
+subagentDepthCap: 2
+systemPrompt: |
+  You are a Slack concierge for an engineering team. Answer questions
+  about the local repository and refuse to take external actions.
+skills:
+  - skills/concierge.md
+tools:
+  defaults:
+    - Read
+    - Glob
+    - Grep
+```
+
+Full examples for every template live under [`templates/`](https://github.com/declaragent/declaragent/tree/main/templates) in the repo.
+
+## Fields documented post-slice 8
+
+The generated reference will additionally document:
+
+- `skills[]` — filesystem paths to per-skill markdown prompts.
+- `tools.defaults[]` / `tools.allow[]` / `tools.deny[]` — engine tool allowlists.
+- `channels[]` — inbound/outbound platform adapters (Slack, Discord, Telegram, WhatsApp).
+- `event_sources[]` — Kafka, SQS, AMQP, MQTT, NATS, webhook.
+- `plugins[]` — extension ids referenced from the plugin manifest.
+- `quotas` — daily token budget, per-minute rate limits, dailyTokenUSD.
+- `tenants` — per-tenant override block (when `--multi-tenant`).
+- `secrets` — `${secret:...}` references bound at launch.
+
+Each of these is implemented in Phase 1–6 code and will be frozen in slice 8 via a `@since 1.0.0` JSDoc tag.
+
+## Related
+
+- [CLI → `declaragent init`](/reference/cli) — scaffolds this file for you.
+- [Cookbook → `concierge`](/cookbook/concierge) — walks an example end-to-end.
+- [Troubleshooting → error-codes](/troubleshooting/error-codes) — every `EINVAL` you can hit at load time.

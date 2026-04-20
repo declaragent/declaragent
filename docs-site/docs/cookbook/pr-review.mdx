@@ -1,0 +1,42 @@
+---
+id: pr-review
+title: PR review — GitHub webhook
+sidebar_label: PR review
+---
+
+# `pr-review` template
+
+GitHub `pull_request` webhook → Claude reviews the diff → inline review comments. References `@declaragent/plugin-github` for the review-posting tools.
+
+## Scaffold
+
+```bash
+declaragent init --template pr-review --provider anthropic
+```
+
+Canonical starter: [`templates/pr-review/`](https://github.com/declaragent/declaragent/tree/main/templates/pr-review).
+
+## Configure
+
+1. Install the `@declaragent/plugin-github` plugin (see the note below).
+2. Create a GitHub App with `pull_request` + `contents:read` + `pull_requests:write` scopes.
+3. Point the app's webhook at `https://<your-host>/webhooks/github`.
+4. Copy the webhook secret + app private key into `.env`.
+
+## Key points
+
+- The plugin exposes a `ReviewPR` tool that posts inline review comments via the GitHub API.
+- The template's skill prompt constrains the agent: one pass, no style-only nits, no demands the contributor opt out of via label.
+- Rate limiting is the plugin's concern — inbound GitHub webhook storms are shed at the ingress.
+
+<div className="todo-block">
+[placeholder — landing 2026-Q2] The `@declaragent/plugin-github` package
+is referenced but not yet published (`pr-review` is the driver for its
+v1.0.1 release). `declaragent run` on this template will fail plugin
+load until the package lands.
+</div>
+
+## Related
+
+- [Reference → extensions](/reference/extensions) — plugin catalog.
+- [CLI → `declaragent plugin install`](/reference/cli).

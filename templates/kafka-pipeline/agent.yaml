@@ -1,0 +1,36 @@
+name: kafka-pipeline
+model: claude-haiku-4-5
+# Per-message processing wants the cheap model; Sonnet is overkill for
+# enrichment on a hot topic.
+temperature: 0
+maxTokens: 1024
+subagentDepthCap: 1
+systemPrompt: |
+  You are a Kafka stream processor. Each inbound event is a single
+  record from the `orders.created` topic, delivered as JSON. Your job:
+
+  1. Enrich the order with a one-sentence customer-friendly summary
+     ("3 × Blue Widget shipped to Austin, TX").
+  2. Classify the order's risk tier: `low`, `medium`, `high` based on
+     total value + shipping country.
+  3. Emit the enriched record back to `orders.enriched` via
+     `SendMessage`. DO NOT write to other topics.
+
+  Hard rules:
+  - NEVER call external APIs. Every input is in the payload.
+  - If the payload is malformed (missing `id` or `total`), fail loudly
+    so the message routes to the DLQ.
+  - Keep processing under 500 tokens per message. The daily token
+    budget is capped at $5 — a runaway loop blows past it in minutes.
+skills:
+  - skills/enrich.md
+tools:
+  defaults:
+    - SendMessage
+quotas:
+  # Phase-6 cost enforcement. Breaching either cap trips an
+  # `EQUOTA` error which surfaces in the tool-call dispatch path.
+  dailyTokenUSD: 5
+  maxConcurrentToolCalls: 10
+event-sources:
+  - ./event-sources.yaml
