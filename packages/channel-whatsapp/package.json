@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/channel-whatsapp",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "WhatsApp (Meta Cloud API) channel adapter for Declaragent (Phase 5).",
   "license": "Apache-2.0",
   "type": "module",
@@ -13,7 +13,11 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
@@ -23,10 +27,10 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@declaragent/core": "^0.1.0"
+    "@declaragent/core": "^0.2.0"
   },
   "devDependencies": {
-    "@declaragent/testkit": "^0.1.0"
+    "@declaragent/testkit": "^1.0.0"
   },
   "declaragent": {
     "kind": "channel-adapter",
