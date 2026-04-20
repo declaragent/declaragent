@@ -1,17 +1,17 @@
 #!/bin/sh
 # scripts/install.sh — curl-pipe installer for `declaragent`.
 #
-# Phase 7 slice 2. Served from https://get.declaragent.dev/install.sh
-# (Cloudflare Workers seat in front of this file, version-pinned).
+# Served from https://declaragent.dev/install.sh (Cloudflare Pages
+# project `declaragent`, contents of `website/`).
 #
 # Usage (one-liner):
-#   curl -sSL https://get.declaragent.dev | sh
+#   curl -fsSL https://declaragent.dev/install.sh | sh
 #
 # Usage (pinned version):
-#   curl -sSL https://get.declaragent.dev | DECLARAGENT_VERSION=v1.0.2 sh
+#   curl -fsSL https://declaragent.dev/install.sh | DECLARAGENT_VERSION=v0.1.3 sh
 #
 # Usage (custom prefix):
-#   curl -sSL https://get.declaragent.dev | DECLARAGENT_PREFIX=/opt/declaragent sh
+#   curl -fsSL https://declaragent.dev/install.sh | DECLARAGENT_PREFIX=/opt/declaragent sh
 #
 # Environment overrides:
 #   DECLARAGENT_VERSION        Tag to install. `latest` (default) asks the
