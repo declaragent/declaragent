@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Interactive REPL for Declaragent.",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,8 +27,8 @@
     "postinstall": "node ./bin/postinstall.js"
   },
   "dependencies": {
-    "@declaragent/core": "^0.1.0",
-    "@declaragent/plugin-agent-rpc": "^0.1.0",
+    "@declaragent/core": "^0.2.0",
+    "@declaragent/plugin-agent-rpc": "^1.0.0",
     "ink": "^5.0.1",
     "ink-text-input": "^6.0.0",
     "react": "^18.3.1",
@@ -36,7 +36,7 @@
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
-    "@declaragent/channel-whatsapp": "^0.1.0"
+    "@declaragent/channel-whatsapp": "^1.0.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
