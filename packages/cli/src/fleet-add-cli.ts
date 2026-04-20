@@ -126,8 +126,12 @@ export async function fleetAdd(args: FleetAddArgs, deps: FleetAddDeps = {}): Pro
  * sibling. Only used as a fallback — production deploys must supply
  * their own templates dir via `--templates-dir` (tracked for a later
  * slice once the starter pack ships as a package).
+ *
+ * Exported (as {@link defaultTemplatesDir}) so the builder toolkit's
+ * `DeclaraFleetAdd` tool can reuse the same resolver without
+ * duplicating the walk logic.
  */
-function defaultTemplatesDir(): string {
+export function defaultTemplatesDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   // packages/cli/src → packages/cli → packages → <root>
   let dir = here;
