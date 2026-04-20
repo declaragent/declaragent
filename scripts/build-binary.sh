@@ -63,16 +63,16 @@ mkdir -p "$OUT_DIR"
 rm -f "$BIN_PATH" "$TARBALL_PATH" "$CHECKSUM_PATH"
 
 echo "→ compiling declaragent for bun-${TARGET} (v${VERSION})"
-# `react-devtools-core` is a lazy runtime dep of `ink` — it's only
-# reached when `DEV=true` in the Ink runtime. Bun's bundler still tries
-# to resolve the static import, so we mark it external. The import
-# target never fires in the compiled binary; the single-executable
-# format means nothing else can hit an unbundled path.
+# Ink statically imports `react-devtools-core`; marking it `--external`
+# produces a binary that crashes at startup with `Cannot find package
+# 'react-devtools-core' from /$bunfs/root/...` because the compiled
+# single-file binary has no node_modules to fall back to. Bundling it
+# adds ~1 MiB — well under the size budget — and the binary starts
+# cleanly. The react-devtools websocket never connects unless DEV=true.
 bun build \
   --compile \
   --minify \
   --target="bun-${TARGET}" \
-  --external react-devtools-core \
   --outfile="$BIN_PATH" \
   packages/cli/src/index.tsx
 
