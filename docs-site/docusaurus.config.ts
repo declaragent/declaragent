@@ -5,17 +5,18 @@ import { themes as prismThemes } from 'prism-react-renderer';
 /**
  * Declaragent docs site configuration.
  *
- * Served from https://declaragent.dev/docs/.
- * Deployed via Cloudflare Pages on every push to `main`
- * (see `.github/workflows/docs-site.yml`).
+ * Served from https://docs.declaragent.dev/ as a standalone Cloudflare
+ * Pages project (`declaragent-docs`). The root declaragent.dev is a
+ * separate Pages project (`declaragent`) that hosts the marketing page
+ * in `website/`.
  */
 const config: Config = {
   title: 'Declaragent',
   tagline: 'Declarative, git-versioned AI agents.',
   favicon: 'img/logo.svg',
 
-  url: 'https://declaragent.dev',
-  baseUrl: '/docs/',
+  url: 'https://docs.declaragent.dev',
+  baseUrl: '/',
 
   organizationName: 'declaragent',
   projectName: 'declaragent',

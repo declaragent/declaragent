@@ -1,0 +1,25 @@
+# Cloudflare Pages headers — cache static assets, never cache HTML.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: interest-cohort=()
+
+# `immutable` is a trap for un-versioned filenames — browsers never
+# revalidate. Until we hash the filenames (content-addressed build
+# output), use `must-revalidate` so Cloudflare can 304 quickly but
+# the browser does check for freshness on every load.
+/*.css
+  Cache-Control: public, max-age=3600, must-revalidate
+
+/*.js
+  Cache-Control: public, max-age=3600, must-revalidate
+
+/*.svg
+  Cache-Control: public, max-age=86400, must-revalidate
+
+/*.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/
+  Cache-Control: public, max-age=0, must-revalidate
