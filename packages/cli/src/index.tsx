@@ -31,7 +31,7 @@ import { fleetPeers } from './fleet-peers-cli.js';
 import { fleetDemote, fleetPromote } from './fleet-promote-cli.js';
 import { fleetRun } from './fleet-run.js';
 import { fleetStatus } from './fleet-status-cli.js';
-import { type InitOptions, runInit } from './init-wizard.js';
+import { InitWizard, type InitOptions, type WizardResult, runInit } from './init-wizard.js';
 import { mailboxDepth, mailboxDrain } from './mailbox-cli.js';
 import { mcpAdd, mcpList, mcpRemove } from './mcp-cli.js';
 import { migrateConfig } from './migrate-cli.js';
@@ -899,7 +899,7 @@ async function runInitSubcommand(rest: readonly string[]): Promise<number> {
   // discoverable from one top-level `init` verb.
   const fleetName = flagValue(rest, '--fleet');
   if (fleetName !== undefined) {
-    const out = flagValue(rest, '--out', '-o');
+    const out = flagValue(rest, '--out', '-o') ?? firstPositional(rest);
     const force = flagSet(rest, '--force');
     return fleetInit({
       name: fleetName,
@@ -907,7 +907,11 @@ async function runInitSubcommand(rest: readonly string[]): Promise<number> {
       ...(force && { force: true }),
     });
   }
-  const outDir = flagValue(rest, '--out', '-o') ?? './';
+  // Resolution order for the output directory:
+  //   1. --out / -o flag
+  //   2. first positional arg (e.g. `declaragent init test-agent` → ./test-agent)
+  //   3. current directory
+  const outDir = flagValue(rest, '--out', '-o') ?? firstPositional(rest) ?? './';
   const force = flagSet(rest, '--force');
   const multiTenant = flagSet(rest, '--multi-tenant');
   const template = flagValue(rest, '--template');
@@ -924,7 +928,43 @@ async function runInitSubcommand(rest: readonly string[]): Promise<number> {
     ...(tenantId !== undefined && { tenantId }),
     ...(skipVerify && { skipVerify: true }),
   };
-  return runInit(opts);
+  return runInit(opts, { launchInteractive: launchInitWizard });
+}
+
+/**
+ * Render the Ink wizard, wait for the user to pick a template (and
+ * optionally a tenant id), then re-enter `runInit` with the filled-in
+ * fields. Falls back to a helpful error when stdin isn't a TTY (CI,
+ * piped shells) since the wizard can't read keystrokes there.
+ */
+async function launchInitWizard(opts: InitOptions): Promise<number> {
+  if (!process.stdin.isTTY) {
+    process.stderr.write(
+      '✗ interactive wizard needs a TTY. Re-run with --template <name> to pick non-interactively.\n',
+    );
+    process.stderr.write(
+      '  Available: concierge, oncall-escalator, pr-review, kafka-pipeline, multi-tenant-starter\n',
+    );
+    return 1;
+  }
+  const result: WizardResult = await new Promise((resolve) => {
+    const instance = render(
+      <InitWizard
+        initialMultiTenant={opts.multiTenant}
+        onDone={(r) => {
+          instance.unmount();
+          resolve(r);
+        }}
+      />,
+    );
+  });
+  const next: InitOptions = {
+    ...opts,
+    template: result.template,
+    ...(result.tenantId !== undefined && { tenantId: result.tenantId, multiTenant: true }),
+  };
+  // Second call: template is now set; `runInit` takes the non-interactive path.
+  return runInit(next);
 }
 
 async function runDeploySubcommand(
