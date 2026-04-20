@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 import type { PermissionMode } from '@declaragent/core';
-import { type DispatchOutcome, type EventKind } from '@declaragent/core';
-import { CLI_VERSION } from './version.js';
+import type { DispatchOutcome, EventKind } from '@declaragent/core';
 import { render } from 'ink';
 import { App } from './app.js';
 import type { AuditQueryArgs } from './audit-cli.js';
@@ -31,7 +30,7 @@ import { fleetPeers } from './fleet-peers-cli.js';
 import { fleetDemote, fleetPromote } from './fleet-promote-cli.js';
 import { fleetRun } from './fleet-run.js';
 import { fleetStatus } from './fleet-status-cli.js';
-import { InitWizard, type InitOptions, type WizardResult, runInit } from './init-wizard.js';
+import { type InitOptions, InitWizard, type WizardResult, runInit } from './init-wizard.js';
 import { mailboxDepth, mailboxDrain } from './mailbox-cli.js';
 import { mcpAdd, mcpList, mcpRemove } from './mcp-cli.js';
 import { migrateConfig } from './migrate-cli.js';
@@ -43,6 +42,7 @@ import { skillList } from './skill-cli.js';
 import { sourceAdaptersList } from './source-adapters-cli.js';
 import { sourceAdd, sourceList, sourceRemove } from './source-cli.js';
 import { tenantsDiff, tenantsList, tenantsShow } from './tenants-cli.js';
+import { CLI_VERSION } from './version.js';
 
 interface ParsedArgs {
   mode?: PermissionMode;

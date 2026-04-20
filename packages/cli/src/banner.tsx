@@ -41,11 +41,11 @@ export function Banner({ providerId, model, mode, source }: Props): JSX.Element 
       {GLYPH.map((g, i) => (
         <Text key={g}>
           <Text color="cyan">{g}</Text>
-          <Text color="gray">  {right[i] ?? ''}</Text>
+          <Text color="gray"> {right[i] ?? ''}</Text>
         </Text>
       ))}
       <Text>
-        <Text>       </Text>
+        <Text> </Text>
         <Text color="gray" dimColor>
           an agent that builds agents — same @declaragent/core
         </Text>
