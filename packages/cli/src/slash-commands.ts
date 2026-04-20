@@ -11,6 +11,7 @@ export type SlashCommand =
   | { kind: 'clear' }
   | { kind: 'compact' }
   | { kind: 'memory' }
+  | { kind: 'init'; template?: string; force?: boolean }
   | { kind: 'resume'; sessionId?: string }
   | { kind: 'sessions' }
   | { kind: 'unknown'; name: string };
@@ -31,6 +32,11 @@ export const SLASH_COMMANDS: Array<{ name: string; description: string }> = [
   { name: '/clear', description: 'Clear scrollback and start a fresh session' },
   { name: '/compact', description: 'Compact transcript (stub in v0.1)' },
   { name: '/memory', description: 'Show CLAUDE.md from cwd, if present' },
+  {
+    name: '/init [<template>] [--force]',
+    description:
+      'Scaffold an agent config (agent.yaml + skills + .env.example) into the current directory. Default template: concierge.',
+  },
   { name: '/sessions', description: 'List persisted sessions' },
   { name: '/resume <id>', description: 'Resume a persisted session by id' },
   { name: '/exit', description: 'Quit the REPL (also: /quit)' },
@@ -78,6 +84,15 @@ export function parseSlash(input: string): SlashCommand | null {
       if (!arg) return { kind: 'model' };
       if (arg === 'refresh') return { kind: 'model', refresh: true };
       return { kind: 'model', model: arg };
+    }
+    case 'init': {
+      // `/init [<template>] [--force]` — scaffold into cwd.
+      const force = args.includes('--force') || args.includes('-f');
+      const template = args.find((a) => !a.startsWith('-'));
+      const out: { kind: 'init'; template?: string; force?: boolean } = { kind: 'init' };
+      if (template !== undefined) out.template = template;
+      if (force) out.force = true;
+      return out;
     }
     case 'sessions':
       return { kind: 'sessions' };

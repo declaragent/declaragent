@@ -75,4 +75,20 @@ describe('parseSlash', () => {
       sessionId: 'xyz',
     });
   });
+
+  test('/init parses template + --force flag', () => {
+    expect(parseSlash('/init')).toEqual({ kind: 'init' });
+    expect(parseSlash('/init pr-review')).toEqual({ kind: 'init', template: 'pr-review' });
+    expect(parseSlash('/init concierge --force')).toEqual({
+      kind: 'init',
+      template: 'concierge',
+      force: true,
+    });
+    expect(parseSlash('/init --force')).toEqual({ kind: 'init', force: true });
+    expect(parseSlash('/init -f oncall-escalator')).toEqual({
+      kind: 'init',
+      template: 'oncall-escalator',
+      force: true,
+    });
+  });
 });

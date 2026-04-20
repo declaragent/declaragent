@@ -33,6 +33,12 @@ import { defaultModelFor, knownModelsFor } from './known-models.js';
 import { fetchOpenAICompatModels } from './openai-compat-models.js';
 import { fetchOpenRouterModels, summarizeModel } from './openrouter-models.js';
 import { DECLARAGENT_REFERRER, DECLARAGENT_TITLE } from './openrouter-oauth.js';
+import {
+  TEMPLATE_NAMES,
+  type TemplateName,
+  isTemplateName,
+  unpackTemplate,
+} from './init-template-unpacker.js';
 import { memoryFilePath, sessionsDbPath } from './paths.js';
 import { getPreset } from './providers-registry.js';
 import { SLASH_COMMANDS, type SlashCommand, parseSlash } from './slash-commands.js';
@@ -459,6 +465,44 @@ export function App(props: AppProps): JSX.Element {
         }
         const text = readFileSync(path, 'utf8');
         append({ kind: 'system', text: `--- ${path} ---\n${text}` });
+        return;
+      }
+      case 'init': {
+        const template = cmd.template ?? 'concierge';
+        if (!isTemplateName(template)) {
+          append({
+            kind: 'error',
+            text: `unknown template "${template}". Available: ${TEMPLATE_NAMES.join(', ')}.`,
+          });
+          return;
+        }
+        const providerId = initialCreds?.providerId ?? 'anthropic';
+        const preset = getPreset(providerId);
+        try {
+          const result = unpackTemplate({
+            template: template as TemplateName,
+            outDir: process.cwd(),
+            providerId,
+            providerEnvVar: preset?.envVar ?? '',
+            force: cmd.force === true,
+            multiTenant: false,
+          });
+          for (const p of result.written) {
+            append({ kind: 'system', text: `  wrote ${p}` });
+          }
+          for (const p of result.skipped) {
+            append({ kind: 'system', text: `  skipped ${p} (exists — pass --force to overwrite)` });
+          }
+          append({
+            kind: 'system',
+            text: `✓ scaffolded template "${template}" into ${process.cwd()}. Edit agent.yaml then /clear to restart the session.`,
+          });
+        } catch (err) {
+          append({
+            kind: 'error',
+            text: `/init failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
         return;
       }
       case 'sessions': {
