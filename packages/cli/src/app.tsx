@@ -23,23 +23,40 @@ import {
   createSqliteSessionStore,
 } from '@declaragent/core';
 import type { LLMProvider } from '@declaragent/core';
+import { createSqliteAuditSink } from '@declaragent/core';
+import type { TenantAuditSink } from '@declaragent/core';
 import { Box, Static, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { loadConfig, rememberModel, resolveCredentials } from './auth.js';
 import { Banner } from './banner.js';
+import {
+  DEFAULT_DEPLOY_DENY_RULES,
+  ProposalRegistry,
+  formatLeakWarning,
+  getBuilderTools,
+  redactSecrets,
+  renderHistory,
+  renderProposal,
+  resolveScopeRootSync,
+  runGitRaw,
+  runHistory,
+  runUndo,
+} from './builder/index.js';
+import type { Proposal, ProposalEvent } from './builder/index.js';
+import { fleetGraph } from './fleet-graph-cli.js';
 import { appendHistory, loadHistory } from './history.js';
-import { defaultModelFor, knownModelsFor } from './known-models.js';
-import { fetchOpenAICompatModels } from './openai-compat-models.js';
-import { fetchOpenRouterModels, summarizeModel } from './openrouter-models.js';
-import { DECLARAGENT_REFERRER, DECLARAGENT_TITLE } from './openrouter-oauth.js';
 import {
   TEMPLATE_NAMES,
   type TemplateName,
   isTemplateName,
   unpackTemplate,
 } from './init-template-unpacker.js';
-import { memoryFilePath, sessionsDbPath } from './paths.js';
+import { defaultModelFor, knownModelsFor } from './known-models.js';
+import { fetchOpenAICompatModels } from './openai-compat-models.js';
+import { fetchOpenRouterModels, summarizeModel } from './openrouter-models.js';
+import { DECLARAGENT_REFERRER, DECLARAGENT_TITLE } from './openrouter-oauth.js';
+import { auditDbPath, memoryFilePath, sessionsDbPath } from './paths.js';
 import { getPreset } from './providers-registry.js';
 import { SLASH_COMMANDS, type SlashCommand, parseSlash } from './slash-commands.js';
 
@@ -168,8 +185,108 @@ current session.
 - NEVER write real secrets (API keys, tokens, passwords) into any file.
   Use \`\${env:VAR}\` placeholders and remind the user to put the value in
   \`.env\` (which is gitignored).
+- NEVER echo, quote, or paraphrase a \`<redacted:…>\` marker back to the
+  user. When you see one in a message it means the builder's leak
+  detector already stripped a suspected secret — repeating the marker
+  (let alone attempting to reconstruct the value) defeats the purpose.
+  Acknowledge the redaction by pointing the user at the
+  \`DeclaraAddSecret\` / \`DeclaraAuthPlaybook\` tools and move on.
+
+# Plan-confirm-execute (builder toolkit)
+
+When the user asks for a multi-file change — a new skill, a new
+secret, wiring a source / channel — **propose before executing**:
+
+1. Call \`DeclaraProposeChange({ summary, steps: [{ kind, description,
+   preview?, payload }] })\`. \`payload\` is the exact arguments the
+   matching runner expects (e.g. the \`DeclaraAddSkill\` input shape).
+   \`preview\` is a short YAML / diff / command fragment the user reads.
+2. Wait for the call to return. It blocks until the user types \`/yes\`,
+   \`/no\`, or \`/edit <n> <replacement>\`.
+3. If \`confirmed: true\`, immediately call
+   \`DeclaraApplyChange({ proposalId })\`. If \`confirmed: false\`,
+   explain briefly and re-propose with the user's feedback.
+
+Worked example — user asks "add a pr-review skill":
+
+\`\`\`
+DeclaraProposeChange({
+  summary: "Add a pr-review skill that summarizes blockers",
+  steps: [{
+    kind: "addSkill",
+    description: "Create skills/pr-review.md and list it in agent.yaml",
+    preview: "skills/pr-review.md (new)\\nagent.yaml: + skills/pr-review.md",
+    payload: {
+      name: "pr-review",
+      description: "Review a PR and report blockers.",
+      body: "Summarise blockers from the PR at {{url}}."
+    }
+  }]
+}) → { proposalId: "…", confirmed: true }
+
+DeclaraApplyChange({ proposalId: "…" }) → { ok: true, results: […] }
+\`\`\`
+
+Never skip the propose step for multi-file work. Direct \`DeclaraAddSkill\`
+/ \`DeclaraAddSecret\` calls stay available for one-off, clearly-scoped
+additions where the payload is trivial and obviously correct.
+
+# Fleet heuristic
+
+Single-agent sprawl is a known anti-pattern. When the user describes
+**two or more distinct responsibilities** (e.g. "Slack concierge that
+also reviews PRs", "monitor cron + run on-call escalation"), propose a
+**fleet structure** — not a single mega-agent.
+
+In a fleet proposal, include these step kinds in one \`DeclaraProposeChange\`:
+
+1. One \`addAgent\` step per responsibility, each with a payload like
+   \`{ template: "concierge" | "pr-review" | "rpc-client" | "rpc-server" | ..., id: "<agent-id>" }\`.
+2. One or more \`addPeer\` steps wiring the agent-to-agent calls with
+   \`{ agent: "agent://<id>", transports: [{ kind: "memory", topics: { requests: "agents.<id>.requests" }}] }\`.
+   Default to \`kind: "memory"\` for dev; the user can swap to kafka /
+   nats / sqs / amqp / mqtt once the fleet runs.
+3. (Optional) \`addSkill\` / \`addSecret\` steps for per-agent work.
+
+After apply, the user can run \`/fleet graph\` to see the peer topology
+rendered inline.
+
+If the user's ask fits cleanly into a single agent (one channel, one
+trigger, one responsibility) — stay single. Don't propose a fleet just
+because the builder can.
+
+# Monitoring (query before speculating)
+
+When the user asks "what happened?", "is it stuck?", "did the fleet
+deploy?", "is the audit chain clean?" — call the read-only inspection
+tools BEFORE theorising:
+
+- \`DeclaraEventsTail({ last?, kind?, correlationId? })\` — last N
+  entries from the event store. Thread on a correlation id to see one
+  causal chain end-to-end.
+- \`DeclaraFleetStatus({ history? })\` — the full fleet report. The
+  report is authoritative; prefer it to re-reading agent.yaml files.
+- \`DeclaraAuditVerify({ tenant? })\` — hash-chain integrity.
+  \`{ ok: false }\` means real tamper or data loss; surface the
+  violation count and ask the user how to proceed.
+- \`DeclaraDlqShow({ sourceId?, limit? })\` — rejected events in the
+  session store. Client-side analog of \`declaragent dlq show\`; tell
+  the user if they want the broker DLQ they still need the CLI verb.
+
+Running these tools counts against no budget other than the usual
+permission mode. They're readonly; in the default mode the gate auto-
+approves. Do not ask the user whether to check — just check.
 - NEVER run \`declaragent deploy\` or \`declaragent fleet deploy\` without
   the user's explicit "yes, deploy" first. A dry-run is always safer.
+  The permission gate **blocks these commands by default** (phase 6).
+  When the user asks to deploy:
+    1. Call \`DeclaraProposeChange\` with \`requiresExplicitYes: true\`,
+       \`summary: "deploy …"\`, and a \`runCommand\` step whose payload
+       shows the exact command that would run.
+    2. Wait for the user to type \`/yes deploy\` (exact phrase).
+    3. Tell the user to run \`/mode bypass\` and execute the command
+       themselves, or to re-invoke you with \`--mode bypass\`. The gate
+       must be dropped intentionally; the builder never drops it.
 - NEVER overwrite a user-edited \`agent.yaml\` without reading the
   current version first and summarizing the diff you intend to apply.
 - After any file change, show what changed and where — paths + a one-
@@ -303,6 +420,17 @@ export function App(props: AppProps): JSX.Element {
   );
   const sessionRef = useRef<SessionHandle>(store.create(defaultSpec(model)));
 
+  // Builder scope + proposal registry. One per session; tools + slash
+  // handlers share the same instance so /yes can resolve a proposal
+  // the `DeclaraProposeChange` tool is currently awaiting.
+  const scopeRoot = useMemo(() => resolveScopeRootSync(process.cwd()), []);
+  const registry = useMemo(() => new ProposalRegistry(), []);
+  // Per-session audit sink — `DeclaraApplyChange` writes `tool_call`
+  // records here; `/history` reads them back. Opened lazily in a
+  // useEffect and closed on unmount. Undefined until opened — the
+  // engine useEffect rebuilds once the sink is ready.
+  const [auditSink, setAuditSink] = useState<TenantAuditSink | null>(null);
+
   const engineRef = useRef<Engine | null>(null);
   // Rebuild engine when mode changes (gate is captured by closure).
   useEffect(() => {
@@ -343,10 +471,22 @@ export function App(props: AppProps): JSX.Element {
         ...(creds?.apiKey !== undefined && { apiKey: creds.apiKey }),
       });
     }
-    const permissions = createPermissionGate({ mode, rules: [] });
+    // Phase-6 safety floor: deploy verbs are denied by default so a
+    // model that Bash-shells `declaragent deploy ...` straight to prod
+    // trips the gate rather than the live site. Users who *intend* to
+    // deploy swap to `/mode bypass` after confirming the plan.
+    const permissions = createPermissionGate({
+      mode,
+      rules: [...DEFAULT_DEPLOY_DENY_RULES],
+    });
+    const builderTools = getBuilderTools({
+      scopeRoot,
+      registry,
+      ...(auditSink !== null && { auditSink }),
+    });
     engineRef.current = createEngine({
       provider,
-      tools: BUILTIN_TOOLS,
+      tools: [...BUILTIN_TOOLS, ...builderTools],
       permissions,
       createChildSession: () => store.create(defaultSpec(model)),
       prompter: async (call, decision) => {
@@ -374,7 +514,71 @@ export function App(props: AppProps): JSX.Element {
         },
       },
     });
-  }, [mode, model, store, append]);
+  }, [mode, model, store, append, scopeRoot, registry, auditSink]);
+
+  // Open the audit sink once per mount; close on unmount. Failures
+  // downgrade to "no audit" — the builder still works, just without
+  // history + action log.
+  useEffect(() => {
+    let sink: TenantAuditSink | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        sink = await createSqliteAuditSink({ path: auditDbPath() });
+        if (cancelled) {
+          await sink.close();
+          return;
+        }
+        setAuditSink(sink);
+      } catch (err) {
+        append({
+          kind: 'system',
+          text: `audit sink unavailable: ${err instanceof Error ? err.message : String(err)}. /history will be empty.`,
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (sink !== null) {
+        void sink.close();
+      }
+    };
+  }, [append]);
+
+  // Render proposal lifecycle events as system lines. Subscribed once
+  // per component lifetime; the registry drops pending state when the
+  // component unmounts via the returned disposer.
+  useEffect(() => {
+    const dispose = registry.subscribe((ev: ProposalEvent) => {
+      switch (ev.type) {
+        case 'registered':
+          append({ kind: 'system', text: renderProposal(ev.proposal) });
+          return;
+        case 'edited':
+          append({
+            kind: 'system',
+            text: `proposal ${ev.proposal.id} step ${ev.stepIndex + 1} → ${ev.replacement}`,
+          });
+          return;
+        case 'confirmed':
+          append({ kind: 'system', text: `proposal ${ev.proposal.id} confirmed.` });
+          return;
+        case 'rejected':
+          append({ kind: 'system', text: `proposal ${ev.proposal.id} rejected.` });
+          return;
+        case 'expired':
+          append({
+            kind: 'system',
+            text: `proposal ${ev.proposal.id} expired (15-min TTL). Ask the builder to re-propose.`,
+          });
+          return;
+        case 'applied':
+          append({ kind: 'system', text: `proposal ${ev.proposal.id} applied.` });
+          return;
+      }
+    });
+    return dispose;
+  }, [registry, append]);
 
   async function runUserMessage(text: string): Promise<void> {
     const engine = engineRef.current;
@@ -651,6 +855,148 @@ export function App(props: AppProps): JSX.Element {
         });
         return;
       }
+      case 'planPropose': {
+        // `/plan <description>` — hand off to the model with a clear
+        // instruction to use the builder's propose flow. The model
+        // emits a DeclaraProposeChange call; the registry's listener
+        // renders it; the user responds with /yes /no /edit.
+        void runUserMessage(
+          `Use DeclaraProposeChange to draft a plan for the following goal — do NOT execute it yet, just propose: ${cmd.description}`,
+        );
+        return;
+      }
+      case 'proposalYes': {
+        const active = registry.active();
+        if (!active) {
+          append({ kind: 'system', text: 'no pending proposal.' });
+          return;
+        }
+        if (active.requiresExplicitYes) {
+          // Require an exact, proposal-summary-derived phrase so a
+          // reflexive "/yes" can't approve a destructive op (§5.4).
+          const expected = explicitYesPhrase(active);
+          if (cmd.phrase !== expected) {
+            append({
+              kind: 'system',
+              text: `this proposal requires "/yes ${expected}" — exact phrase.`,
+            });
+            return;
+          }
+        }
+        const ok = registry.confirm(active.id);
+        if (!ok) {
+          append({ kind: 'system', text: 'could not confirm — proposal no longer pending.' });
+        }
+        return;
+      }
+      case 'proposalNo': {
+        const active = registry.active();
+        if (!active) {
+          append({ kind: 'system', text: 'no pending proposal.' });
+          return;
+        }
+        registry.reject(active.id);
+        return;
+      }
+      case 'proposalEdit': {
+        const active = registry.active();
+        if (!active) {
+          append({ kind: 'system', text: 'no pending proposal to edit.' });
+          return;
+        }
+        const idx = cmd.stepNumber - 1;
+        const ok = registry.edit(active.id, idx, cmd.replacement);
+        if (!ok) {
+          append({
+            kind: 'error',
+            text: `step ${cmd.stepNumber} is out of range (1..${active.steps.length}).`,
+          });
+        }
+        return;
+      }
+      case 'proposalEditInvalid':
+        append({ kind: 'error', text: cmd.reason });
+        return;
+      case 'diff': {
+        void (async () => {
+          const target = cmd.path ?? scopeRoot;
+          const r = await runGitRaw(scopeRoot, ['diff', '--', target]);
+          if (r.code !== 0) {
+            append({
+              kind: 'error',
+              text: `git diff failed: ${r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`}`,
+            });
+            return;
+          }
+          append({
+            kind: 'system',
+            text: r.stdout.trim().length === 0 ? 'no changes.' : r.stdout,
+          });
+        })();
+        return;
+      }
+      case 'scope':
+        append({ kind: 'system', text: `scope root: ${scopeRoot}` });
+        return;
+      case 'undo': {
+        void (async () => {
+          const res = await runUndo({ registry, scopeRoot });
+          append({ kind: res.ok ? 'system' : 'error', text: res.message });
+        })();
+        return;
+      }
+      case 'history': {
+        if (auditSink === null) {
+          append({ kind: 'system', text: 'audit sink not ready yet — try again in a moment.' });
+          return;
+        }
+        void (async () => {
+          try {
+            const out = await runHistory({
+              sink: auditSink,
+              ...(cmd.limit !== undefined && { limit: cmd.limit }),
+            });
+            append({ kind: 'system', text: renderHistory(out) });
+          } catch (err) {
+            append({
+              kind: 'error',
+              text: `history query failed: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
+        })();
+        return;
+      }
+      case 'fleetGraph': {
+        void (async () => {
+          const chunks: string[] = [];
+          const errs: string[] = [];
+          const code = await fleetGraph(
+            {
+              ...(cmd.format !== undefined && { format: cmd.format }),
+            },
+            {
+              root: scopeRoot,
+              io: {
+                out: (s) => {
+                  chunks.push(s);
+                },
+                err: (s) => {
+                  errs.push(s);
+                },
+              },
+            },
+          );
+          if (code !== 0) {
+            append({
+              kind: 'error',
+              text: errs.join('').trim() || `fleet graph exited with code ${code}`,
+            });
+            return;
+          }
+          append({ kind: 'system', text: chunks.join('').trimEnd() });
+        })();
+        return;
+      }
       case 'unknown':
         append({
           kind: 'error',
@@ -660,10 +1006,29 @@ export function App(props: AppProps): JSX.Element {
     }
   }
 
+  /**
+   * Derive the explicit-yes phrase for a proposal that requires one
+   * (§5.4). The first word of the summary is usually the verb
+   * ("deploy", "erase", etc.); we use it lowercased as the required
+   * phrase. Callers surface this in the rendered plan so the user sees
+   * exactly what to type.
+   */
+  function explicitYesPhrase(p: Proposal): string {
+    const first = p.summary.trim().split(/\s+/)[0] ?? 'confirm';
+    return first.toLowerCase();
+  }
+
   async function handleSubmit(value: string): Promise<void> {
-    const text = value.trim();
+    const raw = value.trim();
     setInput('');
-    if (text.length === 0) return;
+    if (raw.length === 0) return;
+    // Pre-turn leak detection (BUILDER_PLAN §5.1). The raw value is
+    // *discarded* after this call — only the redacted form lands in
+    // the transcript, history, session store, or engine request.
+    const { redacted: text, findings } = redactSecrets(raw);
+    if (findings.length > 0) {
+      append({ kind: 'system', text: formatLeakWarning(findings) });
+    }
     // Record in history before dispatch so a crashing tool still leaves a trail.
     if (history[history.length - 1] !== text) {
       setHistory((h) => [...h, text].slice(-1000));
