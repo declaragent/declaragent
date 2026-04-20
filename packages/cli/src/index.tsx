@@ -1,10 +1,7 @@
 #!/usr/bin/env bun
 import type { PermissionMode } from '@declaragent/core';
-import {
-  VERSION as DECLARAGENT_VERSION,
-  type DispatchOutcome,
-  type EventKind,
-} from '@declaragent/core';
+import { type DispatchOutcome, type EventKind } from '@declaragent/core';
+import { CLI_VERSION } from './version.js';
 import { render } from 'ink';
 import { App } from './app.js';
 import type { AuditQueryArgs } from './audit-cli.js';
@@ -232,7 +229,7 @@ function runLocalLogin(preset: ProviderPreset): void {
 const argv = process.argv.slice(2);
 const args = parseArgs(argv);
 if (args.version) {
-  process.stdout.write(`declaragent ${DECLARAGENT_VERSION}\n`);
+  process.stdout.write(`declaragent ${CLI_VERSION}\n`);
   process.exit(0);
 }
 if (args.help && argv[0] !== 'init' && argv[0] !== 'migrate' && argv[0] !== 'deploy') {
