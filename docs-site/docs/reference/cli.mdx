@@ -65,6 +65,23 @@ Usage:
   declaragent mailbox depth <agent-id>
   declaragent mailbox drain <agent-id>
 
+  declaragent fleet new <name> [--out <dir>] [--force]
+  declaragent fleet add --template <name> [--id <id>] [--force]
+  declaragent fleet add --path <dir> [--id <id>] [--force]
+  declaragent fleet promote <path> [--apply] [--id <id>] [--force]
+  declaragent fleet demote [<id>] [--force]
+  declaragent fleet run [--agent <id>...]
+  declaragent fleet deploy [--target <name>] [--agent <id>...] [--strategy <rolling|all-or-nothing|per-agent>]
+  declaragent fleet deploy --dry-run | --rollback | --target-config <path>
+  declaragent fleet graph [--format <mermaid|dot|json>]
+  declaragent fleet peers [--verify] [--json]
+  declaragent fleet status [--history] [--limit <n>] [--json]
+  declaragent fleet list [--json]
+  declaragent fleet validate [--json]
+  declaragent fleet capabilities [--json]
+
+  declaragent init --fleet <name> [--out <dir>] [--force]   # shortcut for \`fleet new\`
+
   declaragent tenants list [--json]
   declaragent tenants show <id> [--json]
   declaragent tenants diff [--json]
@@ -79,6 +96,12 @@ Usage:
   declaragent secrets rotate <ref> [--tenant X] [--reason R] [--json]
 
   declaragent init [--out <dir>] [--force] [--multi-tenant] [--template <name>] [--provider <id>]
+
+  declaragent deploy gcp-cloud-run [--out <dir>] [--force] [--project <id>] [--region <r>]
+                                   [--service <name>] [--cpu <n>] [--memory-mib <n>]
+                                   [--min-instances <n>] [--verify] [--json]
+
+  declaragent migrate [--config-dir <path>] [--apply] [--json]
 
 Providers:
   cloud:  {…}

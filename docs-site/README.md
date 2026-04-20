@@ -1,6 +1,6 @@
 # Declaragent docs site
 
-Docusaurus 3.x site served at `https://declaragent.dev/docs/`.
+Docusaurus 3.x site served at [`https://docs.declaragent.dev`](https://docs.declaragent.dev). Deployed to Cloudflare Pages project `declaragent-docs` (the marketing site at the apex `declaragent.dev` is a separate project in `website/`).
 
 This project lives outside the bun workspace on purpose — React / Docusaurus tooling must not pollute the core/cli TypeScript build. Maintainers install and run it independently via npm.
 
@@ -9,7 +9,7 @@ This project lives outside the bun workspace on purpose — React / Docusaurus t
 ```sh
 cd docs-site
 npm install        # note: NOT `bun install`
-npm run start      # http://localhost:3000/docs/
+npm run start      # http://localhost:3000
 ```
 
 ## Build
