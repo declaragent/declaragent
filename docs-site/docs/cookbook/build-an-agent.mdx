@@ -1,0 +1,203 @@
+---
+id: build-an-agent
+title: Build an agent through conversation
+sidebar_label: Build through conversation
+---
+
+# Building a PR-review Slack bot through conversation
+
+A walk-through of the agent-builder flow in the v0.2 REPL. You describe
+what you want, the REPL proposes a plan, you confirm it, and the
+builder lands the files. No hand-written YAML required.
+
+The session below is annotated line-by-line; copy the transcript into
+your own REPL and you should get equivalent output (agent ids + paths
+will differ; everything else is deterministic).
+
+## Prerequisites
+
+- `@declaragent/cli@^0.2.0` installed.
+- A git working tree — the builder captures `HEAD` before every
+  apply so `/undo` can revert cleanly. If the tree isn't already a
+  repo, the builder offers to `git init` on the first write.
+- `DECLARAGENT_BUILDER=on` in your environment — the toolkit loads
+  only when the flag is set, so production agents installed as
+  dependencies never see it.
+
+```bash
+mkdir acme-bots && cd acme-bots
+git init -b main
+DECLARAGENT_BUILDER=on declaragent
+```
+
+## Describe the goal
+
+Start the session with one line:
+
+```
+you> /plan add a pr-review Slack bot that DMs me on blockers
+```
+
+`/plan <description>` hands off to `DeclaraProposeChange`. The REPL
+tells the model to draft a plan *without executing* — nothing lands
+on disk until you type `/yes`.
+
+## The proposal
+
+The model asks 1–2 clarifying questions (which repo? which Slack
+channel?), then emits a proposal. The REPL renders it as a numbered
+list you can revise with `/edit`:
+
+```
+system> Proposal 8e4c6e8b-… — add a pr-review Slack bot that DMs on blockers
+Steps:
+  1. [addAgent] scaffold pr-review from template
+     template: pr-review, id: pr-review
+  2. [addSkill] write skills/dm-on-blockers.md
+     name: dm-on-blockers
+     inputs: { pr_url: { type: 'string' } }
+  3. [addSecret] reserve GITHUB_TOKEN slot in .env.example
+     ref: GITHUB_TOKEN, provider: env
+  4. [addSecret] reserve SLACK_BOT_TOKEN slot in .env.example
+     ref: SLACK_BOT_TOKEN, provider: env, usedBy: pr-review.slack
+Type /yes to apply, /no to cancel, or /edit <n> <replacement> to revise step n.
+```
+
+Points worth noting:
+
+- The proposal is a **plan, not an action**. The file system is
+  untouched until `/yes`.
+- Each step carries a `payload` that the matching runner validates at
+  apply time. Bad payloads fail the apply with a typed error — the
+  proposal stays and you can re-propose.
+- Step 4's `usedBy` annotation ends up as a comment in
+  `.env.example`, so whoever sets the env value later knows which
+  component consumes the secret.
+
+If something's off, revise in place:
+
+```
+you> /edit 2 write skills/dm-on-blockers.md that links to the PR
+```
+
+The registry updates step 2's description. `/yes` still applies the
+unchanged payload — `/edit` is for human-facing text, not for
+reshaping arguments.
+
+## Confirm + apply
+
+```
+you> /yes
+system> proposal 8e4c6e8b-… confirmed.
+tool> DeclaraApplyChange started
+tool> DeclaraApplyChange ok
+system> proposal 8e4c6e8b-… applied.
+```
+
+Behind the scenes:
+
+1. `DeclaraApplyChange` grabs the current `git rev-parse HEAD`.
+2. Each step dispatches to its runner (`runFleetAdd`,
+   `runAddSkill`, `runAddSecret`).
+3. Writes accumulate; on any step failure the apply halts + attempts
+   a scoped `git checkout <HEAD> -- <paths>` rollback.
+4. One `tool_call` audit record lands per step, plus a summary
+   record. `/history` surfaces them.
+
+Inspect the result:
+
+```
+you> /diff
+```
+
+`/diff` runs `git diff` scoped to the builder's scope root. You see
+the new `skills/dm-on-blockers.md`, the amended `agent.yaml`, and
+the appended `.env.example` entries.
+
+## If something's wrong — `/undo`
+
+Second-guessing a decision is cheap:
+
+```
+you> /undo
+system> reverted 3 path(s) to 7b0a1c9 (proposal 8e4c6e8b-…).
+```
+
+`/undo` reads the last applied proposal's `gitHeadBefore` + `writes`
+list from the registry and runs `git checkout <HEAD> -- <paths>`
+restricted to exactly those paths. Unrelated working-tree edits (your
+own changes in a sibling dir, a doc file you were editing) are
+untouched.
+
+Phase-6 limitation: only the most-recent apply is undoable. Multi-
+step undo lands in v0.3. For now, re-propose with the correct shape
+and apply again.
+
+## Security — what the builder refuses to do
+
+Three safety floors kick in automatically:
+
+- **Secrets can't enter the transcript.** Pasting
+  `ghp_abcdefabcdefabcdef…` into a message triggers the pre-turn
+  redactor — the literal token never hits the model, the session
+  store, or the audit log. A system line tells you the redaction
+  happened; the model is instructed never to echo the
+  `<redacted:…>` marker back.
+- **`DeclaraAddSecret` never accepts a value.** The tool takes a
+  `ref` + `provider` and returns a placeholder env-var name plus an
+  actionable hint. You paste the value into `.env` yourself.
+- **Deploys are denied by default.** `Bash:declaragent deploy*`
+  and `Bash:declaragent fleet deploy*` are floor-level deny rules
+  in the permission gate. To deploy, switch to `/mode bypass` after
+  confirming the plan — the builder never drops the rule itself.
+
+## Monitoring — "what happened?"
+
+Four read-only tools let the model answer operational questions
+without leaving the REPL:
+
+| Tool | Ask |
+| --- | --- |
+| `DeclaraEventsTail({ last, kind, correlationId })` | "what were the last N events?" |
+| `DeclaraFleetStatus({ history })` | "what's the fleet look like right now?" |
+| `DeclaraAuditVerify({ tenant })` | "is the audit chain intact?" |
+| `DeclaraDlqShow({ sourceId, limit })` | "what events got rejected?" |
+
+The system prompt tells the model to run these *before* speculating.
+You'll see it do so in the transcript — a tool line fires, the model
+reads the result, then answers from fact.
+
+For session-level bookkeeping, `/history` renders the audit chain's
+`builder.*` records inline:
+
+```
+you> /history
+system> builder actions (5, newest first):
+  2026-04-20T12:04:11.112Z [allow] DeclaraApplyChange (apply:8e4c6e8b-…) — 187ms
+  2026-04-20T12:04:11.067Z [allow] Declara:addSecret (apply-step:addSecret) — 4ms
+  2026-04-20T12:04:11.061Z [allow] Declara:addSecret (apply-step:addSecret) — 3ms
+  2026-04-20T12:04:11.055Z [allow] Declara:addSkill (apply-step:addSkill) — 38ms
+  2026-04-20T12:04:11.012Z [allow] Declara:addAgent (apply-step:addAgent) — 10ms
+```
+
+## When you're ready to ship
+
+The builder scaffolds and wires. It does **not** deploy. After
+`/undo`'ing a few iterations and settling on the shape you want:
+
+1. Drop to a shell.
+2. Fill in the real secret values in `.env` using the placeholders
+   `DeclaraAddSecret` reserved.
+3. Run `declaragent fleet validate` (for fleets) or just start the
+   agent locally with `declaragent daemon`.
+4. For production, `/mode bypass` lets you run `declaragent deploy
+   gcp-cloud-run …` — or invoke it outside the REPL entirely.
+
+## Related
+
+- [Builder reference](/reference/builder) — tool catalog, slash
+  commands, safety-model summary.
+- [`pr-review` template](/cookbook/pr-review) — the canonical
+  scaffold the builder starts from for this walkthrough.
+- [Fleet starter](/cookbook/fleet-starter) — when you outgrow the
+  single-agent shape.

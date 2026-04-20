@@ -1,0 +1,166 @@
+---
+id: builder
+title: Agent-builder reference
+sidebar_label: Builder
+sidebar_position: 8
+---
+
+# Agent-builder toolkit
+
+The REPL's agent-builder surface — 11 tools, 6 slash commands, and
+the safety floors that keep it honest. Introduced in
+[@declaragent/cli@0.2.0](https://www.npmjs.com/package/@declaragent/cli).
+
+Builder tools load **only** when the host process opts in with
+`DECLARAGENT_BUILDER=on`. Production agents shipped as dependencies
+never see them.
+
+For a walk-through of the flow, see
+[Build an agent through conversation](/cookbook/build-an-agent).
+
+## Tool catalog
+
+Every tool is permission-gated under the builder's scope root. The
+scope is resolved at session startup in this order: nearest
+`fleet.yaml` → nearest `agent.yaml` → `cwd`.
+
+### Authoring
+
+| Tool | Purpose |
+| --- | --- |
+| `DeclaraAddSkill({ name, description, body, inputs?, outputs?, agentPath?, addToAgentYaml?, confirmOutsideScope? })` | Author a skill. Writes `<agentPath>/skills/<name>.md` + surgically appends the ref to `agent.yaml` (preserves comments). Refuses bodies that look like leaked secrets. |
+| `DeclaraAddSecret({ ref, provider, usedBy?, tenantScope?, agentPath? })` | Reserve a secret slot. **Never accepts a value** — derives a `DECLARA_*` env-var name, appends a commented block to `.env.example`, and returns an actionable hint. Validates the provider is declared in `secrets.yaml` for non-env providers. |
+| `DeclaraFleetAdd({ template, id?, force?, fleetRoot? })` | Scaffold a new agent into the current fleet from a named template. Wraps the same `addAgentFromTemplate` the CLI verb uses. |
+| `DeclaraAddPeer({ agent, transports, fleetRoot? })` | Append or merge a peer entry in `rpc-peers.yaml`. Preserves comments via `yaml.parseDocument`; validates the final file against core's `peersConfigSchema`. |
+| `DeclaraAuthPlaybook({ provider })` | Return a concise markdown playbook for a supported provider. Pure lookup. Supported: `anthropic`, `openai`, `github`, `slack`, `vault`. |
+
+### Plan / apply
+
+| Tool | Purpose |
+| --- | --- |
+| `DeclaraProposeChange({ summary, steps: [{ kind, description, preview?, payload }], requiresExplicitYes? })` | Register a plan with the session's proposal registry and **await** the user's decision. Blocks until `/yes`, `/no`, `/edit`, or the 15-minute TTL expires. Returns `{ proposalId, confirmed, finalSteps, reason }`. |
+| `DeclaraApplyChange({ proposalId })` | Walk a confirmed proposal's steps. Captures `git HEAD` before mutating; on any step failure halts + attempts a scoped `git checkout` rollback. Emits one `tool_call` audit record per step + a summary. |
+
+### Read-only inspection
+
+All four are `readonly: true, parallelSafe: true` — they auto-approve
+in default permission mode and can run concurrently.
+
+| Tool | Purpose |
+| --- | --- |
+| `DeclaraEventsTail({ last?, kind?, correlationId?, sinceMs? })` | Read the last N entries from the session event store. Payloads are truncated to 140 chars with a `…` suffix to keep responses bounded. |
+| `DeclaraFleetStatus({ history?, historyLimit?, fleetRoot? })` | Return the full `FleetStatusReport` for the current fleet — agents, envs, capabilities, peers, optional deploy history. |
+| `DeclaraAuditVerify({ tenant? })` | Verify the audit-chain's hash continuity. Returns `{ ok, totalEntries, verifiedEntries, violations }` — inspect `ok` before reporting. |
+| `DeclaraDlqShow({ sourceId?, limit? })` | List rejected events in the session store — the client-side analog of the daemon-side broker DLQ. For broker-level DLQ entries, run `declaragent dlq show <sourceId> <entryId>` outside the REPL. |
+
+## Slash commands
+
+| Command | Behavior |
+| --- | --- |
+| `/plan <description>` | Ask the builder to draft a proposal without executing. No args: still aliases `/mode plan` for backwards compatibility. |
+| `/yes [<phrase>]` | Confirm the active proposal. Deploy / audit-erase / scope-breach proposals require the exact phrase shown in the prompt (e.g. `/yes deploy`). |
+| `/no` | Reject the active proposal. |
+| `/edit <n> <replacement>` | Revise step `<n>`'s description. Payloads are **not** user-editable via slash — ask the model to re-propose if the structured args need reshaping. |
+| `/diff [<path>]` | Show `git diff` scoped to the builder's scope root (or the given path). |
+| `/scope` | Print the current builder scope root. |
+| `/fleet graph [mermaid\|dot\|json]` | Render the fleet's peer graph inline. Default: mermaid. |
+| `/undo` | Revert the last `DeclaraApplyChange` via scoped `git checkout`. Requires git + the apply captured a `HEAD`. Single-step in v0.2; stacked undo lands in v0.3. |
+| `/history [<limit>]` | Render recent builder actions from the audit chain (default: 50 entries, newest first). |
+
+## Safety model
+
+Four floors operate automatically — each is scoped to a specific
+failure mode the plan's §5 calls out.
+
+### Secret-leak redaction (pre-turn)
+
+Every user message flows through `redactSecrets()` **before** the
+model, the transcript, or the SQLite session store see it. Seven
+pattern detectors cover the common cases:
+
+- Anthropic / OpenAI-project / OpenAI-user API keys (`sk-ant-…`, `sk-proj-…`, `sk-live-…`)
+- GitHub PATs + OAuth tokens (`ghp_…`, `gho_…`)
+- npm tokens (`npm_…`)
+- Slack tokens (`xoxb-…`, `xapp-…`, etc.)
+- AWS access key ids (`AKIA…`)
+- JWTs (three dot-separated segments with `ey` prefix)
+
+Matches are replaced with `<redacted:label>` in the redacted message.
+The original value is discarded — not stored anywhere in the session.
+A system line tells the user a redaction happened; the model is
+instructed never to echo the marker back.
+
+### Scope confinement
+
+Every file-writing tool asserts its target path lives at or below
+the session's scope root via `path.startsWith(scopeRoot + sep)` (the
+classic `/foo` vs `/foo-bar` prefix bug is guarded explicitly).
+
+Reaching outside scope requires `confirmOutsideScope: true`, which
+the proposal flow routes through a `requiresExplicitYes` confirmation.
+Silent cross-repo writes are not possible.
+
+### Deploy deny floor
+
+`Bash:declaragent deploy*` and `Bash:declaragent fleet deploy*` are
+bottom-of-stack `deny` rules in the permission gate. A rogue model
+calling `Bash` with `declaragent deploy` trips the gate rather than
+the live site.
+
+To actually deploy:
+
+1. Let the model propose via `DeclaraProposeChange({ summary: "deploy …", requiresExplicitYes: true })`.
+2. The user types `/yes deploy` (exact phrase derived from the summary).
+3. The user switches to `/mode bypass` + runs `declaragent deploy …`
+   themselves, or exits the REPL.
+
+The builder never drops the deny rule on its own.
+
+### Plan-then-execute
+
+Every multi-file change flows through
+`DeclaraProposeChange` → explicit user `/yes` → `DeclaraApplyChange`.
+The proposal is a plan, not an action — the file system is untouched
+until confirmation. Direct `DeclaraAddSkill` / `DeclaraAddSecret`
+calls stay available for trivially-scoped single-step work.
+
+### Audit chain
+
+Every `DeclaraApplyChange` emits:
+
+- One `tool_call` record per step with `tool: 'Declara:<stepKind>'`.
+- One summary `tool_call` record with `tool: 'DeclaraApplyChange'`.
+
+All records share a correlation id so `/history` threads them. The
+hash-chain stays verifiable through `DeclaraAuditVerify({ tenant })`
+or `declaragent audit verify` outside the REPL.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `DECLARAGENT_BUILDER` | `on` enables the builder toolkit. Default: off. |
+
+The scope root is resolved from `process.cwd()` at session start; no
+env var overrides it. Use `/scope` to confirm.
+
+## Deferred to v0.3+
+
+- **Multi-step `/undo`** — stack the last N applies.
+- **Snapshot fallback** for non-git projects — phase 6 mandates git;
+  a homegrown snapshot layer for non-git workflows is tracked.
+- **`/monitor` pane** — bottom-of-screen Ink live-tail for events.
+  The four read-only tools cover the "check state" need; the pane
+  adds ambient awareness, which needs daemon-side push first.
+- **`builder.*` audit kinds** — v0.2 reuses `kind: 'tool_call'` with
+  a `Declara:`-prefixed `tool` field. A dedicated `builder.apply` /
+  `builder.addSkill` union lands when the core schema next bumps.
+- **Multi-model builders** — the propose / plan step could run on a
+  cheaper model; execution stays on the session model.
+
+## Related
+
+- [Build an agent through conversation](/cookbook/build-an-agent) — end-to-end transcript.
+- [CLI reference](/reference/cli) — underlying verbs the builder wraps.
+- [`agent.yaml` schema](/reference/agent-yaml) — the schema `DeclaraAddSkill` round-trips through.
+- [Fleet reference](/reference/fleet) — context for `DeclaraFleetAdd` + `DeclaraAddPeer`.

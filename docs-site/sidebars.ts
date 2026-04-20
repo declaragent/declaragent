@@ -28,6 +28,7 @@ const sidebars: SidebarsConfig = {
         'reference/extensions',
         'reference/rpc',
         'reference/fleet',
+        'reference/builder',
       ],
     },
   ],
@@ -55,6 +56,7 @@ const sidebars: SidebarsConfig = {
           type: 'category',
           label: 'Recipes',
           items: [
+            'cookbook/build-an-agent',
             'cookbook/deploy-cloud-run',
             'cookbook/rotate-vault-secret',
             'cookbook/two-tenants-one-daemon',

@@ -18,5 +18,6 @@ coverage
 .declaragent/
 # macOS noise
 .DS_Store
-# Internal planning docs — kept local, not shipped
-docs/
+# Internal planning docs — kept local, not shipped (repo-root only;
+# `docs-site/docs/` is the public Docusaurus surface)
+/docs/
