@@ -6,7 +6,8 @@ export type SlashCommand =
   | { kind: 'cost' }
   | { kind: 'rules' }
   | { kind: 'mode'; mode: PermissionMode }
-  | { kind: 'plan' } // alias of mode plan
+  | { kind: 'plan' } // alias of mode plan (no args)
+  | { kind: 'planPropose'; description: string } // `/plan <description>` — builder-toolkit flow
   | { kind: 'model'; model?: string; refresh?: boolean }
   | { kind: 'clear' }
   | { kind: 'compact' }
@@ -14,6 +15,15 @@ export type SlashCommand =
   | { kind: 'init'; template?: string; force?: boolean }
   | { kind: 'resume'; sessionId?: string }
   | { kind: 'sessions' }
+  | { kind: 'proposalYes'; phrase?: string }
+  | { kind: 'proposalNo' }
+  | { kind: 'proposalEdit'; stepNumber: number; replacement: string }
+  | { kind: 'proposalEditInvalid'; reason: string }
+  | { kind: 'diff'; path?: string }
+  | { kind: 'scope' }
+  | { kind: 'fleetGraph'; format?: 'mermaid' | 'dot' | 'json' }
+  | { kind: 'undo' }
+  | { kind: 'history'; limit?: number }
   | { kind: 'unknown'; name: string };
 
 export const SLASH_COMMANDS: Array<{ name: string; description: string }> = [
@@ -24,7 +34,39 @@ export const SLASH_COMMANDS: Array<{ name: string; description: string }> = [
     name: '/mode <default|plan|bypass|auto>',
     description: 'Switch permission mode',
   },
-  { name: '/plan', description: 'Shortcut for /mode plan' },
+  {
+    name: '/plan [<description>]',
+    description:
+      'No args: shortcut for /mode plan. With args: ask the builder to propose a plan via DeclaraProposeChange (no execution until /yes).',
+  },
+  {
+    name: '/yes [<phrase>]',
+    description:
+      'Confirm the active proposal. Deploy / audit-erase / scope-breach proposals require the exact phrase shown in the prompt.',
+  },
+  { name: '/no', description: 'Reject the active proposal.' },
+  {
+    name: '/edit <n> <replacement>',
+    description: 'Revise step <n> of the active proposal.',
+  },
+  {
+    name: '/diff [<path>]',
+    description: 'Show `git diff` scoped to the current scope root (or the given path).',
+  },
+  { name: '/scope', description: 'Print the current builder scope root.' },
+  {
+    name: '/fleet graph [mermaid|dot|json]',
+    description: "Render the fleet's peer graph inline (default format: mermaid).",
+  },
+  {
+    name: '/undo',
+    description:
+      'Revert the last DeclaraApplyChange via scoped `git checkout`. Requires git + the apply captured a HEAD.',
+  },
+  {
+    name: '/history [<limit>]',
+    description: 'Render recent builder actions from the audit chain (default: 50 entries).',
+  },
   {
     name: '/model [<id>|refresh]',
     description: 'Show/switch active model. `refresh` bypasses the 24h cache.',
@@ -77,8 +119,84 @@ export function parseSlash(input: string): SlashCommand | null {
       return { kind: 'compact' };
     case 'memory':
       return { kind: 'memory' };
-    case 'plan':
-      return { kind: 'plan' };
+    case 'plan': {
+      // `/plan` (no args) stays as the mode-switch alias so muscle
+      // memory from earlier releases survives. `/plan <description>`
+      // hands off to the builder's propose flow.
+      if (args.length === 0) return { kind: 'plan' };
+      const description = args.join(' ').trim();
+      if (description.length === 0) return { kind: 'plan' };
+      return { kind: 'planPropose', description };
+    }
+    case 'yes': {
+      const phrase = args.join(' ').trim();
+      return phrase.length > 0 ? { kind: 'proposalYes', phrase } : { kind: 'proposalYes' };
+    }
+    case 'no':
+      return { kind: 'proposalNo' };
+    case 'edit': {
+      // `/edit <n> <replacement>` — n is 1-indexed from the rendered
+      // plan. Parse-failure surfaces as a dedicated kind so the REPL
+      // can tell the user what it expected.
+      if (args.length < 2) {
+        return {
+          kind: 'proposalEditInvalid',
+          reason: 'usage: /edit <n> <replacement>',
+        };
+      }
+      const firstArg = args[0];
+      if (firstArg === undefined) {
+        return {
+          kind: 'proposalEditInvalid',
+          reason: 'usage: /edit <n> <replacement>',
+        };
+      }
+      const n = Number.parseInt(firstArg, 10);
+      if (!Number.isFinite(n) || n <= 0) {
+        return {
+          kind: 'proposalEditInvalid',
+          reason: `step number must be a positive integer, got "${firstArg}"`,
+        };
+      }
+      const replacement = args.slice(1).join(' ').trim();
+      if (replacement.length === 0) {
+        return {
+          kind: 'proposalEditInvalid',
+          reason: 'replacement text is required',
+        };
+      }
+      return { kind: 'proposalEdit', stepNumber: n, replacement };
+    }
+    case 'diff': {
+      const path = args[0];
+      return path !== undefined ? { kind: 'diff', path } : { kind: 'diff' };
+    }
+    case 'scope':
+      return { kind: 'scope' };
+    case 'undo':
+      return { kind: 'undo' };
+    case 'history': {
+      const raw = args[0];
+      if (raw === undefined) return { kind: 'history' };
+      const n = Number.parseInt(raw, 10);
+      if (!Number.isFinite(n) || n <= 0) return { kind: 'history' };
+      return { kind: 'history', limit: n };
+    }
+    case 'fleet': {
+      // `/fleet graph [mermaid|dot|json]` — only the `graph`
+      // sub-command is live in phase 4. Other fleet verbs can slot in
+      // here as later slices extend the builder.
+      const sub = args[0];
+      if (sub !== 'graph') {
+        return { kind: 'unknown', name: 'fleet' };
+      }
+      const format = args[1];
+      if (format === undefined) return { kind: 'fleetGraph' };
+      if (format === 'mermaid' || format === 'dot' || format === 'json') {
+        return { kind: 'fleetGraph', format };
+      }
+      return { kind: 'unknown', name: 'fleet graph' };
+    }
     case 'model': {
       const arg = args[0];
       if (!arg) return { kind: 'model' };
