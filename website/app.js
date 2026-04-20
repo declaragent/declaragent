@@ -1,143 +1,174 @@
 /**
  * declaragent.dev — landing page behavior.
  *
- * Two features:
- *   1. Interactive fleet diagram — an envelope animates along the edge
- *      from concierge → pr-reviewer and back. Click a node to replay.
- *   2. Live in-browser fleet validator — parses the user's fleet.yaml,
- *      runs the same findings logic as `declaragent fleet validate`,
- *      and renders the results. No server round-trip.
- *
- * The validator is a faithful port of the slice-1 validations from
- * packages/cli/src/fleet-cli.ts (peer.dangling, peer.client-only,
- * capability.duplicate, deploy.target.missing) plus the schema-level
- * invariants that the core loader enforces at load time (agent id
- * uniqueness, manifest shape, env references).
+ * Three features:
+ *   1. Typing terminal — cycles through a realistic CLI lifecycle so
+ *      visitors see the shape of `declaragent` commands + their outputs.
+ *   2. Install command copy + install-method tabs (curl / npm / brew).
+ *   3. Live in-browser fleet validator — demoted to the "Advanced"
+ *      section. Runs the same logic as `declaragent fleet validate`
+ *      without a server round-trip.
  */
 
-/* ───────────────────────── fleet SVG animation ───────────────────────── */
-
-const stage = document.getElementById("fleet-stage");
-const envelope = document.getElementById("envelope");
-const statusEl = document.getElementById("fleet-status");
-const clickHint = document.getElementById("click-hint");
-const concierge = document.getElementById("node-concierge");
-const reviewer = document.getElementById("node-reviewer");
 const installCmd = document.getElementById("install-cmd");
 
+/* ───────────────────────── typing terminal ───────────────────────── */
+
+const termBody = document.getElementById("term-body");
+const termCursor = document.getElementById("term-cursor");
+
 /**
- * Interpolate a point along the edge path. The path is a cubic bezier;
- * we use getPointAtLength which the browser exposes natively on SVG paths.
+ * Scripted CLI lifecycle. Each entry is a pair of lines to type out —
+ * one "input" prompt+command, then a multi-line "output". The typer
+ * colors spans via a tiny inline tag syntax: `{prompt}$ `, `{ok}✓...`,
+ * `{dim}text`, `{warn}text`, `{key}name:`, `{str}"value"`.
  */
-const edgePath = document.getElementById("edge-out");
-const edgeLen = edgePath ? edgePath.getTotalLength() : 0;
+const SCRIPT = [
+  {
+    in: "{prompt}$ {cmd}declaragent init --template concierge --provider anthropic",
+    out: [
+      "  wrote agent.yaml",
+      "  wrote skills/concierge.md",
+      "  wrote .env.example",
+      "{ok}✓ init complete — concierge scaffolded.",
+    ],
+  },
+  {
+    in: "{prompt}$ {cmd}declaragent plugin install @declaragent/plugin-github",
+    out: [
+      "  resolving … plugin-github@1.4.0",
+      "  consent: 3 permissions requested",
+      "    {key}Bash:gh pr view*          {dim}read-only",
+      "    {key}Bash:gh pr comment*       {dim}write",
+      "    {key}Network:api.github.com    {dim}scoped",
+      "{ok}✓ installed + permissions granted.",
+    ],
+  },
+  {
+    in: "{prompt}$ {cmd}declaragent source add webhook gh-events --config-file ./hook.yaml",
+    out: [
+      "  idempotency: transport-natural",
+      "  dlq:          {str}'.declaragent/dlq/gh-events.db'",
+      "{ok}✓ added webhook source \"gh-events\".",
+    ],
+  },
+  {
+    in: "{prompt}$ {cmd}declaragent daemon",
+    out: [
+      "  sources (1):  {dim}gh-events    {ok}healthy",
+      "  tenants (1):  {dim}default      {ok}active",
+      "  listening on {str}unix:///var/run/declaragent.sock",
+      "",
+      "  [webhook.received] {key}pr:opened  {dim}acme/app#42",
+      "  → {key}skill:review-pr  {dim}depth=0",
+      "  → tools:   {dim}Read, Bash, GitHubFetchDiff",
+      "  → turns:   {dim}4  tokens: 2,341 in / 612 out",
+      "  {ok}✓ responded  {dim}$0.0084  latency 2.1s",
+    ],
+  },
+  {
+    in: "{prompt}$ {cmd}declaragent audit verify",
+    out: [
+      "  records:     {dim}1,247",
+      "  span:        {dim}2026-04-18 → 2026-04-20",
+      "  chain head:  {dim}sha256:a91b…c7e",
+      "{ok}✓ verified — no gaps, no forks, no tampering.",
+    ],
+  },
+  {
+    in: "{prompt}$ {cmd}declaragent deploy gcp-cloud-run --project acme --region us-central1",
+    out: [
+      "  building container …     {ok}✓  {dim}112 MiB",
+      "  pushing to registry …    {ok}✓",
+      "  deploying concierge@{str}v0.1.3-a1b2c3d …",
+      "  health probe /healthz … {ok}200 OK",
+      "{ok}✓ deployed. URL: https://concierge-a1b2c3d-uc.a.run.app",
+    ],
+  },
+];
 
-function setEnvelopeAt(t) {
-  if (!edgePath || !envelope) return;
-  const pt = edgePath.getPointAtLength(Math.max(0, Math.min(1, t)) * edgeLen);
-  envelope.setAttribute("transform", `translate(${pt.x} ${pt.y})`);
-}
-
-let animating = false;
-function playRoundTrip({ from } = { from: "concierge" }) {
-  if (animating) return;
-  animating = true;
-  if (clickHint) clickHint.style.opacity = "0.3";
-  const reverse = from === "reviewer";
-
-  const start = reverse ? reviewer : concierge;
-  const end = reverse ? concierge : reviewer;
-  start.classList.add("active");
-
-  const dur = 1600;
-  const t0 = performance.now();
-  envelope.setAttribute("opacity", "1");
-  setStatus(reverse ? "response ← pr-reviewer" : "request → pr-reviewer");
-
-  function frame(now) {
-    const p = Math.min(1, (now - t0) / dur);
-    // easeInOutCubic
-    const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-    setEnvelopeAt(reverse ? 1 - eased : eased);
-    if (p < 1) {
-      requestAnimationFrame(frame);
-    } else {
-      start.classList.remove("active");
-      end.classList.add("active");
-      // response leg (unless this IS the response)
-      if (!reverse) {
-        setTimeout(() => {
-          end.classList.remove("active");
-          playReturn();
-        }, 380);
-      } else {
-        envelope.setAttribute("opacity", "0");
-        setTimeout(() => {
-          end.classList.remove("active");
-          setStatus("idle");
-          animating = false;
-        }, 220);
+// Render spec: build a list of { char, cls } tuples from the tagged string
+// so we can type char-by-char while preserving coloring.
+function tokenize(line) {
+  const out = [];
+  let cls = null;
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === "{") {
+      const end = line.indexOf("}", i);
+      if (end > i) {
+        cls = line.slice(i + 1, end) || null;
+        i = end + 1;
+        continue;
       }
     }
+    out.push({ ch: line[i], cls });
+    i += 1;
   }
-  requestAnimationFrame(frame);
+  return out;
+}
 
-  function playReturn() {
-    setStatus("response ← pr-reviewer");
-    const t1 = performance.now();
-    function rFrame(now) {
-      const p = Math.min(1, (now - t1) / dur);
-      const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-      setEnvelopeAt(1 - eased);
-      if (p < 1) {
-        requestAnimationFrame(rFrame);
-      } else {
-        envelope.setAttribute("opacity", "0");
-        setTimeout(() => {
-          end.classList.remove("active");
-          concierge.classList.remove("active");
-          setStatus("idle");
-          animating = false;
-        }, 220);
+async function typeTerminal() {
+  if (!termBody || !termCursor) return;
+  // Two loops: one full pass through the SCRIPT then clear + repeat.
+  // Each run keeps rendered output in the DOM so the terminal fills
+  // out top-to-bottom, then resets.
+  while (true) {
+    termBody.textContent = "";
+    for (const step of SCRIPT) {
+      await typeLine(step.in, { delayPerChar: 28 });
+      await sleep(220);
+      for (const line of step.out) {
+        await typeLine(line, { delayPerChar: 8, instantSpans: true });
       }
+      await sleep(640);
     }
-    requestAnimationFrame(rFrame);
+    await sleep(5500);
   }
 }
 
-function setStatus(s) {
-  if (statusEl) statusEl.textContent = s;
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-// Wire up node clicks + keyboard
-[concierge, reviewer].forEach((n) => {
-  if (!n) return;
-  n.addEventListener("click", () => {
-    playRoundTrip({ from: n === reviewer ? "reviewer" : "concierge" });
-  });
-  n.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      playRoundTrip({ from: n === reviewer ? "reviewer" : "concierge" });
-    }
-  });
-});
-
-// Space key from anywhere on the page replays
-document.addEventListener("keydown", (e) => {
-  if (
-    e.key === " " &&
-    document.activeElement?.tagName !== "TEXTAREA" &&
-    document.activeElement?.tagName !== "INPUT"
-  ) {
-    e.preventDefault();
-    playRoundTrip();
+async function typeLine(raw, { delayPerChar, instantSpans }) {
+  const tokens = tokenize(raw);
+  if (instantSpans) {
+    // Output lines: render the whole line immediately for readability.
+    for (const { ch, cls } of tokens) appendChar(ch, cls);
+    appendChar("\n", null);
+    return;
   }
-});
+  for (const { ch, cls } of tokens) {
+    appendChar(ch, cls);
+    await sleep(delayPerChar + Math.random() * 18);
+  }
+  appendChar("\n", null);
+}
 
-// Auto-play once on load (after everything renders)
+function appendChar(ch, cls) {
+  if (!termBody) return;
+  // Group consecutive same-class chars into one span for cleaner DOM.
+  const last = termBody.lastElementChild;
+  if (cls && last && last.dataset.cls === cls) {
+    last.appendChild(document.createTextNode(ch));
+    return;
+  }
+  if (cls) {
+    const span = document.createElement("span");
+    span.className = cls;
+    span.dataset.cls = cls;
+    span.appendChild(document.createTextNode(ch));
+    termBody.appendChild(span);
+  } else {
+    termBody.appendChild(document.createTextNode(ch));
+  }
+  // Keep the terminal scrolled to the latest line.
+  termBody.parentElement?.scrollTo({ top: 99999, behavior: "auto" });
+}
+
 window.addEventListener("load", () => {
-  setTimeout(() => playRoundTrip(), 600);
+  typeTerminal();
 });
 
 /* ───────────────────────── install command copy ───────────────────────── */
