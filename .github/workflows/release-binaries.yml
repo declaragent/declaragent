@@ -67,6 +67,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Build every workspace so each `dist/` exists before the CLI
+      # compile step — bun build --compile resolves `@declaragent/core`
+      # via its `main: ./dist/index.js`, not the raw source.
+      - name: Build workspaces
+        run: bun run --filter '@declaragent/*' build
+
       - name: Compile binary
         env:
           DECLARAGENT_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}

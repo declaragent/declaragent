@@ -49,6 +49,9 @@ if [ -z "$VERSION" ]; then
   # available on every runner, so grep-extract instead.
   VERSION=$(grep '"version"' packages/cli/package.json | head -n1 | sed -E 's/.*"version": *"([^"]+)".*/\1/')
 fi
+# CI passes `github.ref_name` which already starts with `v`; strip any
+# leading `v` here so the log + tarball don't show `vv0.1.1`.
+VERSION="${VERSION#v}"
 
 OUT_DIR="dist/bin"
 BIN_NAME="declaragent-${TARGET}"
