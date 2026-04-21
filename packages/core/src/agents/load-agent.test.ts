@@ -73,9 +73,24 @@ describe('loadAgent', () => {
     await expect(loadAgent({ agentDir: dir })).rejects.toBeInstanceOf(AgentConfigError);
   });
 
-  test('rejects when required fields are missing', async () => {
-    writeFileSync(join(dir, 'agent.yaml'), 'name: x\nmodel: y\n');
-    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/systemPrompt/);
+  test('rejects when `name` is missing (the one hard-required field)', async () => {
+    writeFileSync(join(dir, 'agent.yaml'), 'model: x\nsystemPrompt: y\n');
+    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/name/);
+  });
+
+  test('synthesises a default systemPrompt when the yaml omits it', async () => {
+    writeFileSync(join(dir, 'agent.yaml'), 'name: minimal-bot\n');
+    rmSync(join(dir, 'skills'), { recursive: true });
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.spec.systemPrompt).toContain('minimal-bot');
+    expect(loaded.spec.systemPrompt).toContain('skills');
+  });
+
+  test('returns empty model when yaml omits it (caller resolves)', async () => {
+    writeFileSync(join(dir, 'agent.yaml'), 'name: minimal-bot\n');
+    rmSync(join(dir, 'skills'), { recursive: true });
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.spec.model).toBe('');
   });
 
   test('passthrough keeps forward-compat keys without erroring', async () => {

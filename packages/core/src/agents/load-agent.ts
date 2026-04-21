@@ -40,11 +40,25 @@ export class AgentConfigError extends Error {
  * keys (channels, sources, plugins refs) without tripping validation
  * — consumers that need those keys add their own loader.
  */
+/**
+ * Only `name` is hard-required. `model` + `systemPrompt` are optional
+ * because `declaragent init` scaffolds a slim yaml that relies on
+ * runtime defaults (provider's configured model; a generic system
+ * prompt derived from the agent name). Raw templates under
+ * `templates/<name>/agent.yaml` include everything, but the wizard
+ * normalises them into a smaller file. Both shapes must load.
+ *
+ * When `model` is absent, callers (the CLI) fall back to:
+ *   `--model` flag > auth-config default > provider preset default.
+ *
+ * When `systemPrompt` is absent, we synthesise:
+ *   "You are <name>. Help the user. Use your skills when appropriate."
+ */
 const agentYamlSchema = z
   .object({
     name: z.string().min(1, 'agent.yaml: "name" is required'),
-    model: z.string().min(1, 'agent.yaml: "model" is required'),
-    systemPrompt: z.string().min(1, 'agent.yaml: "systemPrompt" is required'),
+    model: z.string().min(1).optional(),
+    systemPrompt: z.string().min(1).optional(),
     temperature: z.number().optional(),
     maxTokens: z.number().int().positive().optional(),
     subagentDepthCap: z.number().int().nonnegative().optional(),
@@ -136,8 +150,12 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
 
   const spec: AgentSpec = {
     name: cfg.name,
-    model: cfg.model,
-    systemPrompt: cfg.systemPrompt,
+    // Empty model signals "caller must resolve" — the CLI layer picks
+    // from `--model` / auth config / provider preset default.
+    model: cfg.model ?? '',
+    systemPrompt:
+      cfg.systemPrompt ??
+      `You are "${cfg.name}", a declaragent-authored agent. Help the user. Use your skills when they apply to the user's request.`,
     ...(cfg.temperature !== undefined && { temperature: cfg.temperature }),
     ...(cfg.maxTokens !== undefined && { maxTokens: cfg.maxTokens }),
     ...(cfg.subagentDepthCap !== undefined && { subagentDepthCap: cfg.subagentDepthCap }),

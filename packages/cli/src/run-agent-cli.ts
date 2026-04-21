@@ -102,13 +102,18 @@ export async function runAgent(args: RunAgentArgs, deps: RunAgentDeps = {}): Pro
     }
   }
 
+  // Model resolution: yaml → `--model` flag → leave empty and let
+  // App's initialModel resolver pick from auth config / preset.
+  const resolvedModel = loaded.spec.model || args.model || '';
+
   const agentSpec: AgentSpec = {
     ...loaded.spec,
+    model: resolvedModel,
     systemPrompt: composeSystemPromptWithSkills(loaded.spec.systemPrompt, loaded.skills),
   };
 
   out(`running ${loaded.spec.name} from ${loaded.agentDir}\n`);
-  out(`  model:  ${loaded.spec.model}\n`);
+  out(`  model:  ${resolvedModel || '<from auth config / flag>'}\n`);
   out(
     `  skills: ${loaded.skills.length} loaded (${loaded.skills.map((s) => s.lookupName).join(', ') || 'none'})\n`,
   );
