@@ -24,14 +24,19 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      # Build first so @declaragent/core's dist/.d.ts exists before
+      # sibling packages (source-*, testkit) typecheck against it.
+      # Under moduleResolution: bundler + declaration-only core, the
+      # types field resolves to dist/index.d.ts — missing when we
+      # typecheck from a clean checkout. (Pre-existing CI bug, backlog #2.)
+      - name: Build
+        run: bun run build
+
       - name: Typecheck
         run: bun run typecheck
 
       - name: Test
         run: bun test
-
-      - name: Build
-        run: bun run build
 
       - name: Verify publishability (@declaragent/core)
         working-directory: packages/core
