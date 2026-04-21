@@ -1,0 +1,21 @@
+{
+  "mode": "pre",
+  "tag": "next",
+  "initialVersions": {
+    "@declaragent-examples/phase5-demo": "0.0.3",
+    "@declaragent/channel-discord": "1.0.0",
+    "@declaragent/channel-slack": "1.0.0",
+    "@declaragent/channel-telegram": "1.0.0",
+    "@declaragent/channel-whatsapp": "1.0.0",
+    "@declaragent/cli": "0.4.16",
+    "@declaragent/core": "0.2.2",
+    "@declaragent/plugin-agent-rpc": "1.0.0",
+    "@declaragent/source-amqp": "1.0.0",
+    "@declaragent/source-kafka": "1.0.0",
+    "@declaragent/source-mqtt": "1.0.0",
+    "@declaragent/source-nats": "1.0.0",
+    "@declaragent/source-sqs": "1.0.0",
+    "@declaragent/testkit": "1.0.0"
+  },
+  "changesets": []
+}

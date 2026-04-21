@@ -47,6 +47,21 @@ export interface DiscoverAdaptersOptions {
   /** Core version used for `agent_compat` checks. Default: `VERSION`. */
   coreVersion?: string;
   logger?: Logger;
+  /**
+   * Per-package failure hook. When supplied, errors raised by
+   * `loadOnePackage` (bad import, agent_compat mismatch, malformed
+   * export) invoke this callback instead of aborting the whole
+   * discovery. Lets callers keep booting with the healthy adapters
+   * while surfacing the broken ones.
+   *
+   * Duplicate-type errors still throw — those are correctness issues
+   * that need caller attention. Only per-package load failures are
+   * soft-failed through this hook.
+   *
+   * When omitted, per-package errors throw (back-compat).
+   * @since 0.2.3
+   */
+  onPackageError?(pkgDir: string, err: Error): void;
 }
 
 export class AdapterDiscoveryError extends Error {
@@ -198,10 +213,20 @@ export async function discoverAdapters(
     if (!existsSync(nodeModulesDir)) continue;
     const pkgDirs = await listScopedSourcePackageDirs(nodeModulesDir);
     for (const pkgDir of pkgDirs) {
-      const result = await loadOnePackage(pkgDir, coreVersion, logger);
+      let result: DiscoveredAdapter | null;
+      try {
+        result = await loadOnePackage(pkgDir, coreVersion, logger);
+      } catch (err) {
+        if (!options.onPackageError) throw err;
+        options.onPackageError(pkgDir, err instanceof Error ? err : new Error(String(err)));
+        continue;
+      }
       if (!result) continue;
       const prior = byType.get(result.type);
       if (prior) {
+        // Duplicate-type errors always throw — callers need to know
+        // because it's a config correctness issue, not a package-
+        // health issue. `onPackageError` is only for the latter.
         throw new AdapterDiscoveryError(
           `adapter type "${result.type}" is claimed by two packages: ` +
             `"${prior.packageName}" (${prior.path}) and "${result.packageName}" (${result.path})`,

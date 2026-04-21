@@ -39,26 +39,82 @@ import {
   createEventStore,
   createFileWatchAdapter,
   createWebhookAdapter,
+  discoverAdapters,
   validateEventSourcesConfig,
 } from '@declaragent/core';
 import { configDir, sessionsDbPath } from './paths.js';
 
-/** Source types we can bind in-process without an external broker. */
-const IN_PROCESS_TYPES = ['webhook', 'cron', 'file-watch'] as const;
-type InProcessType = (typeof IN_PROCESS_TYPES)[number];
-
 /**
- * Adapter map used both for yaml validation and for instance creation.
- * Source adapters in external packages (kafka, nats, etc.) are
- * deliberately not included here — they surface as "unknown type"
- * warnings without failing the load.
+ * Build the adapter map used for yaml validation + instance creation.
+ *
+ * Merges three sources, in order of precedence:
+ *   1. In-process built-ins (webhook / cron / file-watch) — always available
+ *   2. External adapters discovered under `agentDir/node_modules/@declaragent/source-*`
+ *   3. External adapters discovered under `cwd/node_modules/@declaragent/source-*`
+ *   4. External adapters discovered under `~/.declaragent/node_modules/@declaragent/source-*`
+ *
+ * Duplicate type claims ACROSS paths throw (see core's
+ * `discoverAdapters` — it's a config correctness issue users need to
+ * see). Per-package load failures are soft — logged to the supplied
+ * logger + that one adapter omitted, other adapters in the same scan
+ * keep loading.
+ *
+ * @since 0.5.0-slice.1 — replaces the old hardcoded `builtinAdapters()`
+ *   that returned only the three in-process types.
  */
-function builtinAdapters(): Record<InProcessType, EventSourceAdapter<unknown>> {
-  return {
+async function loadAdapters(opts: {
+  agentDir?: string;
+  logger: Logger;
+}): Promise<Record<string, EventSourceAdapter<unknown>>> {
+  const map: Record<string, EventSourceAdapter<unknown>> = {
     webhook: createWebhookAdapter() as EventSourceAdapter<unknown>,
     cron: createCronAdapter() as EventSourceAdapter<unknown>,
     'file-watch': createFileWatchAdapter() as EventSourceAdapter<unknown>,
   };
+
+  const searchPaths = uniquePaths([opts.agentDir, process.cwd(), configDir()]);
+
+  // Duplicate-type errors here intentionally propagate: users need to
+  // see that two packages claim the same adapter type. Only per-package
+  // load failures are soft-failed via onPackageError.
+  const discovered = await discoverAdapters({
+    searchPaths,
+    logger: opts.logger,
+    onPackageError: (pkgDir, err) => {
+      opts.logger.warn('adapter-discovery.package-failed', {
+        pkgDir,
+        err: err.message,
+      });
+    },
+  });
+
+  for (const d of discovered) {
+    // Built-ins take precedence over external packages with the same
+    // type. Unlikely in practice (no @declaragent/source-webhook ever
+    // ships), but a cheap guardrail against accidental shadowing.
+    if (map[d.type] !== undefined) {
+      opts.logger.warn('adapter-discovery.builtin-shadowed', {
+        type: d.type,
+        pkg: d.packageName,
+      });
+      continue;
+    }
+    map[d.type] = d.adapter;
+  }
+
+  return map;
+}
+
+function uniquePaths(paths: ReadonlyArray<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of paths) {
+    if (p === undefined) continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
 }
 
 export interface StartAgentSourcesOptions {
@@ -90,6 +146,13 @@ export interface StartAgentSourcesOptions {
    * every event as `outcome: duplicate`. @since 0.4.15
    */
   recordToStore?: boolean;
+  /**
+   * Agent directory — used as the first search path for external
+   * event-source adapters (`agentDir/node_modules/@declaragent/source-*`).
+   * When omitted, only `process.cwd()` + `configDir()` are scanned.
+   * @since 0.5.0-slice.1
+   */
+  agentDir?: string;
 }
 
 export interface StartAgentSourcesResult {
@@ -145,7 +208,10 @@ export async function startAgentSources(
   options: StartAgentSourcesOptions,
 ): Promise<StartAgentSourcesResult> {
   const logger = options.logger ?? NOOP_LOGGER;
-  const adapters = builtinAdapters();
+  const adapters = await loadAdapters({
+    ...(options.agentDir !== undefined && { agentDir: options.agentDir }),
+    logger,
+  });
   const report = await validateEventSourcesConfig({
     path: options.configPath,
     adapters,
@@ -200,12 +266,15 @@ export async function startAgentSources(
   const started: Array<{ type: string; id: string; summary: string }> = [];
 
   for (const src of report.sources) {
-    if (!isInProcessType(src.type)) {
-      // External-broker adapter (kafka/nats/…). Skipped with a hint
-      // that matches validateEventSourcesConfig's unknownTypes path.
+    const adapter = adapters[src.type];
+    if (adapter === undefined) {
+      // No adapter for this type — either an external-broker type
+      // whose package isn't installed, or something the user
+      // misspelled. `validateEventSourcesConfig` already surfaced
+      // this in `report.unknownTypes`; skip silently here so we
+      // don't double-warn.
       continue;
     }
-    const adapter = adapters[src.type];
     try {
       const inst = await adapter.create(src.config, {
         bus,
@@ -263,10 +332,6 @@ export async function startAgentSources(
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
-
-function isInProcessType(type: string): type is InProcessType {
-  return (IN_PROCESS_TYPES as readonly string[]).includes(type);
-}
 
 /**
  * One-line human summary rendered in the REPL startup banner

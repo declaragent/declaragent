@@ -386,6 +386,7 @@ async function bringUp(
 
   const sources = await startSources({
     configPath: eventSourcesPath,
+    agentDir,
     // Route the bus's internal warnings (including silent
     // `event-store.record-failed` / `source.start-failed`) to the
     // per-agent log so `declaragent logs <agent>` surfaces them.

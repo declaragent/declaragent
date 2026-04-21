@@ -4,8 +4,9 @@ Project memory for Declaragent. Read this first when starting work here.
 
 - **Name:** Declaragent (official).
 - **Domain:** [declaragent.dev](https://declaragent.dev)
-- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages published at `0.1.0` (2026-04-20).
+- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest `@declaragent/cli@0.4.16` (2026-04-21).
 - **GitHub org:** `declaragent`.
+- **Honest capability status:** see **[AGENTS.md](./AGENTS.md)**. This file is a project-orientation guide, not a status dashboard — AGENTS.md is the source of truth for "does feature X actually work end-to-end today?".
 
 ## What this project is
 
@@ -19,28 +20,34 @@ The reference implementation archive — the leaked Claude Code source — lives
 
 When the plan and a background doc disagree, `SPEC_AND_PLAN.md` wins.
 
-## Current status
+## Current status (verified 2026-04-21, CLI 0.4.16)
 
-**v0.1.0 shipped on npm (2026-04-20).** Full runtime across 13 packages:
-`@declaragent/core`, `@declaragent/cli`, `@declaragent/plugin-agent-rpc`,
-`@declaragent/testkit`, five source adapters (kafka/nats/mqtt/amqp/sqs),
-and four channel adapters (slack/telegram/discord/whatsapp).
+**What works end-to-end** (production-usable single-machine path):
+- `declaragent init` → scaffold with `agent.yaml` + skills + `event-sources.yaml`
+- `declaragent auth login` → OpenRouter / Anthropic / env-var credentials
+- `declaragent up [-d]` → binds webhook/cron/file-watch sources, dispatcher routes events to skills, LLM turn runs, outcome recorded
+- `declaragent ps / logs / down` → lifecycle verbs
+- `declaragent events list / audit verify / dlq list` → observability backed by SQLite with hash-chained audit
+- `declaragent deploy gcp-cloud-run` → generates Dockerfile + service.yaml (user runs `gcloud` themselves)
+- Builder toolkit (`DECLARAGENT_BUILDER=on`): conversational authoring for skills, sources, channels, MCP, plugins, secrets, peers, fleet-add
 
-Features delivered through 0.1.0:
-- Phases 1–7: engine loop, built-in tools, permission gate, REPL,
-  session persistence, sub-agents, slash commands, event sources +
-  dispatcher + DLQ, multi-tenant + audit + secrets + Prometheus, install
-  wizard, template packs, Cloud Run deploy.
-- v1.1: Agent RPC (producer tool, consumer source, memory transport,
-  envelope + pending registry).
-- v1.2: Fleet — slices 0–10. `fleet.yaml` manifest, scaffolder,
-  single-process dev loop, promote/demote, deploy with rolling +
-  all-or-nothing + version-skew, graph + peers + status verbs, fleet-
-  starter template, docs-site reference + cookbook.
+**What's component-present but not wired to happy paths** (documented gaps):
+- MCP server activation — `mcp add` stores but no runtime loads the servers
+- Plugin activation — `plugin install` stores but no runtime loads the tools
+- External source adapters (Kafka/NATS/SQS/AMQP/MQTT) — packages exist, `declaragent up` doesn't discover them (hardcodes webhook/cron/file-watch)
+- Non-memory RPC transports — `fleet run` hardwires memory bus
+- `RequestAgent` tool — not in `BUILTIN_TOOLS`, so skills can't call other agents without manual plugin wiring
+- Channel delivery — adapters exist, no `SendMessage` tool in built-ins
+- Circuit breakers, default rate limits, `/metrics` endpoint, real `gcloud` push — all component-present, none wired
 
-**Next: v1.2 slice 11** — soak + RC. Nightly three-agent fleet running
-over in-memory RPC for 24h, deploy soak against a throwaway GCP
-project, `v1.2.0-rc.1` → `v1.2.0` promotion.
+**See [AGENTS.md](./AGENTS.md)** for the full evidence-backed matrix with file:line references. If you're about to promise a user a capability, verify against AGENTS.md first.
+
+**Next priorities** (five items to close the largest first-principles gaps — see AGENTS.md § "Prioritized path"):
+1. External source adapter discovery in `up` (~1 day)
+2. Non-memory transports in `fleet run` (~1 day)
+3. `RequestAgent` in `BUILTIN_TOOLS` (~2h)
+4. MCP server activation at runtime (~1 day)
+5. Channel `SendMessage` tool + runtime activation (~1 day)
 
 ## Stack
 

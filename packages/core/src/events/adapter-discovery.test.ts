@@ -275,6 +275,78 @@ describe('discoverAdapters', () => {
       cleanup();
     }
   });
+
+  test('onPackageError soft-fails a bad package + keeps healthy siblings', async () => {
+    const { path, cleanup } = tmpRoot();
+    try {
+      installFakePackage({ root: path, name: 'alpha' });
+      installFakePackage({
+        root: path,
+        name: 'broken',
+        moduleSource: "throw new Error('import boom');",
+      });
+      const failures: Array<{ pkgDir: string; message: string }> = [];
+      const out = await discoverAdapters({
+        searchPaths: [path],
+        coreVersion: '0.7.0',
+        onPackageError(pkgDir, err) {
+          failures.push({ pkgDir, message: err.message });
+        },
+      });
+      expect(out.map((a) => a.type)).toEqual(['alpha']);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.pkgDir).toContain('source-broken');
+      expect(failures[0]?.message).toMatch(/import boom|failed to import/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('onPackageError does NOT intercept duplicate-type errors', async () => {
+    const { path, cleanup } = tmpRoot();
+    try {
+      installFakePackage({
+        root: path,
+        name: 'dup-a',
+        declaragent: { kind: 'event-source-adapter', type: 'dup', agent_compat: '*' },
+      });
+      installFakePackage({
+        root: path,
+        name: 'dup-b',
+        declaragent: { kind: 'event-source-adapter', type: 'dup', agent_compat: '*' },
+      });
+      const failures: Array<{ pkgDir: string; message: string }> = [];
+      await expect(
+        discoverAdapters({
+          searchPaths: [path],
+          coreVersion: '0.7.0',
+          onPackageError(pkgDir, err) {
+            failures.push({ pkgDir, message: err.message });
+          },
+        }),
+      ).rejects.toThrow(/claimed by two packages/);
+      expect(failures).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('omitting onPackageError preserves strict throw-on-first-error', async () => {
+    const { path, cleanup } = tmpRoot();
+    try {
+      installFakePackage({ root: path, name: 'alpha' });
+      installFakePackage({
+        root: path,
+        name: 'broken',
+        moduleSource: "throw new Error('import boom');",
+      });
+      await expect(discoverAdapters({ searchPaths: [path], coreVersion: '0.7.0' })).rejects.toThrow(
+        /failed to import/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe('registerDiscoveredAdapters', () => {
