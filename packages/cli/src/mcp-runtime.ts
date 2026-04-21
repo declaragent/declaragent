@@ -22,7 +22,13 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type { Logger, MCPClient, PluginMCPServerSpec, Tool } from '@declaragent/core';
-import { createHTTPMCPClient, createMCPTool, createStdioMCPClient } from '@declaragent/core';
+import {
+  createHTTPMCPClient,
+  createMCPTool,
+  createSSEMCPClient,
+  createStdioMCPClient,
+  createStreamableHTTPMCPClient,
+} from '@declaragent/core';
 import type { MCPConsentStore } from './mcp-consent.js';
 import { createMCPConsentStore } from './mcp-consent.js';
 import {
@@ -122,23 +128,23 @@ export interface StartMCPServersOptions {
 }
 
 function defaultSpawn(spec: PluginMCPServerSpec, logger: Logger): MCPClient {
+  const baseArgs = {
+    name: spec.name,
+    protocolVersion: spec.protocolVersion,
+    logger,
+  } as const;
   if (spec.transport.type === 'stdio') {
-    return createStdioMCPClient({
-      name: spec.name,
-      transport: spec.transport,
-      protocolVersion: spec.protocolVersion,
-      logger,
-    });
+    return createStdioMCPClient({ ...baseArgs, transport: spec.transport });
   }
   if (spec.transport.type === 'http') {
-    return createHTTPMCPClient({
-      name: spec.name,
-      transport: spec.transport,
-      protocolVersion: spec.protocolVersion,
-      logger,
-    });
+    return createHTTPMCPClient({ ...baseArgs, transport: spec.transport });
   }
-  // TypeScript's exhaustive check — new transports land in 2c.
+  if (spec.transport.type === 'sse') {
+    return createSSEMCPClient({ ...baseArgs, transport: spec.transport });
+  }
+  if (spec.transport.type === 'http-streamable') {
+    return createStreamableHTTPMCPClient({ ...baseArgs, transport: spec.transport });
+  }
   const exhausted: never = spec.transport;
   throw new Error(`MCP server "${spec.name}": unsupported transport ${JSON.stringify(exhausted)}`);
 }

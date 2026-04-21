@@ -43,11 +43,42 @@ export type HTTPTransportConfig = {
   headers?: Readonly<Record<string, string>>;
 };
 
+/**
+ * Older MCP remote transport (2024-11-05 spec). Client opens an SSE
+ * stream via GET to receive server→client messages; outbound
+ * client→server messages are POST'd to a per-session endpoint URL
+ * advertised by the server in the first SSE `endpoint` frame.
+ */
+export type SSETransportConfig = {
+  type: 'sse';
+  url: string;
+  headers?: Readonly<Record<string, string>>;
+};
+
+/**
+ * Current MCP remote transport (2025-03-26 spec). A single URL handles
+ * both directions: client POSTs a JSON-RPC message and the response
+ * is either a single JSON body OR a `text/event-stream` with one or
+ * more JSON-RPC frames (the matching response + any notifications the
+ * server wants to piggyback).
+ */
+export type StreamableHTTPTransportConfig = {
+  type: 'http-streamable';
+  url: string;
+  headers?: Readonly<Record<string, string>>;
+};
+
+export type MCPTransportConfig =
+  | StdioTransportConfig
+  | HTTPTransportConfig
+  | SSETransportConfig
+  | StreamableHTTPTransportConfig;
+
 /** User-facing config (from `agent.yaml` or plugin manifest in slice 6). */
 export interface MCPServerConfig {
   /** Short id; namespaces tools as `mcp__<name>__<tool>`. */
   name: string;
-  transport: StdioTransportConfig | HTTPTransportConfig;
+  transport: MCPTransportConfig;
   /** Pinned protocol version (e.g. `"2024-11-05"`). */
   protocolVersion: string;
 }

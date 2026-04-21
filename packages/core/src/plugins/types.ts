@@ -1,4 +1,4 @@
-import type { StdioTransportConfig } from '../mcp/types.js';
+import type { MCPTransportConfig } from '../mcp/types.js';
 
 /**
  * Validated plugin manifest. Mirrors the JSON shape in `plugin.json`
@@ -35,11 +35,11 @@ export interface PluginMCPServerSpec {
   /** Short name; namespaces tools as `mcp__<name>__<tool>`. */
   name: string;
   /**
-   * Slice 6 only supports the stdio transport. HTTP comes in slice 9;
-   * the manifest schema accepts it but the loader rejects with a clear
-   * error until the transport lands.
+   * Supported transports: stdio (local subprocess), http (plain
+   * request/response), sse (older 2024-11-05 remote), http-streamable
+   * (current 2025-03-26 remote). Wired in slices 2a/2b/2c.
    */
-  transport: StdioTransportConfig | { type: 'http'; url: string };
+  transport: MCPTransportConfig;
   protocolVersion: string;
 }
 

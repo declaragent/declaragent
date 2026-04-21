@@ -42,6 +42,18 @@ export type {
   CreateHTTPMCPClientOptions,
   FetchFn,
 } from './http-client.js';
+export { createSSEConnection, createSSEMCPClient } from './sse-client.js';
+export type { CreateSSEConnectionOptions, CreateSSEMCPClientOptions } from './sse-client.js';
+export {
+  createStreamableHTTPConnection,
+  createStreamableHTTPMCPClient,
+} from './streamable-http-client.js';
+export type {
+  CreateStreamableHTTPConnectionOptions,
+  CreateStreamableHTTPMCPClientOptions,
+} from './streamable-http-client.js';
+export { SSEFrameParser } from './sse-parser.js';
+export type { SSEFrame } from './sse-parser.js';
 export { mcpServerExtension } from './server-extension.js';
 export {
   createMCPTool,
@@ -60,5 +72,8 @@ export type {
   MCPServerInfo,
   MCPTool,
   MCPToolResult,
+  MCPTransportConfig,
+  SSETransportConfig,
   StdioTransportConfig,
+  StreamableHTTPTransportConfig,
 } from './types.js';

@@ -246,14 +246,15 @@ describe('startMCPServers', () => {
     await runtime.shutdown();
   });
 
-  test('default spawn dispatches on transport type (stdio + http both reach a client)', async () => {
-    // `spawn` override covers these paths in other tests, but we also
-    // want confidence that the default spawn's transport dispatch works
-    // for both stdio and http. Use the override to intercept the spec
-    // that would otherwise reach `defaultSpawn` and verify the transport
-    // is preserved end-to-end.
+  test('default spawn dispatches on transport type across all four transports', async () => {
+    // Confidence that `spawn` receives the expected transport for each
+    // of stdio / http / sse / http-streamable. The default spawn in
+    // `mcp-runtime.ts` is exhaustive across these; the switch is tested
+    // by proxy here so a new transport won't silently fall through.
     await consentStore.approve('stdio-one');
     await consentStore.approve('http-one');
+    await consentStore.approve('sse-one');
+    await consentStore.approve('stream-one');
     const seen: string[] = [];
     const runtime = await startMCPServers({
       servers: [
@@ -275,6 +276,24 @@ describe('startMCPServers', () => {
           scope: 'user',
           sourcePath: '/x',
         },
+        {
+          spec: {
+            name: 'sse-one',
+            transport: { type: 'sse', url: 'https://example.test/sse' },
+            protocolVersion: '2024-11-05',
+          },
+          scope: 'user',
+          sourcePath: '/x',
+        },
+        {
+          spec: {
+            name: 'stream-one',
+            transport: { type: 'http-streamable', url: 'https://example.test/stream' },
+            protocolVersion: '2025-03-26',
+          },
+          scope: 'user',
+          sourcePath: '/x',
+        },
       ],
       logger: NOOP_LOGGER,
       consentStore,
@@ -283,7 +302,12 @@ describe('startMCPServers', () => {
         return fakeClient({ tools: [] });
       },
     });
-    expect(seen.sort()).toEqual(['http-one:http', 'stdio-one:stdio']);
+    expect(seen.sort()).toEqual([
+      'http-one:http',
+      'sse-one:sse',
+      'stdio-one:stdio',
+      'stream-one:http-streamable',
+    ]);
     await runtime.shutdown();
   });
 
