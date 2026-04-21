@@ -32,7 +32,7 @@ describe('runAddSource', () => {
         config: {
           path: '/webhook/pr',
           port: 7777,
-          target: { kind: 'skill', name: 'summarise' },
+          target: { type: 'skill', name: 'summarise' },
         },
       },
       { scopeRoot: dir },
@@ -55,13 +55,13 @@ describe('runAddSource', () => {
     const path = join(dir, 'event-sources.yaml');
     writeFileSync(
       path,
-      `# hand-authored cron\n- type: cron\n  config:\n    id: morning\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: summarise }\n`,
+      `# hand-authored cron\n- type: cron\n  config:\n    id: morning\n    schedule: "0 9 * * *"\n    target: { type: skill, name: summarise }\n`,
     );
     await runAddSource(
       {
         type: 'webhook',
         id: 'pr-inbox',
-        config: { path: '/webhook/pr', target: { kind: 'skill', name: 'summarise' } },
+        config: { path: '/webhook/pr', target: { type: 'skill', name: 'summarise' } },
       },
       { scopeRoot: dir },
     );
@@ -78,7 +78,7 @@ describe('runAddSource', () => {
       {
         type: 'webhook',
         id: 'pr-inbox',
-        config: { path: '/x', target: { kind: 'skill', name: 'summarise' } },
+        config: { path: '/x', target: { type: 'skill', name: 'summarise' } },
       },
       { scopeRoot: dir },
     );
@@ -87,7 +87,7 @@ describe('runAddSource', () => {
         {
           type: 'webhook',
           id: 'pr-inbox',
-          config: { path: '/y', target: { kind: 'skill', name: 'summarise' } },
+          config: { path: '/y', target: { type: 'skill', name: 'summarise' } },
         },
         { scopeRoot: dir },
       ),
@@ -98,7 +98,7 @@ describe('runAddSource', () => {
     const path = join(dir, 'event-sources.yaml');
     writeFileSync(
       path,
-      '- type: webhook\n  config:\n    id: pre-existing\n    path: /already\n    target: { kind: skill, name: summarise }\n',
+      '- type: webhook\n  config:\n    id: pre-existing\n    path: /already\n    target: { type: skill, name: summarise }\n',
     );
     const before = readFileSync(path, 'utf8');
     await expect(
@@ -106,7 +106,7 @@ describe('runAddSource', () => {
         {
           type: 'cron',
           id: 'bad',
-          config: { schedule: 'definitely-not-a-cron', target: { kind: 'skill', name: 'x' } },
+          config: { schedule: 'definitely-not-a-cron', target: { type: 'skill', name: 'x' } },
         },
         { scopeRoot: dir },
       ),
@@ -122,7 +122,7 @@ describe('runAddSource', () => {
         {
           type: 'cron',
           id: 'bad',
-          config: { schedule: 'not-a-schedule', target: { kind: 'skill', name: 'x' } },
+          config: { schedule: 'not-a-schedule', target: { type: 'skill', name: 'x' } },
         },
         { scopeRoot: dir },
       ),
@@ -139,7 +139,7 @@ describe('runAddSource', () => {
           brokers: ['broker-1:9092'],
           topics: ['orders'],
           groupId: 'declaragent',
-          target: { kind: 'skill', name: 'summarise' },
+          target: { type: 'skill', name: 'summarise' },
         },
       },
       { scopeRoot: dir },
@@ -154,7 +154,7 @@ describe('runAddSource', () => {
         {
           type: 'webhook',
           id: 'x',
-          config: { path: '/x', target: { kind: 'skill', name: 'summarise' } },
+          config: { path: '/x', target: { type: 'skill', name: 'summarise' } },
         },
         { scopeRoot: dir },
       ),
@@ -170,7 +170,7 @@ describe('runAddSource', () => {
           {
             type: 'webhook',
             id: 'x',
-            config: { path: '/x', target: { kind: 'skill', name: 'summarise' } },
+            config: { path: '/x', target: { type: 'skill', name: 'summarise' } },
             agentPath: outside,
           },
           { scopeRoot: dir },
@@ -192,7 +192,7 @@ describe('runAddSource', () => {
             config: {
               id: 'first',
               path: '/a',
-              target: { kind: 'skill', name: 'summarise' },
+              target: { type: 'skill', name: 'summarise' },
             },
           },
         ],
@@ -204,7 +204,7 @@ describe('runAddSource', () => {
       {
         type: 'webhook',
         id: 'second',
-        config: { path: '/b', target: { kind: 'skill', name: 'summarise' } },
+        config: { path: '/b', target: { type: 'skill', name: 'summarise' } },
       },
       { scopeRoot: dir },
     );
@@ -232,7 +232,7 @@ describe('appendSourceEntry (pure)', () => {
       appendSourceEntry('- type: [[broken', {
         type: 'webhook',
         id: 'x',
-        config: { id: 'x', path: '/x', target: { kind: 'skill', name: 'y' } },
+        config: { id: 'x', path: '/x', target: { type: 'skill', name: 'y' } },
       }),
     ).toThrow(BuilderValidationError);
   });

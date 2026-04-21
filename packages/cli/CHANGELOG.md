@@ -1,5 +1,26 @@
 # @declaragent/cli
 
+## 0.4.11
+
+### Patch Changes
+
+Event dispatch end-to-end + four bug fixes surfaced by the first 0.4.1 E2E run. The version number jumps from 0.4.1 → 0.4.11 intentionally.
+
+**Dispatcher wired into `declaragent up` (the headline)**
+
+`up` previously bound sources + recorded events to the store with `outcome: pending` — nothing pulled events off the bus and invoked the matching skill. Webhooks fired into the void. This release attaches core's `createEventDispatcher` to each agent's bus, builds a per-agent extension registry from the scaffolded skills, and constructs an engine bound to the user's provider + built-in tools. Events with `target: {type: skill, name: X}` now run as real LLM turns; `ps` / `events list` / the per-agent log all show the dispatched outcome. When no creds are configured the startup banner warns that dispatch is skipped but sources still bind.
+
+**Observability + correctness fixes**
+
+- **`kind: skill` → `type: skill` in templates.** `pr-review` and `oncall-escalator` shipped with the wrong target discriminator — `EventTarget` uses `type:`, not `kind:`. Events silently tripped a SQLite `NOT NULL` constraint on `events.target_type` and the bus subscriber's NOOP logger ate the error. Both templates fixed; `kafka-pipeline` already had it right.
+- **Webhook / cron / file-watch adapters reject unknown target types at bind time.** New shared helper `assertEventTarget(target, sourceType)` in core catches the `kind`→`type` typo with a specific rewrite hint ("your config uses `kind` — replace with `type: skill`") so the next `declaragent up` fails fast instead of silently dropping every event.
+- **Per-agent logger wired into `startAgentSources`.** The default `NOOP_LOGGER` used to eat `event-store.record-failed` warnings; `up` now passes a bridge that routes core's `Logger` calls into the per-agent log file. `declaragent logs <agent>` surfaces bus-level failures.
+- **`up -d` detach is observable + synchronous.** Child stdout/stderr append to `~/.declaragent/up-startup.log` instead of `/dev/null`, and the parent polls the state file for up to 8s before returning. `up -d` now only prints `✓ up` once sources are actually bound; a crash mid-startup surfaces a tail of the log automatically.
+
+**Test footprint**
+
+5 new target-validator tests in core; 2 new `up-lifecycle` waiters. All 2166 tests pass, 0 regressions.
+
 ## 0.4.1
 
 ### Patch Changes

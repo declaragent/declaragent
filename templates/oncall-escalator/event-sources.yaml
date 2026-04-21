@@ -21,5 +21,5 @@
       max: 60
       windowMs: 60000
     target:
-      kind: skill
+      type: skill
       name: triage

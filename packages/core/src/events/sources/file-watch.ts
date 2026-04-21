@@ -1,5 +1,6 @@
 import { type FSWatcher, watch as chokidarWatch } from 'chokidar';
 import { stampTenantId } from '../../tenancy/stamp.js';
+import { assertEventTarget } from '../target-validate.js';
 import type {
   AgentEvent,
   EventSourceAdapter,
@@ -132,9 +133,7 @@ function assertTriggerConfig(config: unknown): asserts config is FileWatchTrigge
       throw new Error('file-watch trigger config "debounceMs" must be a non-negative number');
     }
   }
-  if (!c.target || typeof c.target !== 'object') {
-    throw new Error('file-watch trigger config requires an object "target"');
-  }
+  assertEventTarget(c.target, 'file-watch');
 }
 
 // ── Glob → regex (minimal) ───────────────────────────────────────────────

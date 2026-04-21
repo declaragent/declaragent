@@ -1,4 +1,5 @@
 import { stampTenantId } from '../../tenancy/stamp.js';
+import { assertEventTarget } from '../target-validate.js';
 import type {
   AgentEvent,
   EventSourceAdapter,
@@ -163,9 +164,7 @@ function assertTriggerConfig(config: unknown): asserts config is CronTriggerConf
   if (c.timezone !== undefined && typeof c.timezone !== 'string') {
     throw new Error('cron trigger config "timezone" must be a string if provided');
   }
-  if (!c.target || typeof c.target !== 'object') {
-    throw new Error('cron trigger config requires an object "target"');
-  }
+  assertEventTarget(c.target, 'cron');
   // Parse the schedule now so the host fails fast; the dispatcher
   // re-validates target shape when routing.
   validateSchedule(c.schedule);

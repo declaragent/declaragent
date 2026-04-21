@@ -1,4 +1,5 @@
 import { stampTenantId } from '../../tenancy/stamp.js';
+import { assertEventTarget } from '../target-validate.js';
 import type {
   AgentEvent,
   EventAuth,
@@ -264,9 +265,7 @@ function assertTriggerConfig(config: unknown): asserts config is WebhookTriggerC
       throw new Error('webhook trigger config "maxBodyBytes" must be a positive number');
     }
   }
-  if (!c.target || typeof c.target !== 'object') {
-    throw new Error('webhook trigger config requires an object "target"');
-  }
+  assertEventTarget(c.target, 'webhook');
 }
 
 function assertAuth(value: unknown): asserts value is WebhookAuth {

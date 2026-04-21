@@ -70,6 +70,7 @@ export type {
   RecordingTracer,
 } from './observability.js';
 export { compareSemver, parseSemver, satisfies as semverSatisfies } from './semver.js';
+export { KNOWN_TARGET_TYPES, assertEventTarget } from './target-validate.js';
 export {
   FilterExpressionError,
   evaluateFilter,

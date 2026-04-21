@@ -24,6 +24,7 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -75,6 +76,19 @@ export function upLogsDir(dir = configDir()): string {
 
 export function upLogPath(agentId: string, dir = configDir()): string {
   return join(upLogsDir(dir), `${sanitizeFileName(agentId)}.log`);
+}
+
+/**
+ * Where a detached `up -d` child's stdout + stderr land. Before
+ * 0.4.11 these were routed to /dev/null via `stdio: 'ignore'`, which
+ * meant any crash during the child's startup (yaml validation,
+ * port-in-use, auth missing) was completely invisible. Piping them
+ * here keeps the detach contract (parent exits, child runs
+ * unattached) while preserving the crash story — `declaragent logs`
+ * can also tail this file when state hasn't been written yet.
+ */
+export function upStartupLogPath(dir = configDir()): string {
+  return join(dir, 'up-startup.log');
 }
 
 // ── State R/W ───────────────────────────────────────────────────────────
@@ -189,12 +203,20 @@ export interface DetachOptions {
  * recursively. The parent `unref()`s so it can exit while the child
  * keeps running.
  *
+ * Child stdout + stderr are appended to `up-startup.log` — previously
+ * they were piped to /dev/null, which meant any crash during child
+ * startup (yaml validation, port-in-use, auth missing) was invisible.
+ *
  * Returns the child pid; the caller prints it and exits.
  */
 export function detachSelf(options: DetachOptions): number {
+  const logPath = upStartupLogPath();
+  // Open the log once so stdout + stderr share the handle; append
+  // mode keeps prior-run traces for debugging.
+  const logFd = openSync(logPath, 'a');
   const child: ChildProcess = spawn(options.launcher, [...options.args, DETACHED_SENTINEL], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', logFd, logFd],
     // A fresh env is fine — the child reads the same config dir via
     // HOME, and we don't rely on any parent-shell state.
   });
@@ -203,6 +225,29 @@ export function detachSelf(options: DetachOptions): number {
     throw new Error('failed to spawn detached process');
   }
   return child.pid;
+}
+
+/**
+ * Poll {@link readUpState} for up to `timeoutMs` waiting for the
+ * detached child to write its state file. When the child crashes
+ * mid-startup the state never lands — returns `null` in that case so
+ * the parent can surface a tail of the startup log.
+ */
+export async function waitForUpState(
+  options: { pid: number; timeoutMs?: number; pollIntervalMs?: number; dir?: string } = {
+    pid: 0,
+  },
+): Promise<UpState | null> {
+  const timeoutMs = options.timeoutMs ?? 5000;
+  const pollMs = options.pollIntervalMs ?? 120;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = readUpState(options.dir);
+    if (state && (options.pid === 0 || state.pid === options.pid)) return state;
+    if (options.pid !== 0 && !isAlive(options.pid)) return null;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return null;
 }
 
 // ── Internals ───────────────────────────────────────────────────────────

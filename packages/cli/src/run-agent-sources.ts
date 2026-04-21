@@ -29,6 +29,7 @@ import { Database } from 'bun:sqlite';
 import {
   type AgentEvent,
   type ConfiguredSource,
+  type EventBus,
   type EventSourceAdapter,
   type EventSourceInstance,
   type EventStore,
@@ -87,6 +88,21 @@ export interface StartAgentSourcesResult {
     readonly id: string;
     readonly summary: string;
   }>;
+  /**
+   * Live event bus the sources publish to. Exposed so callers
+   * (`declaragent up`) can attach a dispatcher + engine + skill
+   * registry that routes webhook/cron events into real agent turns.
+   * Before this landed (0.4.11), events were recorded to the store
+   * but sat as `outcome: pending` — nothing pulled them off for
+   * dispatch. @since 0.4.11
+   */
+  readonly bus?: EventBus;
+  /**
+   * Event store the bus writes to. The dispatcher needs this to
+   * `markOutcome` after a skill turn completes (moving events from
+   * `pending` to `dispatched`). @since 0.4.11
+   */
+  readonly eventStore?: EventStore;
   readonly unknownTypes: readonly { readonly index: number; readonly type: string }[];
   readonly validationErrors: readonly {
     readonly index: number;
@@ -204,6 +220,8 @@ export async function startAgentSources(
 
   return {
     started,
+    bus,
+    eventStore,
     unknownTypes: report.unknownTypes,
     validationErrors: report.errors,
     stop: async () => {

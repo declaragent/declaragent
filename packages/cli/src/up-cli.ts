@@ -25,15 +25,28 @@
  * @since 0.4.1
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
   AgentConfigError,
   type AgentEvent,
+  type AgentSpec,
+  type EventDispatcher,
   type LoadedAgent,
+  type Logger,
+  createEngine,
+  createEventDispatcher,
+  createExtensionRegistry,
+  createPermissionGate,
+  createSqliteSessionStore,
   loadAgent,
   loadFleet,
+  skillExtension,
 } from '@declaragent/core';
+import { resolveCredentials } from './auth.js';
+import { BUILTIN_TOOLS } from './builtin-tools.js';
+import { sessionsDbPath } from './paths.js';
+import { createProviderFromCreds } from './provider-factory.js';
 import { type StartAgentSourcesResult, startAgentSources } from './run-agent-sources.js';
 import {
   type AgentLogger,
@@ -47,6 +60,8 @@ import {
   openAgentLog,
   readUpState,
   reapStaleState,
+  upStartupLogPath,
+  waitForUpState,
   writeUpState,
 } from './up-lifecycle.js';
 
@@ -107,20 +122,43 @@ export async function up(args: UpArgs, deps: UpDeps = {}): Promise<number> {
   }
 
   // Detach path: re-exec without `-d` + sentinel appended. The child
-  // owns the workload; the parent just reports the pid.
+  // owns the workload; the parent waits for it to publish up-state so
+  // the "pid X" banner only prints once sources are actually bound.
+  // Crashes during the wait surface the tail of the startup log — the
+  // silent-failure trap we burned on in 0.4.1.
   if (args.detach && !args.__detached) {
+    let childPid: number;
     try {
-      const childPid = detachSelf({
+      childPid = detachSelf({
         launcher: process.argv[0] ?? 'declaragent',
         args: buildDetachedArgs(args),
       });
-      io.out(`✓ up (detached), pid ${childPid}\n`);
-      io.out('  tail logs with: declaragent logs -f\n');
-      return 0;
     } catch (err) {
       io.err(`✗ failed to detach: ${err instanceof Error ? err.message : String(err)}\n`);
       return 1;
     }
+    const state = await waitForUpState({ pid: childPid, timeoutMs: 8000 });
+    if (state === null) {
+      io.err(`✗ detached child (pid ${childPid}) never bound. Startup log tail:\n`);
+      io.err(indent(tailFile(upStartupLogPath(), 30), '    '));
+      io.err(
+        '\n  If nothing jumped out, run `declaragent up` in the foreground for the full error.\n',
+      );
+      // Best-effort: kill the zombie child if it's still around.
+      try {
+        if (isAlive(childPid)) process.kill(childPid, 'SIGTERM');
+      } catch {
+        // already gone
+      }
+      clearUpState();
+      return 1;
+    }
+    io.out(`✓ up (detached), pid ${childPid}\n`);
+    for (const agent of state.agents) {
+      io.out(`  ${agent.id}: ${agent.sources.length} source(s) bound\n`);
+    }
+    io.out('  tail logs with: declaragent logs -f\n');
+    return 0;
   }
 
   // Foreground / detached-child path.
@@ -174,6 +212,29 @@ interface RunningAgent {
   summary: UpAgentSummary;
   sources: StartAgentSourcesResult;
   logger: AgentLogger;
+  /**
+   * Detach handle returned by `dispatcher.attach(bus)`. Only present
+   * when the agent has an LLM provider configured + at least one
+   * source; skill-only / creds-missing agents keep this undefined.
+   */
+  detachDispatcher?: () => void;
+}
+
+/**
+ * Shared state for the up process. The provider + session store are
+ * created once (not per-agent) so N agents in a fleet can reuse the
+ * same LLM connection pool + sqlite handle.
+ */
+interface UpRuntime {
+  sessionStore: ReturnType<typeof createSqliteSessionStore>;
+  /**
+   * `null` when no auth is configured. Skill dispatch is skipped in
+   * that case; sources still bind + events still land in the event
+   * store (with `outcome: pending`), matching the pre-0.4.11 behavior
+   * minus the silent drop. Startup banner surfaces the warning.
+   */
+  provider: ReturnType<typeof createProviderFromCreds> | null;
+  defaultModel: string;
 }
 
 async function runForeground(
@@ -194,12 +255,25 @@ async function runForeground(
     return 1;
   }
 
+  // Shared across every agent this up-process hosts.
+  const creds = resolveCredentials();
+  const runtime: UpRuntime = {
+    sessionStore: createSqliteSessionStore({ path: sessionsDbPath() }),
+    provider: creds ? createProviderFromCreds({ creds }) : null,
+    defaultModel: 'claude-sonnet-4-5',
+  };
+  if (!creds) {
+    io.out(
+      '⚠ no provider credentials found — sources will bind and events will land in the store, but skill dispatch is skipped until you run `declaragent auth login`.\n\n',
+    );
+  }
+
   const running: RunningAgent[] = [];
   let anyFailed = false;
 
   for (const agentDir of agentDirs) {
     try {
-      const started = await bringUp(agentDir, startSources, io);
+      const started = await bringUp(agentDir, startSources, runtime, io);
       running.push(started);
       printBanner(io, started);
     } catch (err) {
@@ -264,6 +338,7 @@ async function runForeground(
 async function bringUp(
   agentDir: string,
   startSources: typeof startAgentSources,
+  runtime: UpRuntime,
   io: UpIO,
 ): Promise<RunningAgent> {
   let loaded: LoadedAgent;
@@ -298,6 +373,13 @@ async function bringUp(
 
   const sources = await startSources({
     configPath: eventSourcesPath,
+    // Route the bus's internal warnings (including silent
+    // `event-store.record-failed` / `source.start-failed`) to the
+    // per-agent log so `declaragent logs <agent>` surfaces them.
+    // Previously the default NOOP_LOGGER ate these, which is how a
+    // YAML target.type typo could drop every webhook event without
+    // any visible signal.
+    logger: agentLoggerToCoreLogger(logger),
     onEvent: (ev: AgentEvent) => {
       logger.write({
         kind: ev.kind,
@@ -313,11 +395,90 @@ async function bringUp(
     summary: s.summary,
   }));
 
+  // Wire the dispatcher. Without this step the bus publishes events
+  // that only the event store's subscriber consumes — they sit as
+  // `outcome: pending` forever and the skill never runs. With it,
+  // `target: {type: skill, name: X}` events flow into an engine turn.
+  let detachDispatcher: (() => void) | undefined;
+  if (sources.bus && runtime.provider) {
+    detachDispatcher = attachDispatcherToAgent({
+      loaded,
+      runtime,
+      sources,
+      logger,
+    });
+  } else if (sources.bus && !runtime.provider) {
+    logger.write({
+      level: 'warn',
+      event: 'dispatcher.skipped',
+      reason: 'no-provider',
+    });
+  }
+
   return {
     summary: { id: agentId, path: agentDir, sources: summary },
     sources,
     logger,
+    ...(detachDispatcher !== undefined && { detachDispatcher }),
   };
+}
+
+/**
+ * Build the per-agent extension registry + engine + dispatcher and
+ * attach to the agent's event bus. Returns the detach handle so
+ * `stopAll` can unwind cleanly on shutdown.
+ */
+function attachDispatcherToAgent(opts: {
+  loaded: LoadedAgent;
+  runtime: UpRuntime;
+  sources: StartAgentSourcesResult;
+  logger: AgentLogger;
+}): () => void {
+  const { loaded, runtime, sources, logger } = opts;
+  const bus = sources.bus;
+  const eventStore = sources.eventStore;
+  if (!bus) {
+    // Shouldn't happen — caller checks before invoking — but keep
+    // the type-narrow explicit.
+    return () => {};
+  }
+
+  const spec: AgentSpec = {
+    ...loaded.spec,
+    model: loaded.spec.model || runtime.defaultModel,
+  };
+
+  // Skill registry scoped to THIS agent.
+  const coreLogger = agentLoggerToCoreLogger(logger);
+  const registry = createExtensionRegistry({
+    logger: coreLogger,
+    permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+    configDir: '',
+  });
+  for (const skill of loaded.skills) {
+    void registry.register(skillExtension(skill));
+  }
+
+  const provider = runtime.provider;
+  if (!provider) return () => {};
+
+  const engine = createEngine({
+    provider,
+    tools: [...BUILTIN_TOOLS],
+    permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+    createChildSession: () => runtime.sessionStore.create(spec),
+  });
+
+  const dispatcher: EventDispatcher = createEventDispatcher({
+    registry,
+    runAgent: engine.runAgent,
+    logger: coreLogger,
+    ...(eventStore && { store: eventStore }),
+    createSession: () => runtime.sessionStore.create(spec),
+    createChildSession: () => runtime.sessionStore.create(spec),
+  });
+
+  return dispatcher.attach(bus);
 }
 
 function printBanner(io: UpIO, agent: RunningAgent): void {
@@ -337,6 +498,11 @@ function printBanner(io: UpIO, agent: RunningAgent): void {
 
 async function stopAll(running: RunningAgent[]): Promise<void> {
   for (const r of running) {
+    try {
+      r.detachDispatcher?.();
+    } catch {
+      // swallow — best-effort
+    }
     try {
       await r.sources.stop();
     } catch {
@@ -395,6 +561,44 @@ async function loadFleetAgentDirs(fleetPath: string): Promise<string[]> {
   const root = manifestDir(fleetPath);
   const fleet = await loadFleet({ root });
   return fleet.agents.map((a) => a.path);
+}
+
+/**
+ * Bridge the per-agent {@link AgentLogger} (JSON-line append) to
+ * core's {@link Logger} interface so `startAgentSources` routes its
+ * internal warnings into the same file we already tail via
+ * `declaragent logs`. Child loggers drop their bindings back into
+ * the record payload so filtering by correlationId still works.
+ */
+function agentLoggerToCoreLogger(agentLogger: AgentLogger): Logger {
+  const make =
+    (level: 'debug' | 'info' | 'warn' | 'error') =>
+    (event: string, data?: Readonly<Record<string, unknown>>) => {
+      agentLogger.write({ level, event, ...(data ?? {}) });
+    };
+  const logger: Logger = {
+    debug: make('debug'),
+    info: make('info'),
+    warn: make('warn'),
+    error: make('error'),
+    child: () => logger,
+  };
+  return logger;
+}
+
+/** Read the last N lines of a file; returns empty string if absent. */
+function tailFile(path: string, lines: number): string {
+  if (!existsSync(path)) return '(no startup log)';
+  const raw = readFileSync(path, 'utf8');
+  const arr = raw.split('\n').filter((l) => l.length > 0);
+  return arr.slice(-lines).join('\n');
+}
+
+function indent(text: string, prefix: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line.length > 0 ? `${prefix}${line}` : line))
+    .join('\n');
 }
 
 function installDefaultSignalHandlers(onShutdown: () => Promise<void>): () => void {

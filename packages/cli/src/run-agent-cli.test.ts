@@ -131,7 +131,7 @@ describe('runAgent', () => {
   test('ignores event-sources.yaml when --no-sources is set', async () => {
     writeFileSync(
       join(dir, 'event-sources.yaml'),
-      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: y }\n',
+      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { type: skill, name: y }\n',
     );
     const io = captureIo();
     const stub = stubStartSources();
@@ -144,7 +144,7 @@ describe('runAgent', () => {
     const eventsPath = join(dir, 'event-sources.yaml');
     writeFileSync(
       eventsPath,
-      '- type: cron\n  config:\n    id: ping\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: hello }\n',
+      '- type: cron\n  config:\n    id: ping\n    schedule: "0 9 * * *"\n    target: { type: skill, name: hello }\n',
     );
     const io = captureIo();
     const stub = stubStartSources([{ type: 'cron', id: 'ping', summary: 'cron "0 9 * * *"' }]);
@@ -167,7 +167,7 @@ describe('runAgent', () => {
   test('stops sources after renderRepl returns', async () => {
     writeFileSync(
       join(dir, 'event-sources.yaml'),
-      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: y }\n',
+      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { type: skill, name: y }\n',
     );
     const io = captureIo();
     const stub = stubStartSources([{ type: 'cron', id: 'x', summary: 'cron "0 9 * * *"' }]);
@@ -187,7 +187,7 @@ describe('runAgent', () => {
   test('bails with exit code 1 when source startup throws', async () => {
     writeFileSync(
       join(dir, 'event-sources.yaml'),
-      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: y }\n',
+      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { type: skill, name: y }\n',
     );
     const io = captureIo();
     const boom: StartSourcesFn = async () => {

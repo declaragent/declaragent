@@ -20,5 +20,5 @@
       max: 120
       windowMs: 60000
     target:
-      kind: skill
+      type: skill
       name: review

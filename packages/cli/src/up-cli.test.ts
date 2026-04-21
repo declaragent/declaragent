@@ -67,7 +67,7 @@ const EVENT_SOURCES = `- type: cron
   config:
     id: every-minute
     schedule: "* * * * *"
-    target: { kind: skill, name: say-hi }
+    target: { type: skill, name: say-hi }
 `;
 
 describe('up verb — single agent', () => {

@@ -11,7 +11,7 @@ const VALID_FILE_WATCH = `
     paths:
       - {{INBOX}}/*.txt
     target:
-      kind: skill
+      type: skill
       name: extract
 `;
 
@@ -21,7 +21,7 @@ const VALID_CRON = `
     id: morning-poke
     schedule: "0 9 * * *"
     target:
-      kind: skill
+      type: skill
       name: daily
 `;
 
@@ -32,7 +32,7 @@ const UNKNOWN_TYPE = `
     brokers: ["localhost:9092"]
     topic: orders
     target:
-      kind: skill
+      type: skill
       name: handle
 `;
 
@@ -42,7 +42,7 @@ const INVALID_FILE_WATCH = `
     # missing required "paths" array
     id: bad
     target:
-      kind: skill
+      type: skill
       name: noop
 `;
 
