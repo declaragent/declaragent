@@ -122,12 +122,12 @@ describe('ps', () => {
 });
 
 describe('logs', () => {
-  test('prints "nothing up" when no state is present', async () => {
-    const cap = captureIo();
-    const code = await logs({}, { io: cap.io });
-    expect(code).toBe(0);
-    expect(cap.out.join('')).toContain('nothing up');
-  });
+  // Note: `os.homedir()` caches at process start, so overriding
+  // `process.env.HOME` in `beforeEach` doesn't isolate these tests
+  // from the real `~/.declaragent/logs/`. The assertions below use
+  // unique agent ids + state snapshots that can coexist with whatever
+  // else is on disk. A proper DI refactor (accept a config-dir
+  // override on every up/down/ps/logs verb) is the long-term fix.
 
   test('tails the log file for every bound agent when no id supplied', async () => {
     writeUpState(aliveState());
@@ -145,12 +145,27 @@ describe('logs', () => {
     expect(text).toContain('webhook.received');
   });
 
-  test('errors when the supplied agent id doesnt match any bound agent', async () => {
+  test('errors when the supplied agent id has no log file on disk', async () => {
     writeUpState(aliveState());
     const cap = captureIo();
     const code = await logs({ agentId: 'no-such' }, { io: cap.io });
     expect(code).toBe(1);
-    expect(cap.err.join('')).toContain('no agent matches');
+    expect(cap.err.join('')).toContain('no log file for "no-such"');
+  });
+
+  test('reads log files after `down` (post-mortem case)', async () => {
+    // No state is present, but a log file exists on disk — logs
+    // should still tail it so the user can diagnose post-shutdown.
+    const logPath = upLogPath('archived-agent');
+    appendFileSync(
+      logPath,
+      '{"ts":"2026-04-21T00:00:00.000Z","agent":"archived-agent","kind":"webhook.received"}\n',
+    );
+    const cap = captureIo();
+    const code = await logs({ agentId: 'archived-agent' }, { io: cap.io });
+    expect(code).toBe(0);
+    expect(cap.out.join('')).toContain('── archived-agent ──');
+    expect(cap.out.join('')).toContain('webhook.received');
   });
 
   test('filters to the supplied agent id', async () => {

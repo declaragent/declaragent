@@ -405,12 +405,23 @@ async function bringUp(
   // `target: {type: skill, name: X}` events flow into an engine turn.
   let detachDispatcher: (() => void) | undefined;
   if (sources.bus && runtime.provider) {
-    detachDispatcher = attachDispatcherToAgent({
-      loaded,
-      runtime,
-      sources,
-      logger,
-    });
+    try {
+      detachDispatcher = await attachDispatcherToAgent({
+        loaded,
+        runtime,
+        sources,
+        logger,
+      });
+    } catch (err) {
+      // A dispatcher-attach failure used to manifest as "events sit
+      // forever in `pending`" with no signal. Surface the actual
+      // error so `declaragent logs <agent>` shows what broke.
+      logger.write({
+        level: 'error',
+        event: 'dispatcher.attach-failed',
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   } else if (sources.bus && !runtime.provider) {
     logger.write({
       level: 'warn',
@@ -431,13 +442,20 @@ async function bringUp(
  * Build the per-agent extension registry + engine + dispatcher and
  * attach to the agent's event bus. Returns the detach handle so
  * `stopAll` can unwind cleanly on shutdown.
+ *
+ * Async because the skill registrations MUST complete before the
+ * dispatcher subscribes. Before 0.4.13 this was fire-and-forget via
+ * `void registry.register(...)`, which left a small window where
+ * an event could fire, the dispatcher lookupSkill would miss, and
+ * the outcome would quietly stay `null` — the symptom user hit in
+ * the fleet test.
  */
-function attachDispatcherToAgent(opts: {
+async function attachDispatcherToAgent(opts: {
   loaded: LoadedAgent;
   runtime: UpRuntime;
   sources: StartAgentSourcesResult;
   logger: AgentLogger;
-}): () => void {
+}): Promise<() => void> {
   const { loaded, runtime, sources, logger } = opts;
   const bus = sources.bus;
   const eventStore = sources.eventStore;
@@ -460,7 +478,7 @@ function attachDispatcherToAgent(opts: {
     configDir: '',
   });
   for (const skill of loaded.skills) {
-    void registry.register(skillExtension(skill));
+    await registry.register(skillExtension(skill));
   }
 
   const provider = runtime.provider;
@@ -482,7 +500,14 @@ function attachDispatcherToAgent(opts: {
     createChildSession: () => runtime.sessionStore.create(spec),
   });
 
-  return dispatcher.attach(bus);
+  const detach = dispatcher.attach(bus);
+  logger.write({
+    level: 'info',
+    event: 'dispatcher.attached',
+    skills: loaded.skills.length,
+    skillNames: loaded.skills.map((s) => s.lookupName),
+  });
+  return detach;
 }
 
 function printBanner(io: UpIO, agent: RunningAgent): void {

@@ -266,8 +266,24 @@ function summariseSource(src: ConfiguredSource): string {
       return `cron "${schedule}"`;
     }
     case 'file-watch': {
+      // The adapter's config uses `paths: string[]` (the canonical
+      // field). Earlier drafts used `dir` / `path`; those fall back
+      // for legacy configs. Fall back to the id when no path info is
+      // present so `ps` never renders a raw `?`.
+      if (Array.isArray(cfg.paths) && cfg.paths.length > 0) {
+        const first = cfg.paths[0];
+        const label = typeof first === 'string' ? first : '?';
+        const extra = cfg.paths.length > 1 ? ` (+${cfg.paths.length - 1} more)` : '';
+        return `file-watch ${label}${extra}`;
+      }
       const watchDir =
-        typeof cfg.dir === 'string' ? cfg.dir : typeof cfg.path === 'string' ? cfg.path : '?';
+        typeof cfg.dir === 'string'
+          ? cfg.dir
+          : typeof cfg.path === 'string'
+            ? cfg.path
+            : typeof cfg.id === 'string'
+              ? cfg.id
+              : '?';
       return `file-watch ${watchDir}`;
     }
     default:

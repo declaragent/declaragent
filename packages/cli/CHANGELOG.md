@@ -1,5 +1,16 @@
 # @declaragent/cli
 
+## 0.4.13
+
+### Patch Changes
+
+Surfaced by the fleet test showing events stuck at `outcome: null` despite the dispatcher path being wired in 0.4.11:
+
+- **Await skill registration before dispatcher attach.** The per-agent extension registry's `register` calls were fire-and-forget (`void registry.register(...)`). If the bus published a webhook event before every skill finished registering, the dispatcher's `lookupSkill` returned `undefined` and the event sat forever with no outcome. Now awaited, then `dispatcher.attach()` subscribes — guaranteed ordering.
+- **`dispatcher.attached` + `dispatcher.attach-failed` now log.** Previously the attach path was silent on success, so "event never dispatched" was impossible to tell apart from "dispatcher never attached." Per-agent log now records the attach + skill count, and any thrown error during attach lands with `level: error`.
+- **`declaragent logs [-f] [<id>]` works post-`down`.** The verb used to refuse with "nothing up" when no state file was present — wrong, since log files persist across lifecycle cycles. Now falls back to listing `~/.declaragent/logs/*.log` when state is absent. Errors cleanly when the requested agent id has no log file on disk.
+- **`ps` renders file-watch summaries correctly.** Previously rendered `file-watch ?` because `summariseSource` only read `cfg.dir` / `cfg.path`; the canonical adapter config uses `cfg.paths: string[]`. Now shows the first watched path with a `+N more` hint for multi-path configs.
+
 ## 0.4.12
 
 ### Patch Changes

@@ -14,9 +14,9 @@
  * @since 0.4.1
  */
 
-import { existsSync, readFileSync, statSync, watch } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, watch } from 'node:fs';
 import type { UpAgentSummary } from './up-lifecycle.js';
-import { reapStaleState, upLogPath } from './up-lifecycle.js';
+import { reapStaleState, upLogPath, upLogsDir } from './up-lifecycle.js';
 
 export interface LogsIO {
   out: (s: string) => void;
@@ -46,16 +46,24 @@ export interface LogsDeps {
 export async function logs(args: LogsArgs, deps: LogsDeps = {}): Promise<number> {
   const io = deps.io ?? STDIO_IO;
   const state = reapStaleState();
-  if (state === null) {
-    io.out('nothing up.\n');
-    return 0;
-  }
 
-  const candidates = filterAgents(state.agents, args.agentId);
+  // Log files persist across up/down cycles — tailing them must stay
+  // available when nothing is currently up (the post-mortem case).
+  // When state is present we use the bound-agent list for the "tail
+  // all" case + enforce the filter; when state is absent we fall back
+  // to whatever log files exist on disk.
+  const candidates = state
+    ? filterAgents(state.agents, args.agentId)
+    : fallbackAgentsFromDisk(args.agentId);
+
   if (candidates.length === 0) {
-    io.err(
-      `no agent matches "${args.agentId ?? ''}". Run \`declaragent ps\` to list bound agents.\n`,
-    );
+    if (args.agentId !== undefined) {
+      io.err(
+        `no log file for "${args.agentId}" at ${upLogPath(args.agentId)}. Bring an agent up first, or pick a different id.\n`,
+      );
+    } else {
+      io.out('no log files under ~/.declaragent/logs/.\n');
+    }
     return 1;
   }
 
@@ -102,6 +110,26 @@ export async function logs(args: LogsArgs, deps: LogsDeps = {}): Promise<number>
 function filterAgents(agents: readonly UpAgentSummary[], id: string | undefined): UpAgentSummary[] {
   if (id === undefined) return [...agents];
   return agents.filter((a) => a.id === id);
+}
+
+/**
+ * Build a minimal UpAgentSummary list from whatever log files exist
+ * in `~/.declaragent/logs/`. Used when `up-state.json` is absent
+ * (post-`down` post-mortem case). Only the `id` field is meaningful
+ * here — path + sources default to empty.
+ */
+function fallbackAgentsFromDisk(filter: string | undefined): UpAgentSummary[] {
+  const dir = upLogsDir();
+  if (!existsSync(dir)) return [];
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const ids = files.filter((f) => f.endsWith('.log')).map((f) => f.replace(/\.log$/, ''));
+  const matches = filter === undefined ? ids : ids.filter((id) => id === filter);
+  return matches.map((id) => ({ id, path: '', sources: [] }));
 }
 
 function printTail(io: LogsIO, agentId: string, tailLines: number): void {
