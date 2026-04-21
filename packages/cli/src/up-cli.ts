@@ -500,14 +500,52 @@ async function attachDispatcherToAgent(opts: {
     createChildSession: () => runtime.sessionStore.create(spec),
   });
 
-  const detach = dispatcher.attach(bus);
+  // Subscribe ourselves + invoke `dispatcher.handle()` explicitly
+  // rather than relying on `dispatcher.attach(bus)`. Pre-0.4.14 the
+  // attach path silently failed to deliver events to the dispatcher's
+  // internal subscriber (outcomes stayed `null` with no log). The
+  // explicit-handle variant gives us a visible start/outcome/error
+  // life-cycle for every event + keeps the dispatcher fully in play
+  // (idempotency, loop detection, target routing, markOutcome).
+  const unsub = bus.subscribe('*', async (event) => {
+    logger.write({
+      level: 'info',
+      event: 'dispatcher.handling',
+      eventId: event.id,
+      kind: event.kind,
+      targetType: event.target.type,
+      targetName: (event.target as { name?: string }).name,
+    });
+    try {
+      const outcome = await dispatcher.handle(event);
+      logger.write({
+        level: outcome.kind === 'rejected' ? 'warn' : 'info',
+        event: 'dispatcher.outcome',
+        eventId: event.id,
+        outcome: outcome.kind,
+        ...(outcome.kind === 'rejected' && {
+          reason: outcome.reason,
+          details: outcome.details,
+        }),
+        ...(outcome.kind === 'dispatched' && { sessionId: outcome.sessionId }),
+      });
+    } catch (err) {
+      logger.write({
+        level: 'error',
+        event: 'dispatcher.error',
+        eventId: event.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
   logger.write({
     level: 'info',
     event: 'dispatcher.attached',
     skills: loaded.skills.length,
     skillNames: loaded.skills.map((s) => s.lookupName),
   });
-  return detach;
+  return unsub;
 }
 
 function printBanner(io: UpIO, agent: RunningAgent): void {

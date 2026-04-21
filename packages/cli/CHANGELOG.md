@@ -1,5 +1,11 @@
 # @declaragent/cli
 
+## 0.4.14
+
+### Patch Changes
+
+Fix events stuck at `outcome: null` — dispatcher never received bus events through `dispatcher.attach(bus)`. Replaces the attach path with an explicit `bus.subscribe('*', ...)` wrapper that calls `dispatcher.handle(event)` and logs the full life cycle: `dispatcher.handling` (event arrived), `dispatcher.outcome` (dispatched/rejected/broadcast/duplicate), or `dispatcher.error` (unexpected throw). Every webhook / cron / file-watch event now produces a visible trace in the per-agent log, and outcomes persist via the dispatcher's own `markOutcome` path.
+
 ## 0.4.13
 
 ### Patch Changes
