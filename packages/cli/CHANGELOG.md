@@ -1,5 +1,11 @@
 # @declaragent/cli
 
+## 0.4.15
+
+### Patch Changes
+
+Republish of 0.4.14 — the npm registry lost the 0.4.14 tarball (metadata landed, blob 404s). No code changes vs 0.4.14; see that entry for actual behavior deltas.
+
 ## 0.4.14
 
 ### Patch Changes
