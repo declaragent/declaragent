@@ -130,7 +130,11 @@ export async function up(args: UpArgs, deps: UpDeps = {}): Promise<number> {
     let childPid: number;
     try {
       childPid = detachSelf({
-        launcher: process.argv[0] ?? 'declaragent',
+        // `process.execPath` is the compiled-binary path (Bun sets
+        // argv[0] to the interpreter name "bun" for `bun build
+        // --compile` outputs, which would make spawn interpret
+        // subsequent args as "script to run" → Script not found).
+        launcher: process.execPath || process.argv[0] || 'declaragent',
         args: buildDetachedArgs(args),
       });
     } catch (err) {

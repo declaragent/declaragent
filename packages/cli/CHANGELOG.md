@@ -1,5 +1,11 @@
 # @declaragent/cli
 
+## 0.4.12
+
+### Patch Changes
+
+Fix `declaragent up -d` under compiled Bun binaries. For a `bun build --compile` output, `process.argv[0]` returns the embedded interpreter name (`bun`), not the binary path — so `detachSelf` was spawning `bun up --__detached`, which Bun interprets as "run a script called `up`" and crashes with `Script not found "up"`. Swap to `process.execPath`, which for compiled binaries is the actual binary path. No other behavior changed; 0.4.11's dispatcher + observability fixes are still in place.
+
 ## 0.4.11
 
 ### Patch Changes
