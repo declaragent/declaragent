@@ -411,8 +411,8 @@ if (subcommand === 'daemon') {
 }
 if (subcommand === 'run') {
   // `declaragent run [<dir>]` — load a scaffolded agent + drop into
-  // a REPL with that persona. PR #1 is skill-only; source-wiring
-  // lands in a follow-up.
+  // a REPL with that persona. 0.3.5 wires in-process event sources
+  // (webhook / cron / file-watch); kafka/nats/etc. remain daemon-only.
   const positional = argv.slice(1).filter((a) => !a.startsWith('-'));
   const dir = positional[0];
   const noSources = argv.includes('--no-sources');
@@ -421,7 +421,7 @@ if (subcommand === 'run') {
   if (args.model !== undefined) runArgs.model = args.model;
   if (noSources) runArgs.noSources = true;
   const code = await runAgent(runArgs, {
-    renderRepl: (props) => {
+    renderRepl: async (props) => {
       const appProps: {
         agentSpec: typeof props.agentSpec;
         agentLabel: string;
@@ -433,12 +433,13 @@ if (subcommand === 'run') {
       };
       if (args.mode) appProps.initialMode = args.mode;
       if (props.model) appProps.model = props.model;
-      render(<App {...appProps} />, { exitOnCtrlC: false });
+      // Awaiting `waitUntilExit()` lets `runAgent`'s finally-block
+      // stop event sources after the REPL closes, not during it.
+      const instance = render(<App {...appProps} />, { exitOnCtrlC: false });
+      await instance.waitUntilExit();
     },
   });
-  if (code !== 0) process.exit(code);
-  // When runAgent hands off to the REPL, we stay alive in the Ink
-  // render — no process.exit here.
+  process.exit(code);
 }
 if (subcommand === 'daemon-status') {
   const code = await daemonStatus();

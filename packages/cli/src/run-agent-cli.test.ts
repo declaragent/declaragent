@@ -3,6 +3,39 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgent } from './run-agent-cli.js';
+import type {
+  StartAgentSourcesOptions,
+  StartAgentSourcesResult,
+  startAgentSources,
+} from './run-agent-sources.js';
+
+type StartSourcesFn = typeof startAgentSources;
+
+interface Stub {
+  fn: StartSourcesFn;
+  calls: Array<{ configPath: string }>;
+  stopCalls: () => number;
+}
+
+function stubStartSources(
+  started: StartAgentSourcesResult['started'] = [],
+  unknownTypes: StartAgentSourcesResult['unknownTypes'] = [],
+): Stub {
+  const calls: Array<{ configPath: string }> = [];
+  let stops = 0;
+  const fn: StartSourcesFn = async (opts: StartAgentSourcesOptions) => {
+    calls.push({ configPath: opts.configPath });
+    return {
+      started,
+      unknownTypes,
+      validationErrors: [],
+      stop: async () => {
+        stops += 1;
+      },
+    };
+  };
+  return { fn, calls, stopCalls: () => stops };
+}
 
 function captureIo(): {
   out: string[];
@@ -95,16 +128,75 @@ describe('runAgent', () => {
     expect(spec.systemPrompt).toContain('Greet the user.');
   });
 
-  test('honours --no-sources flag by suppressing the "not wired" hint', async () => {
+  test('ignores event-sources.yaml when --no-sources is set', async () => {
+    writeFileSync(
+      join(dir, 'event-sources.yaml'),
+      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: y }\n',
+    );
     const io = captureIo();
-    await runAgent({ dir, noSources: true }, io.cap);
-    expect(io.out.join('')).not.toContain('not wired in this release');
+    const stub = stubStartSources();
+    await runAgent({ dir, noSources: true }, { ...io.cap, startSources: stub.fn });
+    expect(stub.calls).toHaveLength(0);
+    expect(io.out.join('')).toContain('sources: disabled (--no-sources)');
   });
 
-  test('prints a deprecation-style hint when sources are declared but not wired', async () => {
+  test('starts sources when event-sources.yaml is present', async () => {
+    const eventsPath = join(dir, 'event-sources.yaml');
+    writeFileSync(
+      eventsPath,
+      '- type: cron\n  config:\n    id: ping\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: hello }\n',
+    );
     const io = captureIo();
-    await runAgent({ dir }, io.cap);
-    expect(io.out.join('')).toContain('event-sources.yaml is not wired');
+    const stub = stubStartSources([{ type: 'cron', id: 'ping', summary: 'cron "0 9 * * *"' }]);
+    await runAgent({ dir }, { ...io.cap, startSources: stub.fn });
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.configPath).toBe(eventsPath);
+    const text = io.out.join('');
+    expect(text).toContain('sources: 1 active');
+    expect(text).toContain('cron "0 9 * * *"');
+  });
+
+  test('reports "no event-sources.yaml" when the file is absent', async () => {
+    const io = captureIo();
+    const stub = stubStartSources();
+    await runAgent({ dir }, { ...io.cap, startSources: stub.fn });
+    expect(stub.calls).toHaveLength(0);
+    expect(io.out.join('')).toContain('no event-sources.yaml at the scope root');
+  });
+
+  test('stops sources after renderRepl returns', async () => {
+    writeFileSync(
+      join(dir, 'event-sources.yaml'),
+      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: y }\n',
+    );
+    const io = captureIo();
+    const stub = stubStartSources([{ type: 'cron', id: 'x', summary: 'cron "0 9 * * *"' }]);
+    await runAgent(
+      { dir },
+      {
+        ...io.cap,
+        startSources: stub.fn,
+        renderRepl: async () => {
+          // simulate a quick REPL session
+        },
+      },
+    );
+    expect(stub.stopCalls()).toBe(1);
+  });
+
+  test('bails with exit code 1 when source startup throws', async () => {
+    writeFileSync(
+      join(dir, 'event-sources.yaml'),
+      '- type: cron\n  config:\n    id: x\n    schedule: "0 9 * * *"\n    target: { kind: skill, name: y }\n',
+    );
+    const io = captureIo();
+    const boom: StartSourcesFn = async () => {
+      throw new Error('port 7777 already bound');
+    };
+    const code = await runAgent({ dir }, { ...io.cap, startSources: boom as StartSourcesFn });
+    expect(code).toBe(1);
+    expect(io.err.join('')).toContain('could not start event sources');
+    expect(io.err.join('')).toContain('port 7777');
   });
 
   test('defaults dir to cwd when omitted', async () => {

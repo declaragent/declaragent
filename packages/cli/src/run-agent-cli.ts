@@ -24,7 +24,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import {
   AgentConfigError,
   type AgentSpec,
@@ -32,6 +32,7 @@ import {
   composeSystemPromptWithSkills,
   loadAgent,
 } from '@declaragent/core';
+import { type StartAgentSourcesResult, startAgentSources } from './run-agent-sources.js';
 
 export interface RunAgentArgs {
   dir?: string;
@@ -46,7 +47,12 @@ export interface RunAgentArgs {
 }
 
 export interface RunAgentDeps {
-  /** Factory the CLI injects — normally `(props) => render(<App {...props} />)`. */
+  /**
+   * Factory the CLI injects — normally:
+   *   (props) => render(<App {...props} />).waitUntilExit()
+   * Returning a promise lets `runAgent` hold the stop-sources
+   * cleanup until the REPL exits.
+   */
   renderRepl?: (props: {
     agentSpec: AgentSpec;
     agentLabel: string;
@@ -57,6 +63,12 @@ export interface RunAgentDeps {
   err?: (s: string) => void;
   /** Cwd override. Tests inject a tmpdir; prod is `process.cwd()`. */
   cwd?: string;
+  /**
+   * Override the source-lifecycle starter. Default wires webhook /
+   * cron / file-watch against the session event store. Tests stub
+   * this out so they don't bind real ports.
+   */
+  startSources?: typeof startAgentSources;
 }
 
 const DEFAULT_DEPS: Required<Pick<RunAgentDeps, 'out' | 'err' | 'cwd'>> = {
@@ -120,25 +132,78 @@ export async function runAgent(args: RunAgentArgs, deps: RunAgentDeps = {}): Pro
   if (loaded.toolNames.length > 0) {
     out(`  tools:  declared defaults = ${loaded.toolNames.join(', ')}\n`);
   }
-  if (args.noSources === false || args.noSources === undefined) {
-    // PR #1 is skill-only regardless, but print a hint so the user
-    // knows source-wiring isn't live yet.
-    out(
-      '  note:   event-sources.yaml is not wired in this release; REPL is conversational-test mode only.\n',
-    );
+  // Source lifecycle. Starts webhook/cron/file-watch in-process when
+  // `event-sources.yaml` exists + `--no-sources` isn't set. Runtime
+  // failures here are fatal — a scaffolded webhook that can't bind
+  // its port is worth surfacing before the REPL takes user input.
+  let sources: StartAgentSourcesResult | undefined;
+  const eventSourcesPath = findEventSourcesConfig(loaded.agentDir);
+  const skipSources = args.noSources === true;
+  if (eventSourcesPath !== undefined && !skipSources) {
+    try {
+      const starter = deps.startSources ?? startAgentSources;
+      sources = await starter({ configPath: eventSourcesPath });
+    } catch (e) {
+      err(`✗ could not start event sources: ${e instanceof Error ? e.message : String(e)}\n`);
+      return 1;
+    }
+  }
+
+  if (sources !== undefined && sources.started.length > 0) {
+    out(`  sources: ${sources.started.length} active\n`);
+    for (const s of sources.started) {
+      out(`           — ${s.summary}\n`);
+    }
+    if (sources.unknownTypes.length > 0) {
+      const listing = sources.unknownTypes.map((u) => u.type).join(', ');
+      out(`  note:   skipped unknown / external source types: ${listing}\n`);
+      out('           (install @declaragent/source-<type> + run via the daemon for those)\n');
+    }
+  } else if (skipSources && eventSourcesPath !== undefined) {
+    out('  sources: disabled (--no-sources)\n');
+  } else if (eventSourcesPath === undefined) {
+    out('  sources: none declared (no event-sources.yaml at the scope root)\n');
   }
 
   if (deps.renderRepl === undefined) {
     // Without an injected renderer there's nothing left to do — the
     // CLI always injects one. Tests may leave this undefined to
-    // verify load-side behavior without booting Ink.
+    // verify load-side behavior without booting Ink. Stop any
+    // sources we did start so tests don't leak ports.
+    if (sources !== undefined) await sources.stop();
     return 0;
   }
 
-  await deps.renderRepl({
-    agentSpec,
-    agentLabel: loaded.spec.name,
-    ...(args.model !== undefined && { model: args.model }),
-  });
+  try {
+    await deps.renderRepl({
+      agentSpec,
+      agentLabel: loaded.spec.name,
+      ...(args.model !== undefined && { model: args.model }),
+    });
+  } finally {
+    if (sources !== undefined) {
+      try {
+        await sources.stop();
+      } catch (stopErr) {
+        err(
+          `warning: source shutdown had errors: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}\n`,
+        );
+      }
+    }
+  }
   return 0;
+}
+
+/**
+ * Find the agent's event-sources config. Prefers yaml / yml over json
+ * since every declaragent-shipped template uses yaml. Returns
+ * `undefined` when no config is present; that's a valid shape — the
+ * agent is skill-only.
+ */
+function findEventSourcesConfig(agentDir: string): string | undefined {
+  for (const name of ['event-sources.yaml', 'event-sources.yml', 'event-sources.json']) {
+    const p = join(agentDir, name);
+    if (existsSync(p)) return p;
+  }
+  return undefined;
 }
