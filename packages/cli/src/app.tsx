@@ -425,6 +425,14 @@ export function App(props: AppProps): JSX.Element {
   // the `DeclaraProposeChange` tool is currently awaiting.
   const scopeRoot = useMemo(() => resolveScopeRootSync(process.cwd()), []);
   const registry = useMemo(() => new ProposalRegistry(), []);
+  /**
+   * Controller for the currently-running engine turn. Ctrl+C aborts
+   * it so a blocking `DeclaraProposeChange` (or any long tool call)
+   * can unwind cleanly — the propose-change tool's `raceWithAbort`
+   * rejects the pending proposal when this fires, which unblocks the
+   * engine and clears `busy`.
+   */
+  const turnAbortRef = useRef<AbortController | null>(null);
   // Per-session audit sink — `DeclaraApplyChange` writes `tool_call`
   // records here; `/history` reads them back. Opened lazily in a
   // useEffect and closed on unmount. Undefined until opened — the
@@ -577,7 +585,15 @@ export function App(props: AppProps): JSX.Element {
           return;
       }
     });
-    return dispose;
+    return () => {
+      dispose();
+      // Best-effort cleanup on unmount: reject any pending proposals
+      // so a blocking `DeclaraProposeChange` doesn't leak a listener
+      // past the REPL lifetime.
+      for (let p = registry.active(); p !== undefined; p = registry.active()) {
+        registry.reject(p.id);
+      }
+    };
   }, [registry, append]);
 
   async function runUserMessage(text: string): Promise<void> {
@@ -588,10 +604,13 @@ export function App(props: AppProps): JSX.Element {
     }
     setBusy(true);
     append({ kind: 'user', text });
+    const controller = new AbortController();
+    turnAbortRef.current = controller;
     try {
       const result = await engine.runAgent({
         session: sessionRef.current,
         userMessage: text,
+        abortSignal: controller.signal,
       });
       const reply = extractAssistantText(result.lastAssistantMessage);
       if (reply) append({ kind: 'assistant', text: reply });
@@ -618,6 +637,7 @@ export function App(props: AppProps): JSX.Element {
         });
       }
     } finally {
+      turnAbortRef.current = null;
       setBusy(false);
     }
   }
@@ -1055,13 +1075,46 @@ export function App(props: AppProps): JSX.Element {
     }
   }
 
-  // Ctrl+C — first press warns, second press within 2s exits.
+  // Ctrl+C — three states:
+  //   (a) turn in flight  → abort the engine run; don't exit.
+  //   (b) pending proposal (no engine turn, e.g. after an apply) → reject.
+  //   (c) nothing to abort + first press → warn.
+  //       Second press within 2s → exit.
   useInput((inputChar, key) => {
     if (!key.ctrl || inputChar !== 'c') return;
     const now = Date.now();
+
+    // Case (a): abort the in-flight turn.
+    if (turnAbortRef.current !== null) {
+      turnAbortRef.current.abort();
+      append({
+        kind: 'system',
+        text: '(turn aborted — press Ctrl+C again within 2s to exit)',
+      });
+      ctrlCRef.current = { at: now };
+      return;
+    }
+
+    // Case (b): reject a pending proposal the engine isn't running for.
+    const active = registry.active();
+    if (active !== undefined) {
+      registry.reject(active.id);
+      append({
+        kind: 'system',
+        text: `(proposal ${active.id} rejected — press Ctrl+C again within 2s to exit)`,
+      });
+      ctrlCRef.current = { at: now };
+      return;
+    }
+
+    // Case (c): nothing to abort. First press warns, second exits.
     const prev = ctrlCRef.current;
     if (prev && now - prev.at < 2000) {
       ctrlCRef.current = null;
+      // Best-effort: reject any lingering pending proposals before close.
+      for (let p = registry.active(); p !== undefined; p = registry.active()) {
+        registry.reject(p.id);
+      }
       store.close();
       exit();
       return;
@@ -1144,7 +1197,7 @@ export function App(props: AppProps): JSX.Element {
       }
     },
     {
-      isActive: slashSuggestions !== null && !picker && !pendingPrompt && !busy,
+      isActive: slashSuggestions !== null && !picker && !pendingPrompt,
     },
   );
 
@@ -1180,7 +1233,7 @@ export function App(props: AppProps): JSX.Element {
       }
     },
     {
-      isActive: !picker && !pendingPrompt && !busy && slashSuggestions === null,
+      isActive: !picker && !pendingPrompt && slashSuggestions === null,
     },
   );
 
@@ -1199,16 +1252,16 @@ export function App(props: AppProps): JSX.Element {
           <Box borderStyle="round" borderColor="yellow" paddingX={1} flexDirection="column">
             <PromptRow prompt={pendingPrompt} onResolve={resolvePrompt} />
           </Box>
-        ) : busy ? (
-          <Box borderStyle="round" borderColor="yellow" paddingX={1}>
-            <Text color="yellow">… working …</Text>
-          </Box>
         ) : (
           <>
-            {slashSuggestions ? (
+            {busy ? (
+              <Box paddingX={1}>
+                <Text color="yellow">… working … (Ctrl+C to abort)</Text>
+              </Box>
+            ) : slashSuggestions ? (
               <SlashSuggestions suggestions={slashSuggestions} cursor={suggestionCursor} />
             ) : null}
-            <Box borderStyle="round" borderColor="gray" paddingX={1}>
+            <Box borderStyle="round" borderColor={busy ? 'yellow' : 'gray'} paddingX={1}>
               <Text color="cyan">› </Text>
               <TextInput value={input} onChange={setInput} onSubmit={handleSubmit} />
             </Box>
