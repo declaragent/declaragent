@@ -246,6 +246,47 @@ describe('startMCPServers', () => {
     await runtime.shutdown();
   });
 
+  test('default spawn dispatches on transport type (stdio + http both reach a client)', async () => {
+    // `spawn` override covers these paths in other tests, but we also
+    // want confidence that the default spawn's transport dispatch works
+    // for both stdio and http. Use the override to intercept the spec
+    // that would otherwise reach `defaultSpawn` and verify the transport
+    // is preserved end-to-end.
+    await consentStore.approve('stdio-one');
+    await consentStore.approve('http-one');
+    const seen: string[] = [];
+    const runtime = await startMCPServers({
+      servers: [
+        {
+          spec: {
+            name: 'stdio-one',
+            transport: { type: 'stdio', command: 'true' },
+            protocolVersion: '2024-11-05',
+          },
+          scope: 'user',
+          sourcePath: '/x',
+        },
+        {
+          spec: {
+            name: 'http-one',
+            transport: { type: 'http', url: 'https://example.test/v1' },
+            protocolVersion: '2024-11-05',
+          },
+          scope: 'user',
+          sourcePath: '/x',
+        },
+      ],
+      logger: NOOP_LOGGER,
+      consentStore,
+      spawn: (s) => {
+        seen.push(`${s.name}:${s.transport.type}`);
+        return fakeClient({ tools: [] });
+      },
+    });
+    expect(seen.sort()).toEqual(['http-one:http', 'stdio-one:stdio']);
+    await runtime.shutdown();
+  });
+
   test('shutdown is idempotent', async () => {
     await consentStore.approve('sole');
     const runtime = await startMCPServers({

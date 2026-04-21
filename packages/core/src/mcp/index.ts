@@ -36,6 +36,12 @@ export type {
   CreateMCPClientOptions,
   CreateStdioMCPClientOptions,
 } from './stdio-client.js';
+export { createHTTPConnection, createHTTPMCPClient } from './http-client.js';
+export type {
+  CreateHTTPConnectionOptions,
+  CreateHTTPMCPClientOptions,
+  FetchFn,
+} from './http-client.js';
 export { mcpServerExtension } from './server-extension.js';
 export {
   createMCPTool,

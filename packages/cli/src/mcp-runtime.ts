@@ -22,7 +22,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type { Logger, MCPClient, PluginMCPServerSpec, Tool } from '@declaragent/core';
-import { createMCPTool, createStdioMCPClient } from '@declaragent/core';
+import { createHTTPMCPClient, createMCPTool, createStdioMCPClient } from '@declaragent/core';
 import type { MCPConsentStore } from './mcp-consent.js';
 import { createMCPConsentStore } from './mcp-consent.js';
 import {
@@ -122,18 +122,25 @@ export interface StartMCPServersOptions {
 }
 
 function defaultSpawn(spec: PluginMCPServerSpec, logger: Logger): MCPClient {
-  if (spec.transport.type !== 'stdio') {
-    // 2b adds http; for 2a, skip gracefully rather than throw.
-    throw new Error(
-      `MCP server "${spec.name}": transport "${spec.transport.type}" is not supported yet (stdio only in 0.5.0-slice.2a)`,
-    );
+  if (spec.transport.type === 'stdio') {
+    return createStdioMCPClient({
+      name: spec.name,
+      transport: spec.transport,
+      protocolVersion: spec.protocolVersion,
+      logger,
+    });
   }
-  return createStdioMCPClient({
-    name: spec.name,
-    transport: spec.transport,
-    protocolVersion: spec.protocolVersion,
-    logger,
-  });
+  if (spec.transport.type === 'http') {
+    return createHTTPMCPClient({
+      name: spec.name,
+      transport: spec.transport,
+      protocolVersion: spec.protocolVersion,
+      logger,
+    });
+  }
+  // TypeScript's exhaustive check — new transports land in 2c.
+  const exhausted: never = spec.transport;
+  throw new Error(`MCP server "${spec.name}": unsupported transport ${JSON.stringify(exhausted)}`);
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
