@@ -1,20 +1,19 @@
 /**
  * `declaragent fleet run` — single-process dev loop hosting N agents.
  *
- * Slice 3 scope. Boots one daemon per agent sharing a single in-memory
- * RPC bus, so inter-agent RPC round-trips in one process. Each agent's
+ * Boots one daemon per agent sharing a single in-memory RPC bus, so
+ * inter-agent RPC round-trips in one process. Each agent's
  * `capabilities.yaml` → `memory` transport is wired to the shared bus;
  * capability requests reach a caller-supplied handler which publishes
  * the response back over `envelope.replyTo`.
  *
- * Engine integration (an agent's handler runs a full LLM turn) is out
- * of scope for slice 3 — the default handler returns a typed stub so
- * the wiring is observable end-to-end. Slice 3.5 will plug the engine
- * behind `makeHandler`.
+ * Phase A.2 of USABILITY_PLAN.md (0.3.6) wired the real engine behind
+ * the default `makeHandler` — see `fleet-run-llm-handler.ts`. Tests
+ * that want a deterministic no-LLM path inject `deps.makeHandler =
+ * () => defaultHandler`, which still echoes the envelope payload.
  *
  * Hot-reload, file-watch, and per-agent sources from `event-sources.yaml`
- * are tracked for a follow-up; slice 3 focuses on proving multi-agent
- * RPC in one process.
+ * remain tracked for a follow-up (Phase A.3).
  *
  * @since 1.2.0
  */
@@ -32,6 +31,7 @@ import {
   FleetManifestError,
   RPC_ERROR_CODES,
   checkFleetVersionSkew,
+  createSqliteSessionStore,
   findFleetRoot,
   loadFleet,
   readFleetVersionFromEnv,
@@ -44,6 +44,15 @@ import {
   createMemoryTransport,
   createRespondHook,
 } from '@declaragent/plugin-agent-rpc';
+import {
+  type ResolvedCredentials,
+  resolveCredentials as defaultResolveCredentials,
+  loadConfig,
+} from './auth.js';
+import { createLLMHandlerFactory } from './fleet-run-llm-handler.js';
+import { sessionsDbPath } from './paths.js';
+import { createProviderFromCreds } from './provider-factory.js';
+import { getPreset } from './providers-registry.js';
 
 export interface FleetRunIO {
   out: (s: string) => void;
@@ -113,14 +122,16 @@ export interface StartFleetDaemonOptions {
    */
   bus?: MemoryBus;
   /**
-   * Factory that returns the request handler for each agent.
+   * Factory that returns the request handler for each agent. May be
+   * async so implementations can do per-agent disk reads (load skills,
+   * build extension registries) before returning the handler.
    *
    * Defaults to {@link defaultHandler} — a stub that responds
    * `{ ok: true, data: { echoed: envelope.payload } }`. Production
    * callers plug the engine loop here; tests override with narrower
    * stubs.
    */
-  makeHandler?(agent: LoadedAgentEntry): FleetAgentHandler;
+  makeHandler?(agent: LoadedAgentEntry): FleetAgentHandler | Promise<FleetAgentHandler>;
   /**
    * Override this daemon's own `DECLARAGENT_FLEET_VERSION`. Production
    * callers let it default to `readFleetVersionFromEnv(process.env)`;
@@ -177,7 +188,7 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
       const worker = startAgentWorker({
         agent,
         bus,
-        handler: makeHandler(agent),
+        handler: await makeHandler(agent),
         logger: io,
         ...(selfFleetVersion !== undefined && { selfFleetVersion }),
         ...(minFleetVersion !== undefined && { minFleetVersion }),
@@ -341,12 +352,16 @@ function memoryRequestsTopic(t: CapabilityTransport): string | undefined {
   return t.topics.requests;
 }
 
-// ── Default handler ────────────────────────────────────────────────────
+// ── Default / echo handler ─────────────────────────────────────────────
 
 /**
- * Slice-3 default: echo the envelope payload so the multi-agent wiring
- * is observable in dev + tests. Real deployments replace this with the
- * engine loop once slice 3.5 lands.
+ * Echo handler preserved as a named export for tests that want a
+ * deterministic, no-LLM handler. Phase A.2 of USABILITY_PLAN.md moved
+ * the production `fleet run` path to a real engine turn (see
+ * {@link createLLMHandlerFactory} in `fleet-run-llm-handler.ts`), but
+ * every existing multi-agent wiring test in `fleet-run.test.ts` relies
+ * on the echo shape, and it's still the right default for
+ * `startFleetDaemon` callers that don't supply `makeHandler`.
  */
 export const defaultHandler: FleetAgentHandler = async (ctx) => {
   await ctx.respond({
@@ -374,6 +389,13 @@ export interface FleetRunDeps {
   /** Inject a stop signal for tests that want the verb to return cleanly. */
   onStart?(daemon: FleetDaemon): Promise<void> | void;
   makeHandler?: StartFleetDaemonOptions['makeHandler'];
+  /**
+   * Credential resolver — production uses `resolveCredentials()` from
+   * `auth.ts`, which reads `~/.declaragent/config.json` + env vars.
+   * Tests inject a stub so the CLI path is deterministic across
+   * machines (and CI boxes that have no creds configured).
+   */
+  resolveCredentials?: () => ResolvedCredentials | null;
 }
 
 export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {}): Promise<number> {
@@ -416,11 +438,43 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     agentsById: new Map(selected.map((a) => [a.id, a])),
   };
 
+  // Resolve the handler factory. Tests inject `deps.makeHandler` — in
+  // production we stand up the LLM engine per agent. Missing auth is a
+  // hard error: the daemon would otherwise crash mid-request.
+  let makeHandler = deps.makeHandler;
+  let sessionStore: ReturnType<typeof createSqliteSessionStore> | null = null;
+  if (makeHandler === undefined) {
+    const resolveCreds = deps.resolveCredentials ?? defaultResolveCredentials;
+    const creds = resolveCreds();
+    if (!creds) {
+      io.err(
+        '✗ no provider credentials found. Run `declaragent` and sign in with /auth, or set a provider env var (e.g. ANTHROPIC_API_KEY, OPENROUTER_API_KEY) before `declaragent fleet run`.\n',
+      );
+      return 1;
+    }
+    const provider = createProviderFromCreds({ creds });
+    sessionStore = createSqliteSessionStore({ path: sessionsDbPath() });
+    const defaultModel = resolveDefaultModel(creds.providerId);
+    makeHandler = createLLMHandlerFactory({
+      provider,
+      sessionStore,
+      defaultModel,
+    });
+  }
+
   const daemon = await startFleetDaemon({
     fleet: filteredFleet,
-    ...(deps.makeHandler !== undefined && { makeHandler: deps.makeHandler }),
+    ...(makeHandler !== undefined && { makeHandler }),
     io,
   });
+
+  // Close the session DB handle together with the daemon so subsequent
+  // invocations don't hit WAL lock contention (sqlite keeps the handle
+  // open for the process lifetime otherwise).
+  const shutdownDaemon = async (): Promise<void> => {
+    await daemon.shutdown();
+    sessionStore?.close();
+  };
 
   io.out(`fleet: ${fleet.manifest.name}\n`);
   io.out(`running ${selected.length} agent${selected.length === 1 ? '' : 's'}:\n`);
@@ -440,19 +494,19 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
   // SIGINT/SIGTERM via process signal handlers.
   if (deps.onStart) {
     await deps.onStart(daemon);
-    await daemon.shutdown();
+    await shutdownDaemon();
     return 0;
   }
 
   if (deps.runForeverMs !== undefined) {
     await new Promise((r) => setTimeout(r, deps.runForeverMs));
-    await daemon.shutdown();
+    await shutdownDaemon();
     return 0;
   }
 
   const stop = async (): Promise<void> => {
     io.out('\nshutting down…\n');
-    await daemon.shutdown();
+    await shutdownDaemon();
   };
   process.once('SIGINT', () => {
     void stop();
@@ -461,5 +515,24 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     void stop();
   });
   await daemon.waitForShutdown();
+  sessionStore?.close();
   return 0;
+}
+
+/**
+ * Pick the model agents fall back to when `agent.yaml` omits `model`.
+ *
+ * Precedence:
+ *   1. last-remembered model stored on the active provider
+ *   2. provider preset's `defaultModel`
+ *   3. hard-coded `claude-sonnet-4-5` so the daemon never falls back
+ *      to an unrunnable string
+ */
+function resolveDefaultModel(providerId: string): string {
+  const cfg = loadConfig();
+  const stored = cfg?.providers?.[providerId]?.model;
+  if (stored) return stored;
+  const preset = getPreset(providerId);
+  if (preset?.defaultModel) return preset.defaultModel;
+  return 'claude-sonnet-4-5';
 }

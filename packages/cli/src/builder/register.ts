@@ -13,9 +13,13 @@
  */
 
 import type { TenantAuditSink, Tool } from '@declaragent/core';
+import { createAddChannelTool } from './add-channel.js';
+import { createAddMCPTool } from './add-mcp.js';
 import { createAddPeerTool } from './add-peer.js';
+import { createAddPluginTool } from './add-plugin.js';
 import { createAddSecretTool } from './add-secret.js';
 import { createAddSkillTool } from './add-skill.js';
+import { createAddSourceTool } from './add-source.js';
 import { createApplyChangeTool } from './apply-change.js';
 import { createAuditVerifyTool } from './audit-verify.js';
 import { createAuthPlaybookTool } from './auth-playbook.js';
@@ -70,6 +74,10 @@ export function getBuilderTools(options: BuilderRegistrationOptions): Tool[] {
   return [
     createAddSkillTool({ scopeRoot: options.scopeRoot }),
     createAddSecretTool({ scopeRoot: options.scopeRoot }),
+    createAddSourceTool({ scopeRoot: options.scopeRoot }),
+    createAddChannelTool({ scopeRoot: options.scopeRoot }),
+    createAddMCPTool({ scopeRoot: options.scopeRoot }),
+    createAddPluginTool({ scopeRoot: options.scopeRoot }),
     createAuthPlaybookTool(),
     createProposeChangeTool({ registry }),
     createApplyChangeTool({

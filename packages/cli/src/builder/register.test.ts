@@ -33,9 +33,13 @@ describe('getBuilderTools', () => {
     const tools = getBuilderTools({ scopeRoot: '/tmp/x' });
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      'DeclaraAddChannel',
+      'DeclaraAddMCP',
       'DeclaraAddPeer',
+      'DeclaraAddPlugin',
       'DeclaraAddSecret',
       'DeclaraAddSkill',
+      'DeclaraAddSource',
       'DeclaraApplyChange',
       'DeclaraAuditVerify',
       'DeclaraAuthPlaybook',

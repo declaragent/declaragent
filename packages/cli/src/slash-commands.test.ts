@@ -182,4 +182,26 @@ describe('parseSlash', () => {
       force: true,
     });
   });
+
+  test('/prompt captures the path as-is (supports spaces)', () => {
+    expect(parseSlash('/prompt /tmp/brief.md')).toEqual({
+      kind: 'prompt',
+      path: '/tmp/brief.md',
+    });
+    expect(parseSlash('/prompt ./notes/contract review.txt')).toEqual({
+      kind: 'prompt',
+      path: './notes/contract review.txt',
+    });
+  });
+
+  test('/prompt without a path surfaces a usage message', () => {
+    expect(parseSlash('/prompt')).toEqual({
+      kind: 'promptInvalid',
+      reason: 'usage: /prompt <path>',
+    });
+    expect(parseSlash('/prompt   ')).toEqual({
+      kind: 'promptInvalid',
+      reason: 'usage: /prompt <path>',
+    });
+  });
 });

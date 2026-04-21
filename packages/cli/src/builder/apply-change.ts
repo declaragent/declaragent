@@ -28,20 +28,32 @@
 import { randomUUID } from 'node:crypto';
 import type { TenantAuditSink, Tool, ToolEvent } from '@declaragent/core';
 import { DEFAULT_TENANT_ID } from '@declaragent/core';
+import { runAddChannel } from './add-channel.js';
+import { runAddMCP } from './add-mcp.js';
 import { runAddPeer } from './add-peer.js';
+import { runAddPlugin } from './add-plugin.js';
 import { runAddSecret } from './add-secret.js';
 import { runAddSkill } from './add-skill.js';
+import { runAddSource } from './add-source.js';
 import { runFleetAdd } from './fleet-add.js';
 import { captureHead, revertPaths } from './git.js';
 import type { Proposal, ProposalRegistry, ProposalStep } from './proposals.js';
 import {
+  type AddChannelInput,
+  type AddMCPInput,
   type AddPeerInput,
+  type AddPluginInput,
   type AddSecretInput,
   type AddSkillInput,
+  type AddSourceInput,
   type FleetAddInput,
+  addChannelInputSchema,
+  addMCPInputSchema,
   addPeerInputSchema,
+  addPluginInputSchema,
   addSecretInputSchema,
   addSkillInputSchema,
+  addSourceInputSchema,
   fleetAddInputSchema,
 } from './types.js';
 import {
@@ -321,12 +333,98 @@ async function dispatchStep(step: ProposalStep, scopeRoot: string): Promise<Appl
       }
     }
 
-    // Phases 5+ fill these in. For now we surface a clear error so
-    // the model can re-propose with a supported kind.
-    case 'addSource':
-    case 'addChannel':
-    case 'addMCP':
-    case 'addPlugin':
+    case 'addSource': {
+      const parsed = addSourceInputSchema.safeParse(step.payload);
+      if (!parsed.success) {
+        return {
+          kind: step.kind,
+          ok: false,
+          writes: [],
+          error: `addSource payload invalid: ${formatZodError(parsed.error)}`,
+        };
+      }
+      try {
+        const out = await runAddSource(parsed.data as AddSourceInput, { scopeRoot });
+        return { kind: step.kind, ok: true, writes: out.writes, output: out };
+      } catch (err) {
+        return {
+          kind: step.kind,
+          ok: false,
+          writes: [],
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    case 'addChannel': {
+      const parsed = addChannelInputSchema.safeParse(step.payload);
+      if (!parsed.success) {
+        return {
+          kind: step.kind,
+          ok: false,
+          writes: [],
+          error: `addChannel payload invalid: ${formatZodError(parsed.error)}`,
+        };
+      }
+      try {
+        const out = await runAddChannel(parsed.data as AddChannelInput);
+        return { kind: step.kind, ok: true, writes: out.writes, output: out };
+      } catch (err) {
+        return {
+          kind: step.kind,
+          ok: false,
+          writes: [],
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    case 'addMCP': {
+      const parsed = addMCPInputSchema.safeParse(step.payload);
+      if (!parsed.success) {
+        return {
+          kind: step.kind,
+          ok: false,
+          writes: [],
+          error: `addMCP payload invalid: ${formatZodError(parsed.error)}`,
+        };
+      }
+      try {
+        const out = await runAddMCP(parsed.data as AddMCPInput);
+        return { kind: step.kind, ok: true, writes: out.writes, output: out };
+      } catch (err) {
+        return {
+          kind: step.kind,
+          ok: false,
+          writes: [],
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    case 'addPlugin': {
+      const parsed = addPluginInputSchema.safeParse(step.payload);
+      if (!parsed.success) {
+        return {
+          kind: step.kind,
+          ok: false,
+          writes: [],
+          error: `addPlugin payload invalid: ${formatZodError(parsed.error)}`,
+        };
+      }
+      try {
+        const out = await runAddPlugin(parsed.data as AddPluginInput);
+        return { kind: step.kind, ok: true, writes: out.writes, output: out };
+      } catch (err) {
+        return {
+          kind: step.kind,
+          ok: false,
+          writes: [],
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
     case 'editFile':
     case 'runCommand':
       return {

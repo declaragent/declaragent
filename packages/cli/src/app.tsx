@@ -1,24 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  Agent,
   type AgentSpec,
-  Bash,
-  Edit,
   type Engine,
-  GlobTool,
-  Grep,
   type Message,
   type PendingToolCall,
   type PermissionDecision,
   type PermissionMode,
-  Read,
   type SessionHandle,
   type SqliteSessionStore,
-  type Tool,
-  Write,
-  createAnthropicProvider,
   createEngine,
-  createOpenAICompatProvider,
   createPermissionGate,
   createSqliteSessionStore,
 } from '@declaragent/core';
@@ -44,6 +34,8 @@ import {
   runUndo,
 } from './builder/index.js';
 import type { Proposal, ProposalEvent } from './builder/index.js';
+import { BUILTIN_TOOLS } from './builtin-tools.js';
+import { expandFileRefs } from './file-refs.js';
 import { fleetGraph } from './fleet-graph-cli.js';
 import { appendHistory, loadHistory } from './history.js';
 import {
@@ -55,12 +47,12 @@ import {
 import { defaultModelFor, knownModelsFor } from './known-models.js';
 import { fetchOpenAICompatModels } from './openai-compat-models.js';
 import { fetchOpenRouterModels, summarizeModel } from './openrouter-models.js';
-import { DECLARAGENT_REFERRER, DECLARAGENT_TITLE } from './openrouter-oauth.js';
+import { PasteMachine } from './paste-buffer.js';
 import { auditDbPath, memoryFilePath, sessionsDbPath } from './paths.js';
+import { matchProposalShortcut } from './proposal-shortcut.js';
+import { createProviderFromCreds } from './provider-factory.js';
 import { getPreset } from './providers-registry.js';
 import { SLASH_COMMANDS, type SlashCommand, parseSlash } from './slash-commands.js';
-
-const BUILTIN_TOOLS: Tool[] = [Read, Write, Edit, GlobTool, Grep, Bash, Agent];
 
 type Line =
   | { kind: 'user'; text: string }
@@ -392,6 +384,7 @@ export function App(props: AppProps): JSX.Element {
   const [mode, setMode] = useState<PermissionMode>(initialMode);
   const [model, setModelState] = useState<string>(initialModel);
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
+  const [pendingProposal, setPendingProposal] = useState<Proposal | null>(null);
   const [picker, setPicker] = useState<PickerState | null>(null);
   const [suggestionCursor, setSuggestionCursor] = useState(0);
 
@@ -401,6 +394,22 @@ export function App(props: AppProps): JSX.Element {
   const [history, setHistory] = useState<string[]>(() => loadHistory());
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const draftRef = useRef('');
+
+  // Bracketed-paste plumbing. The raw-stdin listener (installed in the
+  // effect below) drives a state machine that detects CSI 200~/201~
+  // markers; while a paste is in flight `pasteActiveRef.current` is
+  // `true`, which gates TextInput's onChange + onSubmit so Ink's
+  // pre-parsed characters don't leak into the controlled input.
+  // On paste end, the buffered text is flushed via setInput(prior + body).
+  const pasteMachineRef = useRef<PasteMachine | null>(null);
+  if (pasteMachineRef.current === null) {
+    pasteMachineRef.current = new PasteMachine();
+  }
+  const pasteActiveRef = useRef(false);
+  const pasteBufferRef = useRef('');
+  const inputBeforePasteRef = useRef('');
+  const inputRef = useRef('');
+  inputRef.current = input;
 
   // Double-Ctrl+C to exit. First press shows a hint; second press within 2s
   // exits. Matches Claude Code / most shell-like REPLs.
@@ -426,6 +435,57 @@ export function App(props: AppProps): JSX.Element {
   useEffect(() => {
     setSuggestionCursor(0);
   }, [slashSuggestions]);
+
+  // Bracketed-paste listener. Architecture mirrors Claude Code:
+  // enable CSI ?2004h on mount, run a parallel `data` listener that
+  // detects the `CSI 200~` / `CSI 201~` markers, buffer bytes in
+  // between, and flush atomically via setInput() when the end marker
+  // arrives. Ink's own stdin handler continues to run — we coexist by
+  // gating the TextInput's onChange + onSubmit handlers on
+  // `pasteActiveRef.current`, so the first line of paste + any embedded
+  // `\n` never land in the controlled `input` state or fire submit.
+  useEffect(() => {
+    if (!process.stdin.isTTY) return;
+
+    process.stdout.write('\x1b[?2004h');
+
+    const onData = (chunk: Buffer | string): void => {
+      const s = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      const machine = pasteMachineRef.current;
+      if (!machine) return;
+      for (const ev of machine.feed(s)) {
+        if (ev.type === 'start') {
+          pasteActiveRef.current = true;
+          inputBeforePasteRef.current = inputRef.current;
+          pasteBufferRef.current = '';
+        } else if (ev.type === 'slice') {
+          pasteBufferRef.current += ev.text;
+        } else {
+          // end — flush on the next tick so any in-flight Ink
+          // updates (duplicated copies of the first line) settle
+          // before we overwrite the controlled value.
+          const body = pasteBufferRef.current;
+          pasteBufferRef.current = '';
+          const prior = inputBeforePasteRef.current;
+          pasteActiveRef.current = false;
+          setTimeout(() => {
+            setInput(prior + body);
+          }, 0);
+        }
+      }
+    };
+
+    process.stdin.on('data', onData);
+    return () => {
+      process.stdin.off('data', onData);
+      try {
+        process.stdout.write('\x1b[?2004l');
+      } catch {
+        // stdout may already be closed during final teardown
+      }
+      pasteMachineRef.current?.reset();
+    };
+  }, []);
 
   const linesRef = useRef(lines);
   linesRef.current = lines;
@@ -471,35 +531,10 @@ export function App(props: AppProps): JSX.Element {
       });
     }
     // Provider/model is shown in the banner + status line; skip the system line.
-    // Provider selection driven by the registry preset.
-    const preset = creds ? getPreset(creds.providerId) : undefined;
-    let provider: LLMProvider;
-    if (preset?.kind === 'anthropic') {
-      provider = createAnthropicProvider({
-        ...(creds?.authToken !== undefined && { authToken: creds.authToken }),
-        ...(creds?.apiKey !== undefined && { apiKey: creds.apiKey }),
-      });
-    } else if (preset?.kind === 'openai-compat') {
-      const apiKey = creds?.apiKey ?? creds?.authToken ?? '';
-      const baseURL = creds?.baseURL ?? preset.baseURL ?? '';
-      const headers: Record<string, string> = { ...(preset.headers ?? {}) };
-      // OpenRouter convention: send attribution headers.
-      if (preset.id === 'openrouter') {
-        headers['HTTP-Referer'] = DECLARAGENT_REFERRER;
-        headers['X-Title'] = DECLARAGENT_TITLE;
-      }
-      provider = createOpenAICompatProvider({
-        apiKey,
-        baseURL,
-        ...(Object.keys(headers).length > 0 && { headers }),
-      });
-    } else {
-      // Fallback: assume anthropic if we can't identify the preset.
-      provider = createAnthropicProvider({
-        ...(creds?.authToken !== undefined && { authToken: creds.authToken }),
-        ...(creds?.apiKey !== undefined && { apiKey: creds.apiKey }),
-      });
-    }
+    // Provider selection factored into `createProviderFromCreds` so
+    // `declaragent run` and `declaragent fleet run` share the same
+    // credentials → provider translation.
+    const provider: LLMProvider = createProviderFromCreds({ creds: creds ?? null });
     // Phase-6 safety floor: deploy verbs are denied by default so a
     // model that Bash-shells `declaragent deploy ...` straight to prod
     // trips the gate rather than the live site. Users who *intend* to
@@ -582,27 +617,33 @@ export function App(props: AppProps): JSX.Element {
       switch (ev.type) {
         case 'registered':
           append({ kind: 'system', text: renderProposal(ev.proposal) });
+          setPendingProposal(ev.proposal);
           return;
         case 'edited':
           append({
             kind: 'system',
             text: `proposal ${ev.proposal.id} step ${ev.stepIndex + 1} → ${ev.replacement}`,
           });
+          setPendingProposal(ev.proposal);
           return;
         case 'confirmed':
           append({ kind: 'system', text: `proposal ${ev.proposal.id} confirmed.` });
+          setPendingProposal(null);
           return;
         case 'rejected':
           append({ kind: 'system', text: `proposal ${ev.proposal.id} rejected.` });
+          setPendingProposal(null);
           return;
         case 'expired':
           append({
             kind: 'system',
             text: `proposal ${ev.proposal.id} expired (15-min TTL). Ask the builder to re-propose.`,
           });
+          setPendingProposal(null);
           return;
         case 'applied':
           append({ kind: 'system', text: `proposal ${ev.proposal.id} applied.` });
+          setPendingProposal(null);
           return;
       }
     });
@@ -623,6 +664,25 @@ export function App(props: AppProps): JSX.Element {
       append({ kind: 'error', text: 'engine not ready' });
       return;
     }
+
+    // `@<path>` file-ref expansion. Rendered user line keeps the raw
+    // token (that's what the user typed); the model sees the expanded
+    // form with inlined file bodies.
+    const expansion = expandFileRefs(text);
+    for (const ref of expansion.refs) {
+      if (ref.ok) {
+        append({
+          kind: 'system',
+          text: `(attached ${ref.token}${ref.truncated ? ' — truncated' : ''}: ${ref.bytes ?? 0} bytes)`,
+        });
+      } else {
+        append({
+          kind: 'system',
+          text: `(${ref.token} not attached: ${ref.reason ?? 'read failed'})`,
+        });
+      }
+    }
+
     setBusy(true);
     append({ kind: 'user', text });
     const controller = new AbortController();
@@ -630,7 +690,7 @@ export function App(props: AppProps): JSX.Element {
     try {
       const result = await engine.runAgent({
         session: sessionRef.current,
-        userMessage: text,
+        userMessage: expansion.expanded,
         abortSignal: controller.signal,
       });
       const reply = extractAssistantText(result.lastAssistantMessage);
@@ -1038,6 +1098,39 @@ export function App(props: AppProps): JSX.Element {
         })();
         return;
       }
+      case 'promptInvalid':
+        append({ kind: 'error', text: cmd.reason });
+        return;
+      case 'prompt': {
+        // Resolve against cwd so `/prompt ./brief.md` matches what
+        // a shell would do. `~` is not expanded — callers can supply
+        // an absolute path when needed.
+        const path = cmd.path.startsWith('/') ? cmd.path : `${process.cwd()}/${cmd.path}`;
+        let body: string;
+        try {
+          body = readFileSync(path, 'utf8');
+        } catch (err) {
+          append({
+            kind: 'error',
+            text: `/prompt: failed to read ${path} — ${err instanceof Error ? err.message : String(err)}`,
+          });
+          return;
+        }
+        if (body.trim().length === 0) {
+          append({ kind: 'error', text: `/prompt: ${path} is empty` });
+          return;
+        }
+        append({
+          kind: 'system',
+          text: `(prompt loaded from ${path}: ${body.length} chars)`,
+        });
+        // Fire-and-forget — handleSlash is sync but runUserMessage is
+        // async. Same pattern the `fleetGraph` case uses below.
+        void (async () => {
+          await runUserMessage(body);
+        })();
+        return;
+      }
       case 'unknown':
         append({
           kind: 'error',
@@ -1077,6 +1170,17 @@ export function App(props: AppProps): JSX.Element {
     }
     setHistoryIndex(null);
     draftRef.current = '';
+
+    // Proposal shortcut: when a proposal is pending and the user types
+    // a bare `y` / `yes` / `n` / `no`, dispatch as the matching slash
+    // command. Preserves the typed `/yes <phrase>` / `/edit <n> …`
+    // flow for explicit-yes + revise paths.
+    const shortcut = matchProposalShortcut(text, pendingProposal);
+    if (shortcut) {
+      handleSlash(shortcut);
+      return;
+    }
+
     const cmd = parseSlash(text);
     if (cmd) {
       handleSlash(cmd);
@@ -1282,9 +1386,24 @@ export function App(props: AppProps): JSX.Element {
             ) : slashSuggestions ? (
               <SlashSuggestions suggestions={slashSuggestions} cursor={suggestionCursor} />
             ) : null}
+            {pendingProposal ? <ProposalHint proposal={pendingProposal} /> : null}
             <Box borderStyle="round" borderColor={busy ? 'yellow' : 'gray'} paddingX={1}>
               <Text color="cyan">› </Text>
-              <TextInput value={input} onChange={setInput} onSubmit={handleSubmit} />
+              <TextInput
+                value={input}
+                onChange={(next) => {
+                  // Silence Ink's onChange during a paste — the raw-
+                  // stdin listener owns the buffer and will flush the
+                  // final text once the end marker arrives.
+                  if (pasteActiveRef.current) return;
+                  setInput(next);
+                }}
+                onSubmit={(value) => {
+                  // Embedded `\n` inside a paste must NOT fire submit.
+                  if (pasteActiveRef.current) return;
+                  void handleSubmit(value);
+                }}
+              />
             </Box>
           </>
         )}
@@ -1447,6 +1566,49 @@ function PromptRow({ prompt, onResolve }: PromptRowProps): JSX.Element {
         <Text color="yellow">› </Text>
         <TextInput value={value} onChange={setValue} onSubmit={submit} />
       </Box>
+    </Box>
+  );
+}
+
+interface ProposalHintProps {
+  proposal: Proposal;
+}
+
+/**
+ * Subtle one-line hint rendered above the regular TextInput whenever a
+ * proposal is pending. Keeps the typed-slash power-user flow intact —
+ * the shortcut logic in `handleSubmit` just catches bare `y` / `n`
+ * submissions before they hit the model.
+ */
+function ProposalHint({ proposal }: ProposalHintProps): JSX.Element {
+  if (proposal.requiresExplicitYes) {
+    const phrase = proposal.summary.trim().split(/\s+/)[0]?.toLowerCase() ?? 'confirm';
+    return (
+      <Box paddingX={1}>
+        <Text color="yellow">
+          ⚠ proposal {proposal.id} needs explicit confirmation — type{' '}
+          <Text bold color="cyan">
+            /yes {phrase}
+          </Text>{' '}
+          to approve, <Text color="cyan">/no</Text> to reject.
+        </Text>
+      </Box>
+    );
+  }
+  return (
+    <Box paddingX={1}>
+      <Text color="yellow">
+        proposal {proposal.id} pending — press{' '}
+        <Text bold color="cyan">
+          y
+        </Text>{' '}
+        /{' '}
+        <Text bold color="cyan">
+          n
+        </Text>{' '}
+        + Enter to confirm / reject (or{' '}
+        <Text color="cyan">/edit &lt;n&gt; &lt;replacement&gt;</Text>).
+      </Text>
     </Box>
   );
 }

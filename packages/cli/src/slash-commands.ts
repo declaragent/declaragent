@@ -24,6 +24,8 @@ export type SlashCommand =
   | { kind: 'fleetGraph'; format?: 'mermaid' | 'dot' | 'json' }
   | { kind: 'undo' }
   | { kind: 'history'; limit?: number }
+  | { kind: 'prompt'; path: string }
+  | { kind: 'promptInvalid'; reason: string }
   | { kind: 'unknown'; name: string };
 
 export const SLASH_COMMANDS: Array<{ name: string; description: string }> = [
@@ -78,6 +80,11 @@ export const SLASH_COMMANDS: Array<{ name: string; description: string }> = [
     name: '/init [<template>] [--force]',
     description:
       'Scaffold an agent config (agent.yaml + skills + .env.example) into the current directory. Default template: concierge.',
+  },
+  {
+    name: '/prompt <path>',
+    description:
+      "Read a file and submit its contents as your next user message, verbatim. Stopgap for long or multi-line prompts that ink-text-input's paste can't handle.",
   },
   { name: '/sessions', description: 'List persisted sessions' },
   { name: '/resume <id>', description: 'Resume a persisted session by id' },
@@ -211,6 +218,13 @@ export function parseSlash(input: string): SlashCommand | null {
       if (template !== undefined) out.template = template;
       if (force) out.force = true;
       return out;
+    }
+    case 'prompt': {
+      const path = args.join(' ').trim();
+      if (path.length === 0) {
+        return { kind: 'promptInvalid', reason: 'usage: /prompt <path>' };
+      }
+      return { kind: 'prompt', path };
     }
     case 'sessions':
       return { kind: 'sessions' };

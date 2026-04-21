@@ -141,6 +141,197 @@ export interface FleetAddOutput {
   readonly writes: readonly string[];
 }
 
+// ── DeclaraAddSource ───────────────────────────────────────────────────
+
+/**
+ * Source type. Keep the union in sync with the three in-process
+ * adapters shipped by core (webhook / cron / file-watch) plus the
+ * external-broker types that have published source packages. The
+ * builder validates in-process types strictly and lets external types
+ * through without adapter-level checks — the daemon / `declaragent
+ * run <dir>` path reports them as `unknownTypes` at startup.
+ */
+export const sourceTypeSchema = z.enum([
+  'webhook',
+  'cron',
+  'file-watch',
+  'kafka',
+  'nats',
+  'sqs',
+  'amqp',
+  'mqtt',
+]);
+
+export type SourceType = z.infer<typeof sourceTypeSchema>;
+
+/**
+ * Stable source id. Daemon diff keys + event-store correlation depend
+ * on this being unique per agent; we enforce the same pattern the
+ * scaffolder uses so hand-authored + builder-authored ids look alike.
+ */
+export const sourceIdSchema = z
+  .string()
+  .min(1, 'source id is required')
+  .max(64, 'source id exceeds 64 characters')
+  .regex(/^[a-z0-9][a-z0-9_-]*$/, 'source id must match [a-z0-9][a-z0-9_-]*');
+
+export const addSourceInputSchema = z.object({
+  type: sourceTypeSchema,
+  /**
+   * Stable id surfaced in events + logs. The runtime accepts sources
+   * without an id for some types (cron auto-derives one), but the
+   * builder always stamps one so config diffs are predictable.
+   */
+  id: sourceIdSchema,
+  /**
+   * Adapter-specific config. Not validated here — the tool round-trips
+   * the assembled entry through `validateEventSourcesConfig` with the
+   * in-process adapter map, which is the authoritative gate.
+   */
+  config: z.record(z.string(), z.unknown()),
+  /** Absolute agent root. Defaults to the session scope root. */
+  agentPath: z.string().optional(),
+  confirmOutsideScope: z.boolean().optional(),
+});
+
+export type AddSourceInput = z.infer<typeof addSourceInputSchema>;
+
+export interface AddSourceOutput {
+  readonly ok: true;
+  readonly type: string;
+  readonly id: string;
+  /** Absolute path to the event-sources.yaml we wrote. */
+  readonly eventSourcesPath: string;
+  readonly writes: readonly string[];
+  /**
+   * True iff the type has no in-process adapter (kafka / nats / …).
+   * Surfaces as a hint in the REPL so the user knows this source
+   * won't fire under `declaragent run <dir>` without the external
+   * broker package + credentials.
+   */
+  readonly external: boolean;
+}
+
+// ── DeclaraAddChannel ──────────────────────────────────────────────────
+
+/**
+ * Channel types declaragent ships first-party adapters for. Unknown
+ * types are accepted structurally — the `declaragent channels
+ * validate` verb remains the authoritative gate, since it can discover
+ * third-party adapters the builder has no way to load.
+ */
+export const channelTypeSchema = z.enum(['slack', 'telegram', 'discord', 'whatsapp']);
+export type ChannelType = z.infer<typeof channelTypeSchema>;
+
+/**
+ * Channel id — unique across the user's channels config. Same pattern
+ * as source ids for consistency.
+ */
+export const channelIdSchema = z
+  .string()
+  .min(1, 'channel id is required')
+  .max(64, 'channel id exceeds 64 characters')
+  .regex(/^[a-z0-9][a-z0-9_-]*$/, 'channel id must match [a-z0-9][a-z0-9_-]*');
+
+export const addChannelInputSchema = z.object({
+  type: channelTypeSchema,
+  id: channelIdSchema,
+  /**
+   * Adapter-specific config. Keys vary per channel — slack wants
+   * `token` / `signingSecret` refs; telegram wants `botToken`. We
+   * don't re-validate here; the post-write `loadChannelsConfig`
+   * round-trip surfaces anything structurally broken.
+   */
+  config: z.record(z.string(), z.unknown()),
+  confirmOutsideScope: z.boolean().optional(),
+});
+
+export type AddChannelInput = z.infer<typeof addChannelInputSchema>;
+
+export interface AddChannelOutput {
+  readonly ok: true;
+  readonly type: string;
+  readonly id: string;
+  /** Absolute path to the channels config file. */
+  readonly channelsPath: string;
+  readonly writes: readonly string[];
+  /**
+   * Hint the REPL surfaces to the user — reminds them channels are
+   * user-global (not in the agent's scope root) and points at the
+   * matching playbook for credential setup.
+   */
+  readonly hint: string;
+}
+
+// ── DeclaraAddMCP ──────────────────────────────────────────────────────
+
+/**
+ * MCP server name. Namespaces the contributed tools as
+ * `mcp__<name>__<tool>`, so the pattern must be filesystem-clean and
+ * case-insensitive across the Claude UI.
+ */
+export const mcpNameSchema = z
+  .string()
+  .min(1, 'mcp server name is required')
+  .max(64, 'mcp server name exceeds 64 characters')
+  .regex(/^[a-z0-9][a-z0-9_-]*$/i, 'mcp server name must match [a-z0-9][a-z0-9_-]*');
+
+export const addMCPInputSchema = z.object({
+  name: mcpNameSchema,
+  /** Executable binary — absolute path or command on PATH. */
+  command: z.string().min(1, 'mcp command is required'),
+  /** Command-line args passed to the binary. */
+  args: z.array(z.string()).optional(),
+  /** Env vars merged on top of the process env when spawning the server. */
+  env: z.record(z.string(), z.string()).optional(),
+  /** MCP protocol version. Defaults to `2024-11-05` server-side. */
+  protocolVersion: z.string().optional(),
+});
+
+export type AddMCPInput = z.infer<typeof addMCPInputSchema>;
+
+export interface AddMCPOutput {
+  readonly ok: true;
+  readonly name: string;
+  readonly mcpConfigPath: string;
+  readonly writes: readonly string[];
+  /** Tool namespace the MCP server will contribute as. */
+  readonly toolPrefix: string;
+  /** Hint surfaced to the user (restart + protocol version). */
+  readonly hint: string;
+}
+
+// ── DeclaraAddPlugin ───────────────────────────────────────────────────
+
+export const addPluginInputSchema = z.object({
+  /**
+   * Path to the plugin directory (containing `plugin.json`). Absolute or
+   * relative to `agentPath` / scope root. The tool reads the manifest,
+   * records the declared permissions in the consent log, and writes a
+   * store entry.
+   */
+  pluginPath: z.string().min(1, 'pluginPath is required'),
+  /**
+   * Scope-breach override. Plugins typically live outside the agent
+   * scope root (global npm package), so the default is permissive —
+   * the proposal flow is where the user confirms the consent.
+   */
+  confirmOutsideScope: z.boolean().optional(),
+});
+
+export type AddPluginInput = z.infer<typeof addPluginInputSchema>;
+
+export interface AddPluginOutput {
+  readonly ok: true;
+  readonly name: string;
+  readonly version: string;
+  readonly dir: string;
+  readonly pluginStorePath: string;
+  readonly writes: readonly string[];
+  readonly consentedPermissions: readonly string[];
+  readonly hint: string;
+}
+
 // ── DeclaraAddPeer ─────────────────────────────────────────────────────
 
 /**

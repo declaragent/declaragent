@@ -470,6 +470,9 @@ describe('fleetRun (CLI verb)', () => {
         {
           io: cap.io,
           root: h.root,
+          // Bypass the LLM factory path so the test works on any
+          // machine regardless of `~/.declaragent/config.json` state.
+          makeHandler: () => defaultHandler,
           onStart: async (daemon) => {
             expect(daemon.agents.size).toBe(1);
             expect(daemon.agents.has('pr-reviewer')).toBe(true);
@@ -482,6 +485,28 @@ describe('fleetRun (CLI verb)', () => {
       expect(out).toContain('running 1 agent');
       expect(out).toContain('pr-reviewer');
       expect(out).toContain('ready');
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('exits 1 with a helpful error when no provider creds are configured', async () => {
+    const h = mkHarness();
+    try {
+      await twoAgentFleet(h);
+      const cap = captureIo();
+      const code = await fleetRun(
+        {},
+        {
+          io: cap.io,
+          root: h.root,
+          // No makeHandler + stubbed "no creds" → CLI should bail
+          // before touching the daemon.
+          resolveCredentials: () => null,
+        },
+      );
+      expect(code).toBe(1);
+      expect(cap.err.join('')).toContain('no provider credentials');
     } finally {
       h.cleanup();
     }
