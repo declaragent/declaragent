@@ -411,6 +411,8 @@ export type {
   SkillSourceLocation,
   SkillTier,
 } from './skills/index.js';
+export { AgentConfigError, composeSystemPromptWithSkills, loadAgent } from './agents/load-agent.js';
+export type { AgentYaml, LoadAgentOptions, LoadedAgent } from './agents/load-agent.js';
 export {
   DEFAULT_PLUGIN_STORE_FILE,
   PluginActivationError,

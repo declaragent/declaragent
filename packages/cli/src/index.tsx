@@ -37,6 +37,7 @@ import { migrateConfig } from './migrate-cli.js';
 import { pluginInfo, pluginInstall, pluginList, pluginRemove } from './plugin-cli.js';
 import { PluginConsent } from './plugin-consent.js';
 import { type ProviderPreset, getPreset, listPresets } from './providers-registry.js';
+import { runAgent } from './run-agent-cli.js';
 import { secretsDescribe, secretsList, secretsRotate } from './secrets-cli.js';
 import { skillList } from './skill-cli.js';
 import { sourceAdaptersList } from './source-adapters-cli.js';
@@ -407,6 +408,37 @@ if (subcommand === 'extensions') {
 if (subcommand === 'daemon') {
   const code = await daemonStart();
   process.exit(code);
+}
+if (subcommand === 'run') {
+  // `declaragent run [<dir>]` — load a scaffolded agent + drop into
+  // a REPL with that persona. PR #1 is skill-only; source-wiring
+  // lands in a follow-up.
+  const positional = argv.slice(1).filter((a) => !a.startsWith('-'));
+  const dir = positional[0];
+  const noSources = argv.includes('--no-sources');
+  const runArgs: Parameters<typeof runAgent>[0] = {};
+  if (dir !== undefined) runArgs.dir = dir;
+  if (args.model !== undefined) runArgs.model = args.model;
+  if (noSources) runArgs.noSources = true;
+  const code = await runAgent(runArgs, {
+    renderRepl: (props) => {
+      const appProps: {
+        agentSpec: typeof props.agentSpec;
+        agentLabel: string;
+        initialMode?: PermissionMode;
+        model?: string;
+      } = {
+        agentSpec: props.agentSpec,
+        agentLabel: props.agentLabel,
+      };
+      if (args.mode) appProps.initialMode = args.mode;
+      if (props.model) appProps.model = props.model;
+      render(<App {...appProps} />, { exitOnCtrlC: false });
+    },
+  });
+  if (code !== 0) process.exit(code);
+  // When runAgent hands off to the REPL, we stay alive in the Ink
+  // render — no process.exit here.
 }
 if (subcommand === 'daemon-status') {
   const code = await daemonStatus();

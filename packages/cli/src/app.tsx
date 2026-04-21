@@ -73,6 +73,19 @@ type Line =
 interface AppProps {
   initialMode?: PermissionMode;
   model?: string;
+  /**
+   * When supplied, overrides the default builder-REPL persona and runs
+   * the REPL as if it were the given scaffolded agent — its
+   * `systemPrompt`, skills (already appended into the prompt), and
+   * `model` become the session defaults. Used by
+   * `declaragent run <dir>`.
+   */
+  agentSpec?: AgentSpec;
+  /**
+   * Label shown on the banner when `agentSpec` is supplied (e.g. the
+   * agent directory path). Defaults to `agentSpec.name` when absent.
+   */
+  agentLabel?: string;
 }
 
 const SYSTEM_PROMPT = `You are the Declaragent REPL — an agent whose job is to help the user
@@ -294,14 +307,6 @@ approves. Do not ask the user whether to check — just check.
 - Keep responses tight. The REPL is a terminal, not a docs page. Prose
   in bullets; code in fenced blocks; full trees only when asked.`;
 
-function defaultSpec(model: string): AgentSpec {
-  return {
-    name: 'declaragent-repl',
-    model,
-    systemPrompt: SYSTEM_PROMPT,
-  };
-}
-
 function extractAssistantText(message: Message | undefined): string {
   if (!message) return '';
   return message.content
@@ -341,10 +346,15 @@ function filterPickerItems(items: PickerItem[], query: string): PickerItem[] {
 export function App(props: AppProps): JSX.Element {
   const initialMode: PermissionMode = props.initialMode ?? 'default';
 
-  // Resolve initial model: --model flag > saved per-provider model > preset default.
+  // Resolve initial model. Precedence (highest first):
+  //   1. explicit --model flag (props.model)
+  //   2. agentSpec.model when running as a scaffolded agent
+  //   3. saved per-provider model in auth config
+  //   4. provider preset default
   const initialCreds = useMemo(() => resolveCredentials(), []);
   const initialModel = useMemo(() => {
     if (props.model) return props.model;
+    if (props.agentSpec?.model) return props.agentSpec.model;
     const providerId = initialCreds?.providerId ?? 'anthropic';
     const cfg = loadConfig();
     const stored = cfg?.providers?.[providerId]?.model;
@@ -352,7 +362,18 @@ export function App(props: AppProps): JSX.Element {
     const preset = getPreset(providerId);
     if (preset?.defaultModel) return preset.defaultModel;
     return defaultModelFor(providerId === 'openrouter' ? 'openrouter' : 'anthropic');
-  }, [props.model, initialCreds]);
+  }, [props.model, props.agentSpec, initialCreds]);
+
+  // Session spec resolver — closes over `props.agentSpec` so every
+  // call site (initial session, `/clear`, `createChildSession`) gets
+  // the right persona without repeating the conditional.
+  const resolveSpec = useCallback(
+    (model: string): AgentSpec =>
+      props.agentSpec !== undefined
+        ? { ...props.agentSpec, model }
+        : { name: 'declaragent-repl', model, systemPrompt: SYSTEM_PROMPT },
+    [props.agentSpec],
+  );
 
   const { exit } = useApp();
   const [lines, setLines] = useState<Line[]>(() => {
@@ -418,7 +439,7 @@ export function App(props: AppProps): JSX.Element {
     () => createSqliteSessionStore({ path: sessionsDbPath() }),
     [],
   );
-  const sessionRef = useRef<SessionHandle>(store.create(defaultSpec(model)));
+  const sessionRef = useRef<SessionHandle>(store.create(resolveSpec(model)));
 
   // Builder scope + proposal registry. One per session; tools + slash
   // handlers share the same instance so /yes can resolve a proposal
@@ -496,7 +517,7 @@ export function App(props: AppProps): JSX.Element {
       provider,
       tools: [...BUILTIN_TOOLS, ...builderTools],
       permissions,
-      createChildSession: () => store.create(defaultSpec(model)),
+      createChildSession: () => store.create(resolveSpec(model)),
       prompter: async (call, decision) => {
         return new Promise<boolean>((resolve) => {
           setPendingPrompt({ call, decision, resolve });
@@ -522,7 +543,7 @@ export function App(props: AppProps): JSX.Element {
         },
       },
     });
-  }, [mode, model, store, append, scopeRoot, registry, auditSink]);
+  }, [mode, model, store, append, scopeRoot, registry, auditSink, resolveSpec]);
 
   // Open the audit sink once per mount; close on unmount. Failures
   // downgrade to "no audit" — the builder still works, just without
@@ -777,7 +798,7 @@ export function App(props: AppProps): JSX.Element {
         return;
       }
       case 'clear': {
-        sessionRef.current = store.create(defaultSpec(model));
+        sessionRef.current = store.create(resolveSpec(model));
         const provId = initialCreds?.providerId ?? 'anthropic';
         const banner: Line = {
           kind: 'banner',
