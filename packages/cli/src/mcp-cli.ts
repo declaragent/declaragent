@@ -1,12 +1,14 @@
 import type { PluginMCPServerSpec } from '@declaragent/core';
 import { type MCPConfigStore, createMCPConfigStore } from './mcp-config.js';
 import { type MCPConsentStore, createMCPConsentStore } from './mcp-consent.js';
-import type { MCPScope } from './mcp-runtime.js';
+import { type MCPOAuthTokenStore, createMCPOAuthTokenStore, runMCPOAuthFlow } from './mcp-oauth.js';
+import { type MCPScope, loadScopedMCPServers } from './mcp-runtime.js';
 import {
   mcpConfigPath,
   mcpConsentPath,
   mcpLocalConfigPath,
   mcpProjectConfigPath,
+  mcpTokensPath,
 } from './paths.js';
 
 export interface MCPCliIO {
@@ -27,6 +29,7 @@ interface MCPCliOptions {
   /** Agent dir to anchor project/local scope writes. Defaults to cwd. */
   cwd?: string;
   consentStore?: MCPConsentStore;
+  oauthStore?: MCPOAuthTokenStore;
 }
 
 function resolveStorePath(scope: MCPScope, cwd: string): string {
@@ -44,6 +47,10 @@ function getStore(options: MCPCliOptions): MCPConfigStore {
 
 function getConsentStore(options: MCPCliOptions): MCPConsentStore {
   return options.consentStore ?? createMCPConsentStore(mcpConsentPath());
+}
+
+function getOAuthStore(options: MCPCliOptions): MCPOAuthTokenStore {
+  return options.oauthStore ?? createMCPOAuthTokenStore(mcpTokensPath());
 }
 
 export interface MCPAddArgs {
@@ -114,6 +121,68 @@ export async function mcpRevoke(name: string, options: MCPCliOptions = {}): Prom
     return 1;
   }
   io.out(`✓ MCP server "${name}" approval revoked\n`);
+  return 0;
+}
+
+/**
+ * `declaragent mcp login <name>` — run the OAuth PKCE flow against a
+ * remote MCP server the user has configured. Token is persisted under
+ * `~/.declaragent/mcp-oauth.json` (mode 0600) and automatically picked
+ * up by `declaragent up` the next time the server is spawned.
+ *
+ * Resolves the server's config by walking the three scopes (user /
+ * project / local) — so the verb works whether the config lives in
+ * `~/.declaragent/mcp-servers.json` or the scaffold's `.mcp.json`.
+ *
+ * @since 0.5.0-slice.2d
+ */
+export async function mcpLogin(name: string, options: MCPCliOptions = {}): Promise<number> {
+  const io = options.io ?? STDIO_IO;
+  const oauthStore = getOAuthStore(options);
+  const cwd = options.cwd ?? process.cwd();
+  const servers = await loadScopedMCPServers({ agentDir: cwd });
+  const match = servers.find((s) => s.spec.name === name);
+  if (!match) {
+    io.err(
+      `✗ no MCP server named "${name}" configured in any scope. Run \`declaragent mcp list\` to see what's available or add one with \`mcp add\`.\n`,
+    );
+    return 1;
+  }
+  if (match.spec.transport.type === 'stdio') {
+    io.err(
+      `✗ server "${name}" uses the stdio transport — OAuth is only meaningful for remote transports (http, sse, http-streamable).\n`,
+    );
+    return 1;
+  }
+  const url = match.spec.transport.url;
+  io.out(`▸ logging in to MCP server "${name}" at ${url}\n`);
+  try {
+    const token = await runMCPOAuthFlow({
+      resourceUrl: url,
+      onUrl: (authUrl) => {
+        io.out(`  opening browser: ${authUrl}\n`);
+      },
+    });
+    await oauthStore.save(name, token);
+    io.out(`✓ logged in to "${name}" — token stored\n`);
+    if (token.scope) io.out(`  scope: ${token.scope}\n`);
+    if (token.refresh_token) io.out('  refresh_token saved — future refreshes will be silent\n');
+    return 0;
+  } catch (err) {
+    io.err(`✗ login failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+/** `declaragent mcp logout <name>` — delete stored OAuth credentials. */
+export async function mcpLogout(name: string, options: MCPCliOptions = {}): Promise<number> {
+  const io = options.io ?? STDIO_IO;
+  const removed = await getOAuthStore(options).remove(name);
+  if (!removed) {
+    io.err(`✗ no OAuth token stored for "${name}"\n`);
+    return 1;
+  }
+  io.out(`✓ removed OAuth token for "${name}"\n`);
   return 0;
 }
 

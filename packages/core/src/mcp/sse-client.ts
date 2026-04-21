@@ -18,7 +18,7 @@
  */
 
 import type { Logger } from '../types/logger.js';
-import type { FetchFn } from './http-client.js';
+import type { FetchFn, GetAuthHeaderFn, OnAuthErrorFn } from './http-client.js';
 import {
   type ErrorHandler,
   type JSONRPCConnection,
@@ -54,6 +54,8 @@ export interface CreateSSEConnectionOptions {
   fetch?: FetchFn;
   /** How long to wait for the `endpoint` frame before giving up. Default 10s. */
   endpointTimeoutMs?: number;
+  getAuthHeader?: GetAuthHeaderFn;
+  onAuthError?: OnAuthErrorFn;
 }
 
 type Pending = {
@@ -69,10 +71,23 @@ export async function createSSEConnection(
   const fetchImpl = options.fetch ?? (globalThis.fetch as FetchFn);
   const endpointTimeoutMs = options.endpointTimeoutMs ?? 10_000;
 
-  const baseHeaders: Record<string, string> = {
-    accept: 'text/event-stream',
-    ...(config.headers ?? {}),
-  };
+  async function buildGetHeaders(): Promise<Record<string, string>> {
+    const dyn = (await options.getAuthHeader?.()) ?? {};
+    return {
+      accept: 'text/event-stream',
+      ...(config.headers ?? {}),
+      ...dyn,
+    };
+  }
+
+  async function buildPostHeaders(): Promise<Record<string, string>> {
+    const dyn = (await options.getAuthHeader?.()) ?? {};
+    return {
+      'content-type': 'application/json',
+      ...(config.headers ?? {}),
+      ...dyn,
+    };
+  }
 
   let nextId = 1;
   const pending = new Map<string | number, Pending>();
@@ -160,10 +175,15 @@ export async function createSSEConnection(
   // `request()` can be called immediately and find a live endpoint.
   let getResponse: Response;
   try {
-    getResponse = await fetchImpl(config.url, {
-      method: 'GET',
-      headers: baseHeaders,
-    });
+    const headers = await buildGetHeaders();
+    getResponse = await fetchImpl(config.url, { method: 'GET', headers });
+    if (getResponse.status === 401 && options.onAuthError !== undefined) {
+      const retry = await options.onAuthError();
+      if (retry) {
+        const fresh = await buildGetHeaders();
+        getResponse = await fetchImpl(config.url, { method: 'GET', headers: fresh });
+      }
+    }
   } catch (err) {
     throw new TransportClosedError(
       `sse fetch failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -239,14 +259,17 @@ export async function createSSEConnection(
 
   async function postToEndpoint(body: unknown): Promise<Response> {
     const url = endpointUrl ?? (await endpointPromise);
-    return fetchImpl(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(config.headers ?? {}),
-      },
-      body: JSON.stringify(body),
-    });
+    const headers = await buildPostHeaders();
+    const serialized = JSON.stringify(body);
+    const res = await fetchImpl(url, { method: 'POST', headers, body: serialized });
+    if (res.status === 401 && options.onAuthError !== undefined) {
+      const retry = await options.onAuthError();
+      if (retry) {
+        const fresh = await buildPostHeaders();
+        return fetchImpl(url, { method: 'POST', headers: fresh, body: serialized });
+      }
+    }
+    return res;
   }
 
   // Ensure we surface endpoint-handshake failures to the caller rather
@@ -364,6 +387,8 @@ export interface CreateSSEMCPClientOptions {
   clientInfo?: MCPClientInfo;
   logger?: Logger;
   fetch?: FetchFn;
+  getAuthHeader?: GetAuthHeaderFn;
+  onAuthError?: OnAuthErrorFn;
   endpointTimeoutMs?: number;
   maxConsecutiveFailures?: number;
 }
@@ -374,6 +399,8 @@ export function createSSEMCPClient(options: CreateSSEMCPClientOptions): MCPClien
       config: options.transport,
       ...(options.logger !== undefined && { logger: options.logger }),
       ...(options.fetch !== undefined && { fetch: options.fetch }),
+      ...(options.getAuthHeader !== undefined && { getAuthHeader: options.getAuthHeader }),
+      ...(options.onAuthError !== undefined && { onAuthError: options.onAuthError }),
       ...(options.endpointTimeoutMs !== undefined && {
         endpointTimeoutMs: options.endpointTimeoutMs,
       }),

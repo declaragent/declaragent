@@ -22,7 +22,7 @@
  */
 
 import type { Logger } from '../types/logger.js';
-import type { FetchFn } from './http-client.js';
+import type { FetchFn, GetAuthHeaderFn, OnAuthErrorFn } from './http-client.js';
 import {
   type ErrorHandler,
   type JSONRPCConnection,
@@ -56,6 +56,8 @@ export interface CreateStreamableHTTPConnectionOptions {
   config: StreamableHTTPTransportConfig;
   logger?: Logger;
   fetch?: FetchFn;
+  getAuthHeader?: GetAuthHeaderFn;
+  onAuthError?: OnAuthErrorFn;
 }
 
 type Pending = {
@@ -116,13 +118,28 @@ export function createStreamableHTTPConnection(
     }
   }
 
-  function headers(): Record<string, string> {
+  async function headers(): Promise<Record<string, string>> {
+    const dyn = (await options.getAuthHeader?.()) ?? {};
     return {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
       ...(sessionId !== undefined && { 'mcp-session-id': sessionId }),
       ...(config.headers ?? {}),
+      ...dyn,
     };
+  }
+
+  async function fetchWithAuthRetry(body: string): Promise<Response> {
+    const h = await headers();
+    const res = await fetchImpl(config.url, { method: 'POST', headers: h, body });
+    if (res.status === 401 && options.onAuthError !== undefined) {
+      const retry = await options.onAuthError();
+      if (retry) {
+        const fresh = await headers();
+        return fetchImpl(config.url, { method: 'POST', headers: fresh, body });
+      }
+    }
+    return res;
   }
 
   async function consumeSSEForResponse(
@@ -182,11 +199,7 @@ export function createStreamableHTTPConnection(
     if (closed) throw new TransportClosedError('streamable-http connection closed');
     let res: Response;
     try {
-      res = await fetchImpl(config.url, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify(req),
-      });
+      res = await fetchWithAuthRetry(JSON.stringify(req));
     } catch (err) {
       throw new TransportClosedError(
         `streamable-http fetch failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -231,11 +244,7 @@ export function createStreamableHTTPConnection(
 
   async function postNotify(note: JSONRPCNotification): Promise<void> {
     try {
-      const res = await fetchImpl(config.url, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify(note),
-      });
+      const res = await fetchWithAuthRetry(JSON.stringify(note));
       const nextSession = res.headers.get('mcp-session-id');
       if (nextSession !== null && nextSession.length > 0) sessionId = nextSession;
       if (!res.ok) emitError(new Error(`notification responded ${res.status}`));
@@ -304,7 +313,8 @@ export function createStreamableHTTPConnection(
       if (sessionId !== undefined) {
         // Best-effort: tell the server we're done so it can reclaim state.
         try {
-          await fetchImpl(config.url, { method: 'DELETE', headers: headers() });
+          const h = await headers();
+          await fetchImpl(config.url, { method: 'DELETE', headers: h });
         } catch (err) {
           logger.debug('mcp.streamable.delete-failed', {
             err: err instanceof Error ? err.message : String(err),
@@ -322,6 +332,8 @@ export interface CreateStreamableHTTPMCPClientOptions {
   clientInfo?: MCPClientInfo;
   logger?: Logger;
   fetch?: FetchFn;
+  getAuthHeader?: GetAuthHeaderFn;
+  onAuthError?: OnAuthErrorFn;
   maxConsecutiveFailures?: number;
 }
 
@@ -333,6 +345,8 @@ export function createStreamableHTTPMCPClient(
       config: options.transport,
       ...(options.logger !== undefined && { logger: options.logger }),
       ...(options.fetch !== undefined && { fetch: options.fetch }),
+      ...(options.getAuthHeader !== undefined && { getAuthHeader: options.getAuthHeader }),
+      ...(options.onAuthError !== undefined && { onAuthError: options.onAuthError }),
     });
   return createMCPClient({
     name: options.name,

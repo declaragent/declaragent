@@ -37,6 +37,11 @@ export function mcpConsentPath(dir = configDir()): string {
   return join(dir, 'mcp-consent.json');
 }
 
+/** OAuth tokens for MCP servers. File is written with mode 0600. */
+export function mcpTokensPath(dir = configDir()): string {
+  return join(dir, 'mcp-oauth.json');
+}
+
 /** Project-scope MCP config, git-tracked alongside `agent.yaml`. */
 export function mcpProjectConfigPath(agentDir: string): string {
   return join(agentDir, '.mcp.json');

@@ -486,6 +486,8 @@ export type {
   CreateStreamableHTTPConnectionOptions,
   CreateStreamableHTTPMCPClientOptions,
   FetchFn,
+  GetAuthHeaderFn,
+  OnAuthErrorFn,
   HTTPTransportConfig,
   JSONRPCConnection,
   JSONRPCErrorObject,

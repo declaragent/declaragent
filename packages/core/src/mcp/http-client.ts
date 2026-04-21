@@ -46,11 +46,38 @@ const NOOP_LOGGER: Logger = (() => {
 /** Custom fetch injectable for tests; defaults to the global `fetch`. */
 export type FetchFn = typeof fetch;
 
+/**
+ * Called before every request to inject a fresh Authorization (and
+ * optionally other) header. Enables OAuth token rotation without
+ * tearing down the connection. Return `undefined` to send no extra
+ * headers for this request.
+ *
+ * @since 0.5.0-slice.2d
+ */
+export type GetAuthHeaderFn = () =>
+  | Promise<Record<string, string> | undefined>
+  | Record<string, string>
+  | undefined;
+
+/**
+ * Called when a request comes back with HTTP 401. The handler should
+ * refresh credentials (or run an interactive login) and return `true`
+ * if the caller should retry the request with the new header. Return
+ * `false` (or omit the handler) to fail the request up to the caller.
+ *
+ * @since 0.5.0-slice.2d
+ */
+export type OnAuthErrorFn = () => Promise<boolean>;
+
 export interface CreateHTTPConnectionOptions {
   config: HTTPTransportConfig;
   logger?: Logger;
   /** Test seam; defaults to global `fetch`. */
   fetch?: FetchFn;
+  /** Dynamic header source, re-read per request. See {@link GetAuthHeaderFn}. */
+  getAuthHeader?: GetAuthHeaderFn;
+  /** 401 recovery hook. See {@link OnAuthErrorFn}. */
+  onAuthError?: OnAuthErrorFn;
 }
 
 export function createHTTPConnection(options: CreateHTTPConnectionOptions): JSONRPCConnection {
@@ -82,11 +109,38 @@ export function createHTTPConnection(options: CreateHTTPConnectionOptions): JSON
     }
   }
 
-  const baseHeaders: Record<string, string> = {
-    'content-type': 'application/json',
-    accept: 'application/json',
-    ...(config.headers ?? {}),
-  };
+  async function buildHeaders(): Promise<Record<string, string>> {
+    const dyn = (await options.getAuthHeader?.()) ?? {};
+    return {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      ...(config.headers ?? {}),
+      ...dyn,
+    };
+  }
+
+  async function fetchOnceMaybeRetry(body: string, signal?: AbortSignal): Promise<Response> {
+    const headers = await buildHeaders();
+    const res = await fetchImpl(config.url, {
+      method: 'POST',
+      headers,
+      body,
+      ...(signal && { signal }),
+    });
+    if (res.status === 401 && options.onAuthError !== undefined) {
+      const retry = await options.onAuthError();
+      if (retry) {
+        const fresh = await buildHeaders();
+        return fetchImpl(config.url, {
+          method: 'POST',
+          headers: fresh,
+          body,
+          ...(signal && { signal }),
+        });
+      }
+    }
+    return res;
+  }
 
   async function postAndAwait(
     body: JSONRPCRequest,
@@ -95,12 +149,7 @@ export function createHTTPConnection(options: CreateHTTPConnectionOptions): JSON
     if (closed) throw new TransportClosedError('http connection closed');
     let res: Response;
     try {
-      res = await fetchImpl(config.url, {
-        method: 'POST',
-        headers: baseHeaders,
-        body: JSON.stringify(body),
-        ...(signal && { signal }),
-      });
+      res = await fetchOnceMaybeRetry(JSON.stringify(body), signal);
     } catch (err) {
       throw new TransportClosedError(
         `http fetch failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -162,13 +211,7 @@ export function createHTTPConnection(options: CreateHTTPConnectionOptions): JSON
         ...(params === undefined ? {} : { params }),
       };
       try {
-        const res = await fetchImpl(config.url, {
-          method: 'POST',
-          headers: baseHeaders,
-          body: JSON.stringify(note),
-        });
-        // Some servers respond 204; some respond 200 with empty body.
-        // Either is fine — notifications are fire-and-forget.
+        const res = await fetchOnceMaybeRetry(JSON.stringify(note));
         if (!res.ok) {
           emitError(new Error(`notification responded ${res.status}`));
         }
@@ -211,6 +254,8 @@ export interface CreateHTTPMCPClientOptions {
   logger?: Logger;
   /** Test seam; substitutes the underlying `fetch`. */
   fetch?: FetchFn;
+  getAuthHeader?: GetAuthHeaderFn;
+  onAuthError?: OnAuthErrorFn;
   /**
    * Override for `createMCPClient`'s restart behavior. HTTP is
    * inherently stateless — every call reconnects — so the default is
@@ -227,6 +272,8 @@ export function createHTTPMCPClient(options: CreateHTTPMCPClientOptions): MCPCli
       config: options.transport,
       ...(options.logger !== undefined && { logger: options.logger }),
       ...(options.fetch !== undefined && { fetch: options.fetch }),
+      ...(options.getAuthHeader !== undefined && { getAuthHeader: options.getAuthHeader }),
+      ...(options.onAuthError !== undefined && { onAuthError: options.onAuthError }),
     });
   return createMCPClient({
     name: options.name,

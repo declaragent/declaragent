@@ -196,6 +196,75 @@ describe('createHTTPConnection', () => {
     expect(resolved).toBe(true);
   });
 
+  test('getAuthHeader is re-read on every request (supports token rotation)', async () => {
+    const server = createMockHTTPServer();
+    server.onRequest('x', () => 'ok');
+    const seenAuth: Array<string | undefined> = [];
+    const spyingFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const h = init?.headers as Record<string, string> | undefined;
+      seenAuth.push(h?.authorization);
+      return server.fetch(input, init);
+    }) as typeof fetch;
+    let token = 'T1';
+    const conn = createHTTPConnection({
+      config: { type: 'http', url: 'https://mcp.example' },
+      fetch: spyingFetch,
+      getAuthHeader: () => ({ authorization: `Bearer ${token}` }),
+    });
+    await conn.request('x');
+    token = 'T2';
+    await conn.request('x');
+    expect(seenAuth).toEqual(['Bearer T1', 'Bearer T2']);
+    await conn.close();
+  });
+
+  test('onAuthError is invoked on 401; retry with fresh header succeeds', async () => {
+    let status = 401;
+    let callCount = 0;
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      callCount += 1;
+      if (status === 401) {
+        return new Response('unauthorized', { status });
+      }
+      const body = JSON.parse(init?.body as string) as { id: number | string };
+      return new Response(
+        JSON.stringify({ jsonrpc: '2.0', id: body.id, result: 'after-refresh' }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
+    }) as unknown as typeof fetch;
+    let refreshed = false;
+    const conn = createHTTPConnection({
+      config: { type: 'http', url: 'https://mcp.example' },
+      fetch: fetchImpl,
+      getAuthHeader: () => ({ authorization: refreshed ? 'Bearer fresh' : 'Bearer stale' }),
+      onAuthError: async () => {
+        refreshed = true;
+        status = 200;
+        return true;
+      },
+    });
+    const result = await conn.request('x');
+    expect(result).toBe('after-refresh');
+    expect(callCount).toBe(2);
+    expect(refreshed).toBe(true);
+    await conn.close();
+  });
+
+  test('onAuthError returning false surfaces the 401 as an error', async () => {
+    const fetchImpl = (async () =>
+      new Response('unauthorized', { status: 401 })) as unknown as typeof fetch;
+    const conn = createHTTPConnection({
+      config: { type: 'http', url: 'https://mcp.example' },
+      fetch: fetchImpl,
+      onAuthError: async () => false,
+    });
+    await expect(conn.request('x')).rejects.toThrow(/HTTP 401/);
+    await conn.close();
+  });
+
   test('fetch rejection is wrapped as TransportClosedError', async () => {
     const brokenFetch = (async () => {
       throw new Error('ECONNREFUSED');

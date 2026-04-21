@@ -41,6 +41,8 @@ export type {
   CreateHTTPConnectionOptions,
   CreateHTTPMCPClientOptions,
   FetchFn,
+  GetAuthHeaderFn,
+  OnAuthErrorFn,
 } from './http-client.js';
 export { createSSEConnection, createSSEMCPClient } from './sse-client.js';
 export type { CreateSSEConnectionOptions, CreateSSEMCPClientOptions } from './sse-client.js';

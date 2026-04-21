@@ -34,7 +34,15 @@ import { fleetStatus } from './fleet-status-cli.js';
 import { type InitOptions, InitWizard, type WizardResult, runInit } from './init-wizard.js';
 import { logs as tailLogs } from './logs-cli.js';
 import { mailboxDepth, mailboxDrain } from './mailbox-cli.js';
-import { mcpAdd, mcpApprove, mcpList, mcpRemove, mcpRevoke } from './mcp-cli.js';
+import {
+  mcpAdd,
+  mcpApprove,
+  mcpList,
+  mcpLogin,
+  mcpLogout,
+  mcpRemove,
+  mcpRevoke,
+} from './mcp-cli.js';
 import type { MCPScope } from './mcp-runtime.js';
 import { migrateConfig } from './migrate-cli.js';
 import { pluginInfo, pluginInstall, pluginList, pluginRemove } from './plugin-cli.js';
@@ -374,6 +382,22 @@ async function runMcpSubcommand(
       return 1;
     }
     return mcpRevoke(name);
+  }
+  if (action === 'login') {
+    const name = rest[0];
+    if (!name) {
+      process.stderr.write('usage: declaragent mcp login <name>\n');
+      return 1;
+    }
+    return mcpLogin(name);
+  }
+  if (action === 'logout') {
+    const name = rest[0];
+    if (!name) {
+      process.stderr.write('usage: declaragent mcp logout <name>\n');
+      return 1;
+    }
+    return mcpLogout(name);
   }
   if (action === 'add') {
     const name = rest[0];

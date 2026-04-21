@@ -21,7 +21,14 @@
 
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import type { Logger, MCPClient, PluginMCPServerSpec, Tool } from '@declaragent/core';
+import type {
+  GetAuthHeaderFn,
+  Logger,
+  MCPClient,
+  OnAuthErrorFn,
+  PluginMCPServerSpec,
+  Tool,
+} from '@declaragent/core';
 import {
   createHTTPMCPClient,
   createMCPTool,
@@ -32,11 +39,18 @@ import {
 import type { MCPConsentStore } from './mcp-consent.js';
 import { createMCPConsentStore } from './mcp-consent.js';
 import {
+  type MCPOAuthTokenStore,
+  bearerHeader,
+  createMCPOAuthTokenStore,
+  refreshMCPOAuthToken,
+} from './mcp-oauth.js';
+import {
   configDir,
   mcpConfigPath,
   mcpConsentPath,
   mcpLocalConfigPath,
   mcpProjectConfigPath,
+  mcpTokensPath,
 } from './paths.js';
 
 export type MCPScope = 'user' | 'project' | 'local';
@@ -121,32 +135,80 @@ export interface StartMCPServersOptions {
   consent?: ConsentResolver;
   /** Test seam; defaults to the user-scope consent store. */
   consentStore?: MCPConsentStore;
+  /** Test seam; defaults to the user-scope OAuth token store. */
+  oauthStore?: MCPOAuthTokenStore;
   /** Test seam; defaults to `createStdioMCPClient` from core. */
   spawn?: (spec: PluginMCPServerSpec, logger: Logger) => MCPClient;
   /** Per-server init + listTools timeout. Defaults to 10s. */
   handshakeTimeoutMs?: number;
 }
 
-function defaultSpawn(spec: PluginMCPServerSpec, logger: Logger): MCPClient {
-  const baseArgs = {
-    name: spec.name,
-    protocolVersion: spec.protocolVersion,
-    logger,
-  } as const;
-  if (spec.transport.type === 'stdio') {
-    return createStdioMCPClient({ ...baseArgs, transport: spec.transport });
-  }
-  if (spec.transport.type === 'http') {
-    return createHTTPMCPClient({ ...baseArgs, transport: spec.transport });
-  }
-  if (spec.transport.type === 'sse') {
-    return createSSEMCPClient({ ...baseArgs, transport: spec.transport });
-  }
-  if (spec.transport.type === 'http-streamable') {
-    return createStreamableHTTPMCPClient({ ...baseArgs, transport: spec.transport });
-  }
-  const exhausted: never = spec.transport;
-  throw new Error(`MCP server "${spec.name}": unsupported transport ${JSON.stringify(exhausted)}`);
+/**
+ * Build OAuth callbacks for a single server name. `getAuthHeader` reads
+ * the stored token on every request so token rotation is invisible to
+ * the caller. `onAuthError` runs refresh_token grant on 401; if that
+ * fails (or no refresh_token), returns false so the request fails back
+ * to the caller + the user is prompted to re-run `mcp login <name>`.
+ */
+function makeAuthCallbacks(
+  serverName: string,
+  oauthStore: MCPOAuthTokenStore,
+  logger: Logger,
+): { getAuthHeader: GetAuthHeaderFn; onAuthError: OnAuthErrorFn } {
+  return {
+    getAuthHeader: async () => {
+      const token = await oauthStore.get(serverName);
+      return token ? bearerHeader(token) : undefined;
+    },
+    onAuthError: async () => {
+      const token = await oauthStore.get(serverName);
+      if (!token) return false;
+      try {
+        const refreshed = await refreshMCPOAuthToken(token);
+        if (refreshed !== undefined) {
+          await oauthStore.save(serverName, refreshed);
+          return true;
+        }
+        logger.warn('mcp.oauth.refresh-unavailable', { serverName });
+        return false;
+      } catch (err) {
+        logger.warn('mcp.oauth.refresh-failed', {
+          serverName,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return false;
+      }
+    },
+  };
+}
+
+function makeDefaultSpawn(
+  oauthStore: MCPOAuthTokenStore,
+): (spec: PluginMCPServerSpec, logger: Logger) => MCPClient {
+  return (spec, logger) => {
+    const baseArgs = {
+      name: spec.name,
+      protocolVersion: spec.protocolVersion,
+      logger,
+    } as const;
+    if (spec.transport.type === 'stdio') {
+      return createStdioMCPClient({ ...baseArgs, transport: spec.transport });
+    }
+    const auth = makeAuthCallbacks(spec.name, oauthStore, logger);
+    if (spec.transport.type === 'http') {
+      return createHTTPMCPClient({ ...baseArgs, transport: spec.transport, ...auth });
+    }
+    if (spec.transport.type === 'sse') {
+      return createSSEMCPClient({ ...baseArgs, transport: spec.transport, ...auth });
+    }
+    if (spec.transport.type === 'http-streamable') {
+      return createStreamableHTTPMCPClient({ ...baseArgs, transport: spec.transport, ...auth });
+    }
+    const exhausted: never = spec.transport;
+    throw new Error(
+      `MCP server "${spec.name}": unsupported transport ${JSON.stringify(exhausted)}`,
+    );
+  };
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -167,7 +229,8 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
  * fail handshake are skipped with a warning — they don't block the boot.
  */
 export async function startMCPServers(opts: StartMCPServersOptions): Promise<MCPRuntime> {
-  const spawn = opts.spawn ?? defaultSpawn;
+  const oauthStore = opts.oauthStore ?? createMCPOAuthTokenStore(mcpTokensPath());
+  const spawn = opts.spawn ?? makeDefaultSpawn(oauthStore);
   const consentStore = opts.consentStore ?? createMCPConsentStore(mcpConsentPath());
   const timeoutMs = opts.handshakeTimeoutMs ?? 10_000;
 
