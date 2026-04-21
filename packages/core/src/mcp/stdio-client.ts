@@ -5,6 +5,7 @@ import {
   type MCPClientInfo,
   type MCPClientStatus,
   MCPClientUnavailableError,
+  type MCPResourceContents,
   type MCPServerInfo,
   type MCPTool,
   type MCPToolResult,
@@ -221,6 +222,12 @@ export function createMCPClient(options: CreateMCPClientOptions): MCPClient {
       return parseToolResult(result);
     },
 
+    async readResource(uri, signal) {
+      const s = await ensureSession();
+      const result = await s.connection.request('resources/read', { uri }, signal);
+      return parseResourceRead(result);
+    },
+
     async shutdown() {
       if (stopped) return;
       stopped = true;
@@ -302,6 +309,31 @@ function parseToolResult(result: unknown): MCPToolResult {
     content,
     ...(typeof r.isError === 'boolean' ? { isError: r.isError } : {}),
   };
+}
+
+function parseResourceRead(result: unknown): readonly MCPResourceContents[] {
+  if (typeof result !== 'object' || result === null) {
+    throw new Error('resources/read: expected object result');
+  }
+  const contents = (result as { contents?: unknown }).contents;
+  if (!Array.isArray(contents)) {
+    throw new Error('resources/read: missing contents array');
+  }
+  return contents.map((c, i): MCPResourceContents => {
+    if (typeof c !== 'object' || c === null) {
+      throw new Error(`resources/read[${i}]: expected object`);
+    }
+    const obj = c as Record<string, unknown>;
+    if (typeof obj.uri !== 'string') {
+      throw new Error(`resources/read[${i}]: missing uri`);
+    }
+    return {
+      uri: obj.uri,
+      ...(typeof obj.mimeType === 'string' ? { mimeType: obj.mimeType } : {}),
+      ...(typeof obj.text === 'string' ? { text: obj.text } : {}),
+      ...(typeof obj.blob === 'string' ? { blob: obj.blob } : {}),
+    };
+  });
 }
 
 /**

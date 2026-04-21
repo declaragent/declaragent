@@ -56,6 +56,9 @@ function fakeClient(opts: {
     async callTool() {
       return { content: [{ type: 'text', text: 'ok' }] };
     },
+    async readResource() {
+      return [];
+    },
     async shutdown() {},
     get status() {
       return 'ready' as const;

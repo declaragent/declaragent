@@ -14,12 +14,21 @@
  *     end of the message; the original `@ref` text is preserved so the
  *     model can correlate body prose with the attached content.
  *
+ * Slice 2e (2026-04-22): also recognize `@<server>:<uri>` tokens — a
+ * resource reference against a live MCP server. At send-time the
+ * runtime calls `server.readResource(uri)` and inlines the returned
+ * text as a fenced block, same shape as a file attachment. The
+ * `expandAgentRefs()` entry point layers this on top of file refs;
+ * `expandFileRefs()` stays sync for back-compat with the existing
+ * REPL call-site.
+ *
  * @since 0.4.1
  */
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
+import type { MCPClient } from '@declaragent/core';
 
 /**
  * Limit each inlined attachment to ~256KB. The model rarely needs more
@@ -54,8 +63,19 @@ export interface ExpandFileRefsResult {
 
 // Leading boundary: start of string, whitespace, or a single `(` / `[`
 // so mention-in-paren cases still expand. The `@` itself is captured
-// inside the group so indexOf-based stitching stays simple.
-const REF_PATTERN = /(^|[\s([])@([A-Za-z0-9_./~-]+)/g;
+// inside the group so indexOf-based stitching stays simple. The
+// trailing negative-lookahead must forbid BOTH further path chars
+// (so greedy matching doesn't backtrack around a `:`) AND the colon
+// itself — this is how we steer `@github:issue://1` away from the
+// file-ref path into the resource-ref parser below.
+const REF_PATTERN = /(^|[\s([])@([A-Za-z0-9_./~-]+)(?![A-Za-z0-9_./~:-])/g;
+
+// `@<server>:<uri>` for MCP resource refs. The server name is
+// alphanumeric + `-` / `_` to stay conservative; the URI half accepts
+// any non-whitespace (except closing bracket/paren) so protocol
+// schemes + query strings pass through. Anchored on the same
+// leading-boundary set as file refs.
+const RESOURCE_REF_PATTERN = /(^|[\s([])@([A-Za-z0-9_-]+):([^\s)\]]+)/g;
 
 export interface ExpandFileRefsOptions {
   /** CWD for resolving relative paths. Defaults to `process.cwd()`. */
@@ -135,6 +155,153 @@ export function expandFileRefs(
   const separator = text.endsWith('\n') ? '\n' : '\n\n';
   const expanded = `${text}${separator}---\nAttached files:\n\n${attachments}\n`;
   return { expanded, refs };
+}
+
+// ── Resource refs (`@<server>:<uri>`) — slice 2e ────────────────────────
+
+export interface ExpandedResourceRef {
+  readonly token: string;
+  readonly server: string;
+  readonly uri: string;
+  readonly ok: boolean;
+  readonly reason?: string;
+  readonly bytes?: number;
+  readonly truncated?: boolean;
+}
+
+export interface ExpandAgentRefsResult {
+  readonly expanded: string;
+  readonly fileRefs: readonly ExpandedFileRef[];
+  readonly resourceRefs: readonly ExpandedResourceRef[];
+}
+
+export interface ExpandAgentRefsOptions extends ExpandFileRefsOptions {
+  /**
+   * Look up a live MCP client by server name. Return `undefined` for
+   * unknown servers — the ref is left in place + reported as a miss.
+   * In `declaragent up` this is wired to `MCPRuntime.getClient`.
+   */
+  getClient?: (serverName: string) => MCPClient | undefined;
+  /** Abort passed into `readResource`. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Expand BOTH `@<path>` file refs and `@<server>:<uri>` resource refs.
+ * File refs resolve synchronously; resource refs await
+ * `MCPClient.readResource`. The returned `expanded` text has one
+ * combined "Attached references" block at the end.
+ *
+ * Back-compat: `expandFileRefs` still exists as the sync path callers
+ * that don't care about MCP (builder REPL today) can use.
+ *
+ * @since 0.5.0-slice.2e
+ */
+export async function expandAgentRefs(
+  text: string,
+  options: ExpandAgentRefsOptions = {},
+): Promise<ExpandAgentRefsResult> {
+  const maxBytes = options.maxBytes ?? MAX_ATTACHMENT_BYTES;
+  const resourceHits: Array<{
+    token: string;
+    server: string;
+    uri: string;
+    body: string;
+    truncated: boolean;
+  }> = [];
+  const resourceRefs: ExpandedResourceRef[] = [];
+  const seenResource = new Set<string>();
+
+  RESOURCE_REF_PATTERN.lastIndex = 0;
+  for (const match of text.matchAll(RESOURCE_REF_PATTERN)) {
+    const server = match[2];
+    const uri = match[3];
+    if (!server || !uri) continue;
+    const key = `${server}:${uri}`;
+    if (seenResource.has(key)) continue;
+    seenResource.add(key);
+    const token = `@${server}:${uri}`;
+
+    const client = options.getClient?.(server);
+    if (client === undefined) {
+      resourceRefs.push({
+        token,
+        server,
+        uri,
+        ok: false,
+        reason: `no MCP server named "${server}" is running`,
+      });
+      continue;
+    }
+    try {
+      const contents = await client.readResource(
+        uri,
+        ...(options.signal !== undefined ? [options.signal] : []),
+      );
+      const text = contents
+        .map((c) => c.text ?? (c.blob !== undefined ? `[binary ${c.mimeType ?? 'blob'}]` : ''))
+        .join('\n\n');
+      const truncated = text.length > maxBytes;
+      const body = truncated ? text.slice(0, maxBytes) : text;
+      resourceHits.push({ token, server, uri, body, truncated });
+      resourceRefs.push({
+        token,
+        server,
+        uri,
+        ok: true,
+        bytes: body.length,
+        truncated,
+      });
+    } catch (err) {
+      resourceRefs.push({
+        token,
+        server,
+        uri,
+        ok: false,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Run file-ref expansion on the ORIGINAL text so both kinds of
+  // attachments appear in one block.
+  const fileExpansion = expandFileRefs(text, options);
+
+  if (resourceHits.length === 0) {
+    return {
+      expanded: fileExpansion.expanded,
+      fileRefs: fileExpansion.refs,
+      resourceRefs,
+    };
+  }
+
+  // expandFileRefs already appended its block. Compose the resource
+  // block on top, in the same "Attached files:" section so the model
+  // sees a single trailing transcript of inlined references.
+  const fileHitCount = fileExpansion.refs.filter((r) => r.ok).length;
+  const resourceBlock = resourceHits
+    .map((r) => renderResourceAttachment(r.token, r.body, r.truncated))
+    .join('\n\n');
+
+  if (fileHitCount === 0) {
+    // File expansion returned `text` unchanged; synthesize our own tail.
+    const separator = text.endsWith('\n') ? '\n' : '\n\n';
+    return {
+      expanded: `${text}${separator}---\nAttached references:\n\n${resourceBlock}\n`,
+      fileRefs: fileExpansion.refs,
+      resourceRefs,
+    };
+  }
+  return {
+    expanded: `${fileExpansion.expanded.replace(/\n$/, '')}\n\n${resourceBlock}\n`,
+    fileRefs: fileExpansion.refs,
+    resourceRefs,
+  };
+}
+
+function renderResourceAttachment(token: string, body: string, truncated: boolean): string {
+  const suffix = truncated ? `\n\n_(truncated at ${MAX_ATTACHMENT_BYTES} bytes)_` : '';
+  return `## ${token}\n\`\`\`\n${body}\n\`\`\`${suffix}`;
 }
 
 function resolvePath(requested: string, cwd: string, home: string): string {

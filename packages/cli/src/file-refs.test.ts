@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MAX_ATTACHMENT_BYTES, expandFileRefs } from './file-refs.js';
+import type { MCPClient, MCPResourceContents } from '@declaragent/core';
+import { MAX_ATTACHMENT_BYTES, expandAgentRefs, expandFileRefs } from './file-refs.js';
 
 describe('expandFileRefs', () => {
   test('no refs → input unchanged + empty refs list', () => {
@@ -128,5 +129,132 @@ describe('expandFileRefs', () => {
       read: () => 'export const x = 1;',
     });
     expect(out.expanded).toContain('```ts\n');
+  });
+
+  test('skips file-ref tokens immediately followed by `:` (they are resource refs)', () => {
+    // `@github:issue://1` must not be eaten as a file ref, because the
+    // resource-ref parser needs to claim it.
+    const out = expandFileRefs('check @github:issue://1 please', {
+      read: () => 'should-not-read',
+    });
+    expect(out.refs).toEqual([]);
+    expect(out.expanded).toBe('check @github:issue://1 please');
+  });
+});
+
+// ── expandAgentRefs — resource-ref path (slice 2e) ─────────────────────
+
+function fakeMCPClient(behavior: {
+  onRead?: (uri: string) => Promise<readonly MCPResourceContents[]>;
+  readFails?: Error;
+}): MCPClient {
+  return {
+    async initialize() {
+      return {
+        name: 'fake',
+        version: '0.0.1',
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+      };
+    },
+    async listTools() {
+      return [];
+    },
+    async callTool() {
+      return { content: [] };
+    },
+    async readResource(uri) {
+      if (behavior.readFails) throw behavior.readFails;
+      if (behavior.onRead) return behavior.onRead(uri);
+      return [{ uri, mimeType: 'text/plain', text: `body of ${uri}` }];
+    },
+    async shutdown() {},
+    get status() {
+      return 'ready' as const;
+    },
+    get serverInfo() {
+      return undefined;
+    },
+    onToolsChanged() {
+      return () => {};
+    },
+  };
+}
+
+describe('expandAgentRefs — resource refs', () => {
+  test('inlines a resource ref via the MCP client', async () => {
+    const client = fakeMCPClient({});
+    const out = await expandAgentRefs('look at @github:issue://42 for context', {
+      getClient: (name) => (name === 'github' ? client : undefined),
+    });
+    expect(out.resourceRefs).toHaveLength(1);
+    const [ref] = out.resourceRefs;
+    expect(ref?.ok).toBe(true);
+    expect(ref?.server).toBe('github');
+    expect(ref?.uri).toBe('issue://42');
+    expect(out.expanded).toContain('Attached references:');
+    expect(out.expanded).toContain('## @github:issue://42');
+    expect(out.expanded).toContain('body of issue://42');
+  });
+
+  test('unknown server → ref reported as a miss, text unchanged', async () => {
+    const out = await expandAgentRefs('use @unregistered:x://y here', {
+      getClient: () => undefined,
+    });
+    expect(out.resourceRefs[0]?.ok).toBe(false);
+    expect(out.resourceRefs[0]?.reason).toContain('no MCP server named');
+    expect(out.expanded).toBe('use @unregistered:x://y here');
+  });
+
+  test('readResource failure → miss entry with the error message, text unchanged', async () => {
+    const client = fakeMCPClient({ readFails: new Error('resource not found') });
+    const out = await expandAgentRefs('grab @srv:x://y', {
+      getClient: () => client,
+    });
+    expect(out.resourceRefs[0]?.ok).toBe(false);
+    expect(out.resourceRefs[0]?.reason).toBe('resource not found');
+  });
+
+  test('file + resource refs in the same message compose into one attached block', async () => {
+    const client = fakeMCPClient({
+      onRead: async (uri) => [{ uri, text: 'resource contents' }],
+    });
+    const out = await expandAgentRefs('compare @notes.md with @srv:doc://1', {
+      read: () => 'local notes',
+      getClient: () => client,
+    });
+    expect(out.fileRefs[0]?.ok).toBe(true);
+    expect(out.resourceRefs[0]?.ok).toBe(true);
+    expect(out.expanded).toContain('## @notes.md');
+    expect(out.expanded).toContain('## @srv:doc://1');
+    expect(out.expanded).toContain('local notes');
+    expect(out.expanded).toContain('resource contents');
+  });
+
+  test('dedupes identical resource refs within one message', async () => {
+    let calls = 0;
+    const client = fakeMCPClient({
+      onRead: async (uri) => {
+        calls += 1;
+        return [{ uri, text: 'data' }];
+      },
+    });
+    const out = await expandAgentRefs('both @srv:x://y and @srv:x://y again', {
+      getClient: () => client,
+    });
+    expect(out.resourceRefs).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
+  test('truncates oversize resource bodies', async () => {
+    const huge = 'x'.repeat(MAX_ATTACHMENT_BYTES + 10);
+    const client = fakeMCPClient({
+      onRead: async (uri) => [{ uri, text: huge }],
+    });
+    const out = await expandAgentRefs('@srv:big://1', {
+      getClient: () => client,
+    });
+    expect(out.resourceRefs[0]?.truncated).toBe(true);
+    expect(out.resourceRefs[0]?.bytes).toBe(MAX_ATTACHMENT_BYTES);
   });
 });

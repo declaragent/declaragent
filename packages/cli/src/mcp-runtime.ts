@@ -115,6 +115,15 @@ export async function loadScopedMCPServers(
 export interface MCPRuntime {
   /** Wrapped MCP tools ready to pass into `createEngine`. */
   tools: readonly Tool[];
+  /**
+   * Look up a live MCP client by server name. Used by `@server:uri`
+   * resource references to call `readResource()` at send-time.
+   * Returns `undefined` for unknown names + for servers that were
+   * skipped during boot (consent denied, spawn failed).
+   *
+   * @since 0.5.0-slice.2e
+   */
+  getClient(serverName: string): MCPClient | undefined;
   /** Servers that were skipped (consent denied, spawn failed, etc.). Useful for banner output. */
   skipped: readonly { name: string; scope: MCPScope; reason: string }[];
   /** Close every running client. Idempotent. */
@@ -297,10 +306,12 @@ export async function startMCPServers(opts: StartMCPServersOptions): Promise<MCP
     }),
   );
 
+  const clientsByName = new Map<string, MCPClient>();
   for (const r of results) {
     if (r === null) continue;
     clients.push(r.client);
     tools.push(...r.tools);
+    clientsByName.set(r.name, r.client);
   }
 
   let stopped = false;
@@ -318,5 +329,10 @@ export async function startMCPServers(opts: StartMCPServersOptions): Promise<MCP
     );
   };
 
-  return { tools, skipped, shutdown };
+  return {
+    tools,
+    skipped,
+    shutdown,
+    getClient: (name) => clientsByName.get(name),
+  };
 }

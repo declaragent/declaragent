@@ -502,6 +502,7 @@ export type {
   MCPClientInfo,
   MCPClientStatus,
   MCPContent,
+  MCPResourceContents,
   MCPServerConfig,
   MCPServerInfo,
   MCPTool,

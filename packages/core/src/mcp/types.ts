@@ -83,12 +83,35 @@ export interface MCPServerConfig {
   protocolVersion: string;
 }
 
+/**
+ * A single resource entry returned by `resources/read`. MCP allows a
+ * resource response to span multiple segments (text + binary mixed),
+ * each tagged with its own MIME type.
+ */
+export interface MCPResourceContents {
+  uri: string;
+  mimeType?: string;
+  /** Present when the segment is utf-8 text. */
+  text?: string;
+  /** Present when the segment is binary; base64-encoded per MCP spec. */
+  blob?: string;
+}
+
 export interface MCPClient {
   /** Run handshake. Idempotent. */
   initialize(): Promise<MCPServerInfo>;
   /** Cached after first call; refreshed on `notifications/tools/list_changed`. */
   listTools(): Promise<readonly MCPTool[]>;
   callTool(name: string, input: unknown, signal?: AbortSignal): Promise<MCPToolResult>;
+  /**
+   * Read a resource by URI via the MCP `resources/read` method. Used by
+   * `@<server>:<uri>` references in skill / REPL prompts — the runtime
+   * fetches the resource at send-time and inlines the text into the
+   * model input.
+   *
+   * @since 0.5.0-slice.2e
+   */
+  readResource(uri: string, signal?: AbortSignal): Promise<readonly MCPResourceContents[]>;
   /** Graceful close + best-effort process teardown. Idempotent. */
   shutdown(): Promise<void>;
   readonly status: MCPClientStatus;
