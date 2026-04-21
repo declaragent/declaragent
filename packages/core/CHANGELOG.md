@@ -1,5 +1,57 @@
 # @declaragent/core
 
+## 0.3.0
+
+### Minor Changes
+
+- da8f330: Add `onPackageError` option to `discoverAdapters`. When supplied, per-package load failures (bad import, agent_compat mismatch, malformed export) invoke the callback instead of aborting discovery, letting callers keep booting with the healthy adapters. Duplicate-type claims across packages still throw — those are correctness issues, not package-health issues. Omitting the hook preserves the strict throw-on-first-error behavior.
+- 579362c: Add HTTP transport for MCP clients. `createHTTPMCPClient` + `createHTTPConnection` in `@declaragent/core` implement plain JSON-RPC over HTTP POST — each request is one fetch, response body is the JSON-RPC reply. Custom headers from `transport.headers` are forwarded verbatim (covers static bearer-token auth; OAuth PKCE lands in slice 2d). Notifications are no-op on the client side since plain HTTP has no server→client push channel.
+
+  `declaragent up` now dispatches on `transport.type`: `stdio` servers spawn subprocesses (unchanged), `http` servers bind a remote endpoint. This lights up hosted MCP servers configured with `{ type: 'http', url: '...' }` in any of the three scopes.
+
+  SSE + streamable HTTP transports (needed for most 2026-era remote servers that push notifications) land in slice 2c; OAuth in 2d.
+
+- 778f505: Add SSE (2024-11-05 spec) and streamable HTTP (2025-03-26 spec) MCP transports.
+
+  **SSE** — `createSSEMCPClient` opens a GET `text/event-stream` to the configured URL, waits for the server's `event: endpoint` frame, then POSTs outbound JSON-RPC messages to the discovered endpoint URL. Inbound responses + notifications flow back on the SSE stream. Covers the older remote transport that many 2024-era hosted MCP servers still use.
+
+  **Streamable HTTP** — `createStreamableHTTPMCPClient` uses a single URL for both directions. Each `request()` POSTs a message; the server responds with either `application/json` (single reply) or `text/event-stream` (one or more JSON-RPC frames bundled on the response — typically the matching reply plus any notifications the server wants to piggyback). `Mcp-Session-Id` response header is captured and echoed on subsequent requests for server-side session continuity.
+
+  `declaragent up`'s `defaultSpawn` dispatches across all four transports (stdio, http, sse, http-streamable). `PluginMCPServerSpec.transport` now uses the full `MCPTransportConfig` union.
+
+  Not yet implemented: session resumption via `Last-Event-Id`, dedicated server→client notification streams on streamable HTTP, OAuth PKCE auth (slice 2d).
+
+- a4ba7a4: Add OAuth 2.1 + PKCE for remote MCP servers. Remote servers that require auth (Atlassian MCP, hosted github.com MCP, etc.) now work without users hand-crafting tokens.
+
+  **Flow** (matches Claude Code's MCP story):
+
+  1. `declaragent mcp login <name>` discovers the auth server via `/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server` (with OpenID Connect fallback).
+  2. If the server advertises a `registration_endpoint`, dynamic client registration (RFC 7591) happens automatically so users don't need to hand-register an app.
+  3. PKCE S256 flow against the advertised authorization endpoint with a localhost callback on ports 38700–38705.
+  4. Token persisted per-server in `~/.declaragent/mcp-oauth.json` (mode 0600).
+
+  **Runtime integration**: http / sse / http-streamable transports accept `getAuthHeader` (re-read on every request, enabling token rotation) and `onAuthError` (called on 401 to trigger refresh). `declaragent up` wires these automatically against the stored tokens. A 401 triggers a refresh_token grant; if that fails, the request propagates up so the user sees a clear error and can re-run `mcp login`.
+
+  **New verbs**: `declaragent mcp login <name>` + `declaragent mcp logout <name>`. `oauth-pkce.ts` extracts the PKCE primitives (code_verifier, code_challenge, callback server, browser open) into a provider-agnostic module so the same code path powers future OAuth flows.
+
+  Not yet implemented: automatic login on first-401 if no token exists (user must run `mcp login` once first), confidential clients (only `token_endpoint_auth_method: none` is supported today).
+
+- 9a6c64f: Add `@<server>:<uri>` MCP resource references. Skills (and REPL messages) can write tokens like `@github:issue://42` and have the referenced resource fetched + inlined as a fenced block at send-time — the same shape as `@<path>` file refs.
+
+  **Core additions**:
+
+  - `MCPClient.readResource(uri, signal?)` — new method on every transport (stdio/http/sse/streamable) that issues the MCP `resources/read` JSON-RPC call and returns the `MCPResourceContents[]` payload.
+  - `MCPResourceContents` type exported.
+
+  **CLI additions**:
+
+  - `MCPRuntime.getClient(serverName)` — look up a live MCP client so callers (REPL/pipeline) can expand resource refs on demand.
+  - `expandAgentRefs(text, options)` — async extension of `expandFileRefs` that handles BOTH `@<path>` and `@<server>:<uri>` in one pass. Composes a single "Attached references" block at the end of the message. Unknown server → ref is reported as a miss + original text preserved. Bodies cap at `MAX_ATTACHMENT_BYTES` (256 KB), same as file refs.
+
+  The file-ref regex now uses a negative lookahead `(?![A-Za-z0-9_./~:-])` so `@github:issue://1` is steered into the resource-ref parser instead of being truncated as a file ref at `@githu`.
+
+  Pipeline wiring (substituting `expandAgentRefs` for `expandFileRefs` at the builder REPL send-path + the dispatcher's skill-invocation path) lands in a follow-up once the engine's turn-input hook is touched; this slice ships the library primitives + tests.
+
 ## 0.2.2
 
 ### Patch Changes

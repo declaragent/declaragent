@@ -1,5 +1,112 @@
 # @declaragent/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- da8f330: `declaragent up` now discovers external event-source adapter packages from `<agentDir>/node_modules/@declaragent/source-*`, `<cwd>/node_modules/@declaragent/source-*`, and the user config dir. Previously only the three built-in adapters (`webhook`, `cron`, `file-watch`) were available — community adapters shipped as npm packages with `declaragent.kind: 'event-source-adapter'` in their package.json are now bound automatically.
+
+  Built-ins take precedence on type collision. A broken adapter package is skipped with a `adapter-discovery.package-failed` warning instead of killing boot — healthy siblings still load. Two packages claiming the same type throw, because users need to see the conflict.
+
+- 63482b1: `declaragent up` now spawns configured MCP servers at boot and exposes their tools to the agent (`mcp__<server>__<tool>`). Three-scope config with Claude-Code-style precedence: local (`<agentDir>/.declaragent/mcp.local.json`) > project (`<agentDir>/.mcp.json`, git-tracked for teams) > user (`~/.declaragent/mcp-servers.json`).
+
+  First-run servers prompt for consent interactively; detached / CI boots skip un-consented servers with a warning instead of blocking. `mcp add` now auto-records consent for the server it installs and accepts `--scope user|project|local`. New `mcp approve <name>` / `mcp revoke <name>` verbs let operators pre-consent before a detached launch.
+
+  Stdio transport only in this slice — HTTP/SSE/streamable lands in 2b/2c. Per-server handshake is timeboxed (10s default); a slow or broken server is soft-failed so it doesn't block the rest of the agent from booting.
+
+- 579362c: Add HTTP transport for MCP clients. `createHTTPMCPClient` + `createHTTPConnection` in `@declaragent/core` implement plain JSON-RPC over HTTP POST — each request is one fetch, response body is the JSON-RPC reply. Custom headers from `transport.headers` are forwarded verbatim (covers static bearer-token auth; OAuth PKCE lands in slice 2d). Notifications are no-op on the client side since plain HTTP has no server→client push channel.
+
+  `declaragent up` now dispatches on `transport.type`: `stdio` servers spawn subprocesses (unchanged), `http` servers bind a remote endpoint. This lights up hosted MCP servers configured with `{ type: 'http', url: '...' }` in any of the three scopes.
+
+  SSE + streamable HTTP transports (needed for most 2026-era remote servers that push notifications) land in slice 2c; OAuth in 2d.
+
+- 778f505: Add SSE (2024-11-05 spec) and streamable HTTP (2025-03-26 spec) MCP transports.
+
+  **SSE** — `createSSEMCPClient` opens a GET `text/event-stream` to the configured URL, waits for the server's `event: endpoint` frame, then POSTs outbound JSON-RPC messages to the discovered endpoint URL. Inbound responses + notifications flow back on the SSE stream. Covers the older remote transport that many 2024-era hosted MCP servers still use.
+
+  **Streamable HTTP** — `createStreamableHTTPMCPClient` uses a single URL for both directions. Each `request()` POSTs a message; the server responds with either `application/json` (single reply) or `text/event-stream` (one or more JSON-RPC frames bundled on the response — typically the matching reply plus any notifications the server wants to piggyback). `Mcp-Session-Id` response header is captured and echoed on subsequent requests for server-side session continuity.
+
+  `declaragent up`'s `defaultSpawn` dispatches across all four transports (stdio, http, sse, http-streamable). `PluginMCPServerSpec.transport` now uses the full `MCPTransportConfig` union.
+
+  Not yet implemented: session resumption via `Last-Event-Id`, dedicated server→client notification streams on streamable HTTP, OAuth PKCE auth (slice 2d).
+
+- a4ba7a4: Add OAuth 2.1 + PKCE for remote MCP servers. Remote servers that require auth (Atlassian MCP, hosted github.com MCP, etc.) now work without users hand-crafting tokens.
+
+  **Flow** (matches Claude Code's MCP story):
+
+  1. `declaragent mcp login <name>` discovers the auth server via `/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server` (with OpenID Connect fallback).
+  2. If the server advertises a `registration_endpoint`, dynamic client registration (RFC 7591) happens automatically so users don't need to hand-register an app.
+  3. PKCE S256 flow against the advertised authorization endpoint with a localhost callback on ports 38700–38705.
+  4. Token persisted per-server in `~/.declaragent/mcp-oauth.json` (mode 0600).
+
+  **Runtime integration**: http / sse / http-streamable transports accept `getAuthHeader` (re-read on every request, enabling token rotation) and `onAuthError` (called on 401 to trigger refresh). `declaragent up` wires these automatically against the stored tokens. A 401 triggers a refresh_token grant; if that fails, the request propagates up so the user sees a clear error and can re-run `mcp login`.
+
+  **New verbs**: `declaragent mcp login <name>` + `declaragent mcp logout <name>`. `oauth-pkce.ts` extracts the PKCE primitives (code_verifier, code_challenge, callback server, browser open) into a provider-agnostic module so the same code path powers future OAuth flows.
+
+  Not yet implemented: automatic login on first-401 if no token exists (user must run `mcp login` once first), confidential clients (only `token_endpoint_auth_method: none` is supported today).
+
+- 9a6c64f: Add `@<server>:<uri>` MCP resource references. Skills (and REPL messages) can write tokens like `@github:issue://42` and have the referenced resource fetched + inlined as a fenced block at send-time — the same shape as `@<path>` file refs.
+
+  **Core additions**:
+
+  - `MCPClient.readResource(uri, signal?)` — new method on every transport (stdio/http/sse/streamable) that issues the MCP `resources/read` JSON-RPC call and returns the `MCPResourceContents[]` payload.
+  - `MCPResourceContents` type exported.
+
+  **CLI additions**:
+
+  - `MCPRuntime.getClient(serverName)` — look up a live MCP client so callers (REPL/pipeline) can expand resource refs on demand.
+  - `expandAgentRefs(text, options)` — async extension of `expandFileRefs` that handles BOTH `@<path>` and `@<server>:<uri>` in one pass. Composes a single "Attached references" block at the end of the message. Unknown server → ref is reported as a miss + original text preserved. Bodies cap at `MAX_ATTACHMENT_BYTES` (256 KB), same as file refs.
+
+  The file-ref regex now uses a negative lookahead `(?![A-Za-z0-9_./~:-])` so `@github:issue://1` is steered into the resource-ref parser instead of being truncated as a file ref at `@githu`.
+
+  Pipeline wiring (substituting `expandAgentRefs` for `expandFileRefs` at the builder REPL send-path + the dispatcher's skill-invocation path) lands in a follow-up once the engine's turn-input hook is touched; this slice ships the library primitives + tests.
+
+- de99d4c: `declaragent up` now brings channels online. It loads `~/.declaragent/channels.json`, discovers every `@declaragent/channel-*` adapter installed in `node_modules`, instantiates each configured channel into a shared `ChannelRegistry`, and wires the `SendMessage` tool into the engine so skills can post to Slack / Telegram / Discord / WhatsApp end-to-end without any manual plumbing.
+
+  **What works now**:
+
+  - `SendMessage({ kind: 'channel', channelId, conversationId, content })` delivers to the matching adapter via the registry.
+  - `SendMessage({ kind: 'agent', agent, payload })` enqueues on the mailbox backed by the shared sessions db.
+  - A missing `channels.json` → empty runtime; a missing adapter package → skipped with a clear banner; a broken adapter (throws on `create`) → skipped, healthy siblings still start.
+  - Per-agent lifecycle: channels are torn down on `declaragent up`'s shutdown alongside sources + MCP runtimes.
+
+  Changes: new `channels-runtime.ts` (+ test), `up-cli.ts` loads channels between sources and dispatcher attach, `buildRuntimeTools({ extra })` threads the `SendMessage` tool into the engine.
+
+  The optional `ChannelOutboundBridge` layer that auto-forwards `assistant.final` events to the bound conversation is NOT wired in this slice — skill-driven sends via the `SendMessage` tool are sufficient for the first-principles vision. Bridge wiring can land later once the streaming / typing-indicator story is ready.
+
+- fad5977: `declaragent up` now activates consented plugins at boot. Every entry in `~/.declaragent/plugins.json` with a `consentedAt` timestamp gets loaded via the core `loadPlugin` machinery, and its contributions merge into the per-agent runtime:
+
+  - **Tools** — registered in the per-agent `ExtensionRegistry` and appended to the engine's tool array via `buildRuntimeTools({ extra })`, so the model can call them immediately.
+  - **Skills** — registered alongside scaffold skills; the dispatcher's skill lookup sees both kinds transparently.
+  - **Hooks** — subscribed to the shared `HookRegistry` that the engine now threads through `createEngine({ hookRegistry })`.
+  - **MCP servers** — activated via the plugin loader's stdio spawn (HTTP/SSE/streamable plugin-contributed servers still land in a follow-up; the scope-based slice-2a loader is the primary path for remote MCP).
+
+  An un-consented plugin (in the store but never approved) is skipped with a warning: the CLI banner prints `note: plugin "X" skipped — not consented — run \`declaragent plugin install\``. A broken plugin (missing module, activation error) is soft-failed so healthy siblings still activate. `stopAll` deactivates every plugin in reverse order alongside sources, MCP, and channels.
+
+  New module: `packages/cli/src/plugins-runtime.ts`. `attachDispatcherToAgent` now returns `{ detach, plugins }` so the caller can track plugin lifecycle in `RunningAgent.plugins` and close it on shutdown.
+
+- 4d120b1: `declaragent fleet run` now respects every transport kind declared in `capabilities.yaml` and wires a `RequestAgent` built-in into each agent's engine.
+
+  **Transport dispatch**: the daemon builds a shared `transports: Map<RpcTransportKind, RpcTransport>` keyed on kind. `memory` is always present (the in-process dev loop still works). Other kinds (kafka/nats/sqs/amqp/mqtt) pull from a new `transportFactories?` option on `startFleetDaemon`. When a declared kind has no factory wired, the daemon warns + skips that kind instead of silently ignoring it — the 0.4.x behavior that made non-memory transports look supported when they weren't.
+
+  **Per-agent RPC context**: the `makeHandler` signature expanded from `(agent)` to `(agent, rpcContext)`. The new `FleetAgentRpcContext` carries `selfAddress`, the shared `transports` map, and — when `rpc-peers.yaml` was supplied — the parsed `LoadedPeers` table. The existing single-arg handler shape remains compatible.
+
+  **RequestAgent built-in**: when `rpc-peers.yaml` is present in the fleet root, `createLLMHandlerFactory` appends a `RequestAgent` tool to the per-agent tool list via `buildRuntimeTools({ extra })`. Skills can now call peers declaratively without any manual plugin wiring. A fresh pending-registry is constructed per handler for correlation bookkeeping.
+
+  **`fleetRun` verb**: loads `<fleet-root>/rpc-peers.yaml` when present; warns and continues when the file exists but is malformed.
+
+  Non-memory transport implementations (`@declaragent/plugin-agent-rpc-kafka`, etc.) are not published in this slice — the hooks let callers or a future slice plug them in.
+
+### Patch Changes
+
+- Updated dependencies [da8f330]
+- Updated dependencies [579362c]
+- Updated dependencies [778f505]
+- Updated dependencies [a4ba7a4]
+- Updated dependencies [9a6c64f]
+  - @declaragent/core@0.3.0
+  - @declaragent/plugin-agent-rpc@2.0.0
+
 ## 0.4.16
 
 ### Patch Changes

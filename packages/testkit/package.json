@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/testkit",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Load testing + acceptance harness for Declaragent event sources (Phase 4 slice 16).",
   "license": "Apache-2.0",
   "type": "module",
@@ -21,7 +21,11 @@
       "import": "./dist/channels/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
@@ -33,8 +37,8 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@declaragent/core": "^0.2.0",
-    "@declaragent/source-kafka": "^1.0.0"
+    "@declaragent/core": "^0.3.0",
+    "@declaragent/source-kafka": "^2.0.0"
   },
   "dependencies": {
     "kafkajs": "^2.2.4",
