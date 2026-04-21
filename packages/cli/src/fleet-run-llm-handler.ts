@@ -40,6 +40,7 @@ import {
   type RpcRespondResult,
   SkillNotFoundError,
   type SqliteSessionStore,
+  type Tool,
   createEngine,
   createExtensionRegistry,
   createPermissionGate,
@@ -47,7 +48,12 @@ import {
   runSkill,
   skillExtension,
 } from '@declaragent/core';
-import type { FleetAgentHandler, FleetAgentRequestContext } from './fleet-run.js';
+import { createPendingRegistry, createRequestAgentTool } from '@declaragent/plugin-agent-rpc';
+import type {
+  FleetAgentHandler,
+  FleetAgentRequestContext,
+  FleetAgentRpcContext,
+} from './fleet-run.js';
 
 export interface CreateLLMHandlerFactoryOptions {
   /** Shared LLM provider. One per daemon process. */
@@ -72,8 +78,8 @@ export interface CreateLLMHandlerFactoryOptions {
  */
 export function createLLMHandlerFactory(
   options: CreateLLMHandlerFactoryOptions,
-): (agent: LoadedAgentEntry) => Promise<FleetAgentHandler> {
-  return async (agent) => {
+): (agent: LoadedAgentEntry, rpcContext: FleetAgentRpcContext) => Promise<FleetAgentHandler> {
+  return async (agent, rpcContext) => {
     const loaded = await loadAgent({ agentDir: agent.path });
     const spec: AgentSpec = {
       ...loaded.spec,
@@ -103,10 +109,25 @@ export function createLLMHandlerFactory(
     // Engine per agent so `createChildSession` closes over the
     // right spec. One provider is shared; one session store is
     // shared; only the spec identity differs.
-    const { BUILTIN_TOOLS } = await import('./builtin-tools.js');
+    const { buildRuntimeTools } = await import('./builtin-tools.js');
+    const extraTools: Tool[] = [];
+    // When `rpc-peers.yaml` was supplied at daemon-boot, every agent
+    // gets a `RequestAgent` tool that can call its declared peers.
+    // The tool uses the shared transport map + a fresh pending-registry
+    // per handler (correlation IDs don't cross agents).
+    if (rpcContext.peers !== undefined) {
+      extraTools.push(
+        createRequestAgentTool({
+          selfAgent: rpcContext.selfAddress,
+          peers: rpcContext.peers,
+          transports: rpcContext.transports,
+          pending: createPendingRegistry(),
+        }) as Tool,
+      );
+    }
     const engine = createEngine({
       provider: options.provider,
-      tools: [...BUILTIN_TOOLS],
+      tools: [...buildRuntimeTools(extraTools.length > 0 ? { extra: extraTools } : {})],
       // Bypass permissions in fleet-run — there's no human to prompt,
       // and the scaffolded agent has already declared its tool set.
       permissions: createPermissionGate({ mode: 'bypass', rules: [] }),

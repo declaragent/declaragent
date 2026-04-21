@@ -18,13 +18,18 @@
  * @since 1.2.0
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type {
   AgentRpcEnvelope,
   CapabilityTransport,
   LoadedAgentEntry,
   LoadedFleet,
+  LoadedPeers,
   RpcError,
   RpcRespondResult,
+  RpcTransport,
+  RpcTransportKind,
 } from '@declaragent/core';
 import {
   FleetConfigError,
@@ -34,12 +39,12 @@ import {
   createSqliteSessionStore,
   findFleetRoot,
   loadFleet,
+  loadPeersConfig,
   readFleetVersionFromEnv,
   readFleetVersionHeader,
 } from '@declaragent/core';
 import {
   type MemoryBus,
-  type MemoryTransport,
   createMemoryBus,
   createMemoryTransport,
   createRespondHook,
@@ -114,6 +119,19 @@ export interface FleetDaemon {
   waitForShutdown(): Promise<void>;
 }
 
+/**
+ * Factory for a non-memory RPC transport. Returns a `RpcTransport`
+ * implementation bound to the config block from `capabilities.yaml`.
+ * The `close()` hook on the returned transport will be invoked when
+ * the worker shuts down.
+ *
+ * @since 0.5.0-slice.5
+ */
+export type FleetTransportFactory = (
+  config: CapabilityTransport,
+  deps: { logger?: FleetRunIO },
+) => Promise<RpcTransport> | RpcTransport;
+
 export interface StartFleetDaemonOptions {
   fleet: LoadedFleet;
   /**
@@ -121,6 +139,25 @@ export interface StartFleetDaemonOptions {
    * fleets into a single test; omit to let the daemon create one.
    */
   bus?: MemoryBus;
+  /**
+   * Peer table parsed from `rpc-peers.yaml`. When present, handlers
+   * constructed via `makeHandler` can build a `RequestAgent` tool on
+   * top of the transport map. Absent → the daemon runs without
+   * cross-agent RPC from the caller side.
+   *
+   * @since 0.5.0-slice.5
+   */
+  peers?: LoadedPeers;
+  /**
+   * Per-kind transport factory map. The daemon always ships a `memory`
+   * factory; additional kinds (kafka/nats/sqs/amqp/mqtt) are supplied
+   * by the caller via this option, typically sourced from installed
+   * `@declaragent/plugin-agent-rpc-<kind>` packages. Unknown kinds are
+   * skipped with a warning — never fatal.
+   *
+   * @since 0.5.0-slice.5
+   */
+  transportFactories?: Partial<Record<RpcTransportKind, FleetTransportFactory>>;
   /**
    * Factory that returns the request handler for each agent. May be
    * async so implementations can do per-agent disk reads (load skills,
@@ -130,8 +167,18 @@ export interface StartFleetDaemonOptions {
    * `{ ok: true, data: { echoed: envelope.payload } }`. Production
    * callers plug the engine loop here; tests override with narrower
    * stubs.
+   *
+   * The agent-specific `rpcContext` is constructed by the daemon and
+   * passed through so handlers can build a `RequestAgent` tool with
+   * the right per-agent address + shared transport map.
+   *
+   * @since 0.5.0-slice.5 — signature expanded from `(agent)` to
+   *   `(agent, rpcContext)` for RequestAgent-capable handlers.
    */
-  makeHandler?(agent: LoadedAgentEntry): FleetAgentHandler | Promise<FleetAgentHandler>;
+  makeHandler?(
+    agent: LoadedAgentEntry,
+    rpcContext: FleetAgentRpcContext,
+  ): FleetAgentHandler | Promise<FleetAgentHandler>;
   /**
    * Override this daemon's own `DECLARAGENT_FLEET_VERSION`. Production
    * callers let it default to `readFleetVersionFromEnv(process.env)`;
@@ -140,6 +187,21 @@ export interface StartFleetDaemonOptions {
    */
   selfFleetVersion?: string;
   io?: FleetRunIO;
+}
+
+/**
+ * Per-agent RPC context constructed by the daemon for the handler
+ * factory. Gives a handler everything it needs to wire `RequestAgent`:
+ * its own address, the shared transport map, and the peer table.
+ *
+ * @since 0.5.0-slice.5
+ */
+export interface FleetAgentRpcContext {
+  selfAddress: `agent://${string}`;
+  /** Keyed by transport kind; always contains at least `memory`. */
+  transports: ReadonlyMap<RpcTransportKind, RpcTransport>;
+  /** Absent when `rpc-peers.yaml` was not supplied. */
+  peers?: LoadedPeers;
 }
 
 /**
@@ -155,6 +217,56 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
   const makeHandler = options.makeHandler ?? (() => defaultHandler);
   const selfFleetVersion = options.selfFleetVersion ?? readFleetVersionFromEnv();
   const minFleetVersion = options.fleet.manifest.rpc?.minFleetVersion;
+
+  // Build the shared transport map once. Memory is always built-in;
+  // other kinds come from `transportFactories`. The memory transport
+  // also services the caller side of `RequestAgent` for in-process
+  // peer-to-peer round trips.
+  const transports = new Map<RpcTransportKind, RpcTransport>();
+  const memoryTransport = createMemoryTransport({ bus });
+  transports.set('memory', memoryTransport);
+  const externalFactories = options.transportFactories ?? {};
+  const kindsSeen = new Set<RpcTransportKind>();
+  for (const agent of options.fleet.agents) {
+    if (!agent.capabilities) continue;
+    for (const t of agent.capabilities.config.transports) {
+      kindsSeen.add(t.kind);
+    }
+  }
+  for (const kind of kindsSeen) {
+    if (kind === 'memory') continue;
+    const factory = externalFactories[kind];
+    if (factory === undefined) {
+      io.err(
+        `warning: transport kind "${kind}" is declared in capabilities but no factory is wired. Install @declaragent/plugin-agent-rpc-${kind} or pass transportFactories.${kind} to enable it. Skipping.\n`,
+      );
+      continue;
+    }
+    // Factories are called once per kind, with a representative config
+    // block (first agent's entry). Factories that need per-agent config
+    // can read the shared transport's config internally.
+    let sampleConfig: CapabilityTransport | undefined;
+    outer: for (const agent of options.fleet.agents) {
+      if (!agent.capabilities) continue;
+      for (const t of agent.capabilities.config.transports) {
+        if (t.kind === kind) {
+          sampleConfig = t;
+          break outer;
+        }
+      }
+    }
+    if (sampleConfig === undefined) continue; // defensive; kindsSeen guarantees one
+    try {
+      const t = await factory(sampleConfig, { logger: io });
+      transports.set(kind, t);
+    } catch (err) {
+      io.err(
+        `warning: transport kind "${kind}" factory failed: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+  }
 
   const agents = new Map<string, FleetAgentWorker>();
 
@@ -177,6 +289,19 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
       }
     }
     agents.clear();
+    // Close external transports explicitly (memory is tied to bus lifecycle).
+    for (const [kind, t] of transports) {
+      if (kind === 'memory') continue;
+      try {
+        await t.close();
+      } catch (err) {
+        io.err(
+          `warning: transport "${kind}" failed to close cleanly: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
     // Only close the bus if we own it — callers who passed their own
     // keep control of its lifecycle.
     if (!options.bus) bus.close();
@@ -185,10 +310,15 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
 
   try {
     for (const agent of options.fleet.agents) {
+      const rpcContext: FleetAgentRpcContext = {
+        selfAddress: `agent://${agent.id}`,
+        transports,
+        ...(options.peers !== undefined && { peers: options.peers }),
+      };
       const worker = startAgentWorker({
         agent,
-        bus,
-        handler: await makeHandler(agent),
+        transports,
+        handler: await makeHandler(agent, rpcContext),
         logger: io,
         ...(selfFleetVersion !== undefined && { selfFleetVersion }),
         ...(minFleetVersion !== undefined && { minFleetVersion }),
@@ -200,6 +330,16 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
     for (const w of agents.values()) await w.stop().catch(() => {});
     agents.clear();
     if (!options.bus) bus.close();
+    // Close external transports; memory transport is closed by bus.close()
+    // for bus-owned daemons, so skip it here.
+    for (const [kind, t] of transports) {
+      if (kind === 'memory') continue;
+      try {
+        await t.close();
+      } catch {
+        // best-effort
+      }
+    }
     throw err;
   }
 
@@ -220,7 +360,7 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
 
 interface StartAgentWorkerOptions {
   agent: LoadedAgentEntry;
-  bus: MemoryBus;
+  transports: ReadonlyMap<RpcTransportKind, RpcTransport>;
   handler: FleetAgentHandler;
   /** Optional logger for version-skew warnings + audit lines. */
   logger?: FleetRunIO;
@@ -231,12 +371,19 @@ interface StartAgentWorkerOptions {
 }
 
 function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
-  const { agent, bus, handler } = opts;
-  const transport: MemoryTransport = createMemoryTransport({ bus });
+  const { agent, transports, handler } = opts;
 
   const capabilities: string[] = [];
   const topics: string[] = [];
   const detachers: Array<() => void> = [];
+  // Per-agent transport handle — for the memory case today we reuse
+  // the shared memory transport; future per-agent factories could
+  // supply a dedicated instance.
+  const maybeRespond = transports.get('memory');
+  if (maybeRespond === undefined) {
+    throw new Error('fleet-run requires a memory transport to be wired (internal invariant)');
+  }
+  const respondTransport: RpcTransport = maybeRespond;
   const metricsRef: FleetAgentWorkerMetrics = {
     received: 0,
     responded: 0,
@@ -250,16 +397,17 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
     for (const cap of agent.capabilities.config.capabilities) {
       capabilities.push(cap.name);
     }
-    // One subscription per memory transport that carries a requests topic.
-    // Non-memory transports (kafka, nats, etc.) are ignored in slice 3 —
-    // the dev loop is memory-only. A warning would clutter tests, so we
-    // stay silent.
+    // Subscribe each declared transport to its requests topic. Unknown
+    // kinds are skipped silently — the daemon already warned in
+    // `startFleetDaemon` when the transport was first seen.
     for (const t of agent.capabilities.config.transports) {
-      const memoryTopic = memoryRequestsTopic(t);
-      if (memoryTopic === undefined) continue;
-      topics.push(memoryTopic);
+      const topic = requestsTopicFor(t);
+      if (topic === undefined) continue;
+      const transport = transports.get(t.kind);
+      if (transport === undefined) continue;
+      topics.push(topic);
       detachers.push(
-        transport.subscribe(memoryTopic, async (envelope) => {
+        transport.subscribe(topic, async (envelope) => {
           await onRequest(envelope);
         }),
       );
@@ -273,7 +421,7 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
 
     const respond = createRespondHook({
       request: envelope,
-      transport,
+      transport: respondTransport,
       selfAgent: `agent://${agent.id}`,
     });
 
@@ -342,14 +490,39 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
     metrics: () => ({ ...metricsRef }),
     async stop(): Promise<void> {
       for (const d of detachers.splice(0)) d();
-      await transport.close();
+      // Transports are shared across workers — they're closed once at
+      // daemon shutdown, not per-worker.
     },
   };
 }
 
-function memoryRequestsTopic(t: CapabilityTransport): string | undefined {
-  if (t.kind !== 'memory') return undefined;
-  return t.topics.requests;
+/**
+ * Requests-topic accessor for every supported transport kind. Returns
+ * the topic name a worker should subscribe its onRequest handler to.
+ * Returns undefined for kinds whose config block doesn't carry an
+ * explicit requests topic — the loader fills these in per kind so the
+ * null case is rare.
+ */
+function requestsTopicFor(t: CapabilityTransport): string | undefined {
+  switch (t.kind) {
+    case 'memory':
+      return t.topics.requests;
+    case 'kafka':
+      return t.topics.requests;
+    case 'nats':
+      return t.subjects.requests;
+    case 'sqs':
+      return t.queues.requests;
+    case 'amqp':
+      return t.queues.requests;
+    case 'mqtt':
+      return t.topics.requests;
+    default: {
+      const _exhausted: never = t;
+      void _exhausted;
+      return undefined;
+    }
+  }
 }
 
 // ── Default / echo handler ─────────────────────────────────────────────
@@ -462,9 +635,26 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     });
   }
 
+  // Load `rpc-peers.yaml` from the fleet root if present. Its absence
+  // is silently fine — fleets without cross-agent RPC never need it;
+  // the `RequestAgent` tool just won't be wired into handlers.
+  const peersPath = join(root, 'rpc-peers.yaml');
+  let peers: import('@declaragent/core').LoadedPeers | undefined;
+  if (existsSync(peersPath)) {
+    try {
+      peers = await loadPeersConfig(peersPath);
+      io.out(`  rpc-peers: ${peers.config.peers.length} peer(s) loaded from ${peersPath}\n`);
+    } catch (err) {
+      io.err(
+        `warning: could not load rpc-peers.yaml — ${err instanceof Error ? err.message : String(err)}. RequestAgent will be disabled.\n`,
+      );
+    }
+  }
+
   const daemon = await startFleetDaemon({
     fleet: filteredFleet,
     ...(makeHandler !== undefined && { makeHandler }),
+    ...(peers !== undefined && { peers }),
     io,
   });
 

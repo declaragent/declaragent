@@ -88,7 +88,10 @@ async function runHandler(
     path: opts.agentDir,
   } as LoadedAgentEntry;
 
-  const handler = await factory(agentEntry);
+  const handler = await factory(agentEntry, {
+    selfAddress: 'agent://pr-reviewer',
+    transports: new Map(),
+  });
 
   let captured: RpcRespondResult | null = null;
   const ctx: FleetAgentRequestContext = {

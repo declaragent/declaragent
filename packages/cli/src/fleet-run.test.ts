@@ -19,7 +19,9 @@ import {
 } from '@declaragent/plugin-agent-rpc';
 import {
   type FleetAgentHandler,
+  type FleetAgentRpcContext,
   type FleetRunIO,
+  type FleetTransportFactory,
   defaultHandler,
   fleetRun,
   startFleetDaemon,
@@ -756,6 +758,170 @@ describe('fleet-run version-skew (slice 7)', () => {
         expect(metrics?.responded).toBe(1);
         detach();
         await conciergeTransport.close();
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe('startFleetDaemon — slice 5 (transport factories + RequestAgent wiring)', () => {
+  test('makeHandler receives an rpc context with peers + transports map', async () => {
+    const h = mkHarness();
+    try {
+      const fleet = await twoAgentFleet(h);
+      const peers = parsePeersConfig({
+        version: 1,
+        peers: [
+          {
+            agent: 'agent://pr-reviewer',
+            transports: [{ kind: 'memory', topics: { requests: 'agents.pr-reviewer.requests' } }],
+          },
+        ],
+      });
+      const received: FleetAgentRpcContext[] = [];
+      const bus = createMemoryBus();
+      const daemon = await startFleetDaemon({
+        fleet,
+        bus,
+        peers,
+        makeHandler: (_agent, ctx) => {
+          received.push(ctx);
+          return defaultHandler;
+        },
+      });
+      try {
+        expect(received).toHaveLength(2);
+        // Each agent gets its own `selfAddress`.
+        expect(received.map((c) => c.selfAddress).sort()).toEqual([
+          'agent://concierge',
+          'agent://pr-reviewer',
+        ]);
+        // Transport map ships `memory` at minimum.
+        expect(received[0]?.transports.has('memory')).toBe(true);
+        // Peers passed through untouched.
+        expect(received[0]?.peers).toBe(peers);
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('non-memory transport factory is invoked once per declared kind', async () => {
+    const h = mkHarness();
+    try {
+      // twoAgentFleet declares memory only — synthesize a grafted copy
+      // that adds a kafka transport to pr-reviewer's capabilities.
+      const real = await twoAgentFleet(h);
+      const kafkaOn = real.agents.map((a) => {
+        if (!a.capabilities) return a;
+        return {
+          ...a,
+          capabilities: {
+            ...a.capabilities,
+            config: {
+              ...a.capabilities.config,
+              transports: [
+                ...a.capabilities.config.transports,
+                {
+                  kind: 'kafka' as const,
+                  brokers: ['broker:9092'],
+                  topics: { requests: 'agents.pr-reviewer.requests.kafka' },
+                },
+              ],
+            },
+          },
+        };
+      });
+      const grafted = {
+        ...real,
+        agents: kafkaOn,
+        agentsById: new Map(kafkaOn.map((a) => [a.id, a])),
+      };
+
+      let factoryCalls = 0;
+      const factory: FleetTransportFactory = async (config, _deps) => {
+        factoryCalls += 1;
+        expect(config.kind).toBe('kafka');
+        // Return a no-op RpcTransport stub. The daemon just holds it.
+        return {
+          kind: 'kafka' as const,
+          publish: async () => {},
+          subscribe: () => () => {},
+          close: async () => {},
+        };
+      };
+
+      const bus = createMemoryBus();
+      const daemon = await startFleetDaemon({
+        fleet: grafted,
+        bus,
+        transportFactories: { kafka: factory },
+        makeHandler: () => defaultHandler,
+      });
+      try {
+        expect(factoryCalls).toBe(1);
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('unregistered transport kind is warned about + skipped (not fatal)', async () => {
+    const h = mkHarness();
+    try {
+      const real = await twoAgentFleet(h);
+      const kafkaOn = real.agents.map((a) => {
+        if (!a.capabilities) return a;
+        return {
+          ...a,
+          capabilities: {
+            ...a.capabilities,
+            config: {
+              ...a.capabilities.config,
+              transports: [
+                ...a.capabilities.config.transports,
+                {
+                  kind: 'kafka' as const,
+                  brokers: ['broker:9092'],
+                  topics: { requests: 'agents.pr-reviewer.requests.kafka' },
+                },
+              ],
+            },
+          },
+        };
+      });
+      const grafted = {
+        ...real,
+        agents: kafkaOn,
+        agentsById: new Map(kafkaOn.map((a) => [a.id, a])),
+      };
+
+      const errs: string[] = [];
+      const io: FleetRunIO = {
+        out: () => {},
+        err: (s) => {
+          errs.push(s);
+        },
+      };
+      const daemon = await startFleetDaemon({
+        fleet: grafted,
+        bus: createMemoryBus(),
+        // No transportFactories for kafka — should warn + skip.
+        io,
+        makeHandler: () => defaultHandler,
+      });
+      try {
+        expect(errs.some((e) => e.includes('kafka'))).toBe(true);
+        expect(errs.some((e) => e.includes('no factory'))).toBe(true);
+        // Daemon still ran — memory transport still bound.
+        expect(daemon.agents.get('pr-reviewer')?.topics).toContain('agents.pr-reviewer.requests');
       } finally {
         await daemon.shutdown();
       }
