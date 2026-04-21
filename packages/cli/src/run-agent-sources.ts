@@ -80,6 +80,16 @@ export interface StartAgentSourcesOptions {
    * Tests point this at a tmp file.
    */
   storePath?: string;
+  /**
+   * Whether to subscribe a "record every event" handler against the
+   * event store. Default `true` for backwards compat (pre-0.4.15
+   * callers assumed the events table would auto-fill). `declaragent
+   * up` sets this `false` when it wires its own dispatcher — the
+   * dispatcher owns recording via `handleInternal` step 2.5 and will
+   * otherwise see its own just-recorded row as a duplicate, marking
+   * every event as `outcome: duplicate`. @since 0.4.15
+   */
+  recordToStore?: boolean;
 }
 
 export interface StartAgentSourcesResult {
@@ -159,13 +169,23 @@ export async function startAgentSources(
 
   const bus = createEventBus({ logger });
 
-  // Subscribe once: every event gets persisted + optionally
-  // forwarded to the REPL's `onEvent` hook.
+  // Subscribe once: every event is optionally persisted to the
+  // event store + optionally forwarded to the REPL's `onEvent` hook.
+  //
+  // Why `recordToStore` is configurable: when `declaragent up` wires
+  // its own dispatcher, the dispatcher records the event via
+  // `handleInternal` step 2.5 and then checks `findDuplicate` for
+  // dedup. If we ALSO pre-record here, the dispatcher finds the row
+  // it just wrote (direct-id hit) and marks every event as
+  // `outcome: duplicate`. Callers that own a dispatcher pass `false`.
+  const recordToStore = options.recordToStore ?? true;
   const unsubscribe = bus.subscribe('*', async (event: AgentEvent) => {
-    try {
-      await eventStore.record(event);
-    } catch (err) {
-      logger.warn('event-store.record-failed', { err: String(err) });
+    if (recordToStore) {
+      try {
+        await eventStore.record(event);
+      } catch (err) {
+        logger.warn('event-store.record-failed', { err: String(err) });
+      }
     }
     if (options.onEvent) {
       try {

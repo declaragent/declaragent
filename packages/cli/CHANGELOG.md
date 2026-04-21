@@ -1,5 +1,15 @@
 # @declaragent/cli
 
+## 0.4.16
+
+### Patch Changes
+
+Fix self-inflicted duplicate detection. The 0.4.14 wrapper exposed the outcome — every event came back `outcome: duplicate`. Root cause: `startAgentSources` subscribed a "record every event" handler against the event store, then the dispatcher's `handleInternal` called `findDuplicate`, which does a direct `id` lookup — hitting the row the source subscriber had just written and rejecting the event as a duplicate of itself.
+
+Fix: `startAgentSources` now takes a `recordToStore` option (default `true` for backwards compat). `declaragent up` passes `false` when it will attach a dispatcher — the dispatcher's own `handleInternal` step 2.5 owns the record call, so there's no race and no self-duplicate. Creds-less fallback (no dispatcher wired) keeps the old behavior so events still persist to the store for `events list`.
+
+With this + 0.4.14's explicit-handle wrapper, webhook/cron/file-watch events now flow cleanly: `dispatcher.handling` → `dispatcher.outcome outcome=dispatched sessionId=…`, and `events list` shows `dispatched→<sessionId>`.
+
 ## 0.4.15
 
 ### Patch Changes

@@ -375,6 +375,15 @@ async function bringUp(
     };
   }
 
+  // When a provider is configured we'll attach a dispatcher that
+  // owns event recording (dedup + outcome chain). In that case
+  // `startAgentSources` must NOT also record, or the dispatcher's
+  // `findDuplicate` will hit the row the sources subscriber just
+  // wrote and mark every event as `duplicate`. Without a provider
+  // there's no dispatcher, so fall back to the old behavior so
+  // events still land in the store for `declaragent events list`.
+  const willAttachDispatcher = runtime.provider !== null;
+
   const sources = await startSources({
     configPath: eventSourcesPath,
     // Route the bus's internal warnings (including silent
@@ -384,6 +393,7 @@ async function bringUp(
     // YAML target.type typo could drop every webhook event without
     // any visible signal.
     logger: agentLoggerToCoreLogger(logger),
+    recordToStore: !willAttachDispatcher,
     onEvent: (ev: AgentEvent) => {
       logger.write({
         kind: ev.kind,
