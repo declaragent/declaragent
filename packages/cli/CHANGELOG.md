@@ -1,5 +1,21 @@
 # @declaragent/cli
 
+## 0.4.0
+
+### Minor Changes
+
+- fa676a6: Complete the builder-tool matrix (Phase B of USABILITY_PLAN.md). Four new authoring tools ship in this release — `DeclaraAddSource` (per-agent `event-sources.yaml` with round-trip adapter validation for webhook/cron/file-watch), `DeclaraAddChannel` (user-global `channels.json`), `DeclaraAddMCP` (user-global `mcp-servers.json`), `DeclaraAddPlugin` (user-global `plugins.json` with consent captured via the proposal flow). Every scaffolded capability — skill, source, channel, MCP, plugin, secret, peer — is now reachable through conversational authoring; `DeclaraApplyChange` no longer returns "step kind not supported" for these four kinds.
+
+### Patch Changes
+
+- fa676a6: Wire `declaragent fleet run` to the real LLM engine (Phase A.2 of USABILITY_PLAN.md). Previously the multi-agent dev loop echoed every capability request via a slice-3 stub; now each scaffolded agent loads its `agent.yaml` + `skills/`, builds a per-agent extension registry, and answers RPC calls by running the matching skill against a real engine turn. Tests that want a deterministic no-LLM path keep working via `deps.makeHandler = () => defaultHandler`.
+- fa676a6: REPL UX polish (Phase C / P2 of USABILITY_PLAN.md). Four conversational-flow items shipping together:
+
+  - **Bracketed-paste support.** Multi-line pastes no longer submit after the first line. Architecture mirrors Claude Code's tokenizer: `CSI ?2004h` is enabled on mount; a parallel `process.stdin` listener runs a two-state FSM that detects `CSI 200~` / `CSI 201~` markers (spanning chunk boundaries), buffers the content, and flushes it via `setInput(prior + body)` once the end marker arrives. Ink's own pre-parser continues to route keystrokes as usual, but TextInput's `onChange` / `onSubmit` are gated on an `inPaste` flag so the embedded `\n` mid-paste never fires a submit and the first line never leaks into the controlled input. `\x1b[?2004l` is written on unmount.
+  - **`/prompt <path>`** reads a file and submits its contents verbatim as the next user message. Stays useful for pastes that exceed terminal buffering, or terminals without bracketed-paste support.
+  - **`@<path>` file refs** inline file contents into any user message. Supports absolute + relative + `~/` paths, deduplicates repeated tokens, truncates oversized attachments at 256KB, and surfaces per-ref hit/miss system lines so the user sees what got attached. Emails (`user@host.com`) are left alone.
+  - **Y/N keypress shortcuts for pending proposals** — a bare `y` / `yes` / `n` / `no` submission is routed as `/yes` / `/no` while a proposal is outstanding. The typed flow (including `/yes <phrase>` for explicit-yes proposals and `/edit <n> <replacement>`) keeps working unchanged. A new hint line renders above the input when a proposal is pending.
+
 ## 0.3.5
 
 ### Patch Changes
