@@ -38,6 +38,7 @@ import {
   createEventDispatcher,
   createExtensionRegistry,
   createPermissionGate,
+  createSendMessageTool,
   createSqliteSessionStore,
   loadAgent,
   loadFleet,
@@ -45,6 +46,7 @@ import {
 } from '@declaragent/core';
 import { resolveCredentials } from './auth.js';
 import { buildRuntimeTools } from './builtin-tools.js';
+import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
 import {
   type ConsentResolver,
   type MCPRuntime,
@@ -224,6 +226,8 @@ interface RunningAgent {
   logger: AgentLogger;
   /** MCP servers spawned for this agent; shutdown on stopAll. */
   mcp?: MCPRuntime;
+  /** Channel registry + mailbox for this agent; shutdown on stopAll. */
+  channels?: ChannelRuntime;
   /**
    * Detach handle returned by `dispatcher.attach(bus)`. Only present
    * when the agent has an LLM provider configured + at least one
@@ -447,6 +451,25 @@ async function bringUp(
     },
   });
 
+  // Bring up channels + mailbox now that the event bus exists. Needed
+  // before `attachDispatcherToAgent` so the engine can be built with a
+  // `SendMessage` tool whose channel registry is already populated.
+  let channelsRuntime: ChannelRuntime | undefined;
+  if (sources.bus) {
+    channelsRuntime = await startChannelRuntime({
+      bus: sources.bus,
+      logger: coreLogger,
+      agentDir,
+    });
+    const channelCount = channelsRuntime.channels.list().length;
+    if (channelCount > 0) {
+      io.out(`  ${agentId}: ${channelCount} channel(s) ready\n`);
+    }
+    for (const s of channelsRuntime.skipped) {
+      io.out(`    note: channel "${s.type}" skipped — ${s.reason}\n`);
+    }
+  }
+
   const summary: UpSourceSummary[] = sources.started.map((s) => ({
     type: s.type,
     id: s.id,
@@ -466,6 +489,7 @@ async function bringUp(
         sources,
         logger,
         mcpTools: mcp.tools,
+        ...(channelsRuntime && { channelsRuntime }),
       });
     } catch (err) {
       // A dispatcher-attach failure used to manifest as "events sit
@@ -490,6 +514,7 @@ async function bringUp(
     sources,
     logger,
     mcp,
+    ...(channelsRuntime && { channels: channelsRuntime }),
     ...(detachDispatcher !== undefined && { detachDispatcher }),
   };
 }
@@ -512,8 +537,9 @@ async function attachDispatcherToAgent(opts: {
   sources: StartAgentSourcesResult;
   logger: AgentLogger;
   mcpTools?: readonly import('@declaragent/core').Tool[];
+  channelsRuntime?: ChannelRuntime;
 }): Promise<() => void> {
-  const { loaded, runtime, sources, logger, mcpTools } = opts;
+  const { loaded, runtime, sources, logger, mcpTools, channelsRuntime } = opts;
   const bus = sources.bus;
   const eventStore = sources.eventStore;
   if (!bus) {
@@ -541,9 +567,24 @@ async function attachDispatcherToAgent(opts: {
   const provider = runtime.provider;
   if (!provider) return () => {};
 
+  const extraTools: import('@declaragent/core').Tool[] = [];
+  if (channelsRuntime !== undefined) {
+    extraTools.push(
+      createSendMessageTool({
+        mailbox: channelsRuntime.mailbox,
+        channels: channelsRuntime.channels,
+      }) as import('@declaragent/core').Tool,
+    );
+  }
+
   const engine = createEngine({
     provider,
-    tools: [...buildRuntimeTools(mcpTools !== undefined ? { mcpTools } : {})],
+    tools: [
+      ...buildRuntimeTools({
+        ...(mcpTools !== undefined && { mcpTools }),
+        ...(extraTools.length > 0 && { extra: extraTools }),
+      }),
+    ],
     permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
     createChildSession: () => runtime.sessionStore.create(spec),
   });
@@ -634,6 +675,11 @@ async function stopAll(running: RunningAgent[]): Promise<void> {
     }
     try {
       await r.mcp?.shutdown();
+    } catch {
+      // swallow — best-effort shutdown
+    }
+    try {
+      await r.channels?.shutdown();
     } catch {
       // swallow — best-effort shutdown
     }
