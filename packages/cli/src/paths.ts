@@ -33,6 +33,20 @@ export function mcpConfigPath(dir = configDir()): string {
   return join(dir, 'mcp-servers.json');
 }
 
+export function mcpConsentPath(dir = configDir()): string {
+  return join(dir, 'mcp-consent.json');
+}
+
+/** Project-scope MCP config, git-tracked alongside `agent.yaml`. */
+export function mcpProjectConfigPath(agentDir: string): string {
+  return join(agentDir, '.mcp.json');
+}
+
+/** Local-scope MCP config, per-dev overrides (gitignored). */
+export function mcpLocalConfigPath(agentDir: string): string {
+  return join(agentDir, '.declaragent', 'mcp.local.json');
+}
+
 export function userSkillsDir(dir = configDir()): string {
   return join(dir, 'skills');
 }

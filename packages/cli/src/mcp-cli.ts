@@ -1,6 +1,13 @@
 import type { PluginMCPServerSpec } from '@declaragent/core';
 import { type MCPConfigStore, createMCPConfigStore } from './mcp-config.js';
-import { mcpConfigPath } from './paths.js';
+import { type MCPConsentStore, createMCPConsentStore } from './mcp-consent.js';
+import type { MCPScope } from './mcp-runtime.js';
+import {
+  mcpConfigPath,
+  mcpConsentPath,
+  mcpLocalConfigPath,
+  mcpProjectConfigPath,
+} from './paths.js';
 
 export interface MCPCliIO {
   out: (s: string) => void;
@@ -15,10 +22,28 @@ const STDIO_IO: MCPCliIO = {
 interface MCPCliOptions {
   io?: MCPCliIO;
   store?: MCPConfigStore;
+  /** Scope selector for the operation. Defaults to `user`. */
+  scope?: MCPScope;
+  /** Agent dir to anchor project/local scope writes. Defaults to cwd. */
+  cwd?: string;
+  consentStore?: MCPConsentStore;
+}
+
+function resolveStorePath(scope: MCPScope, cwd: string): string {
+  if (scope === 'user') return mcpConfigPath();
+  if (scope === 'project') return mcpProjectConfigPath(cwd);
+  return mcpLocalConfigPath(cwd);
 }
 
 function getStore(options: MCPCliOptions): MCPConfigStore {
-  return options.store ?? createMCPConfigStore(mcpConfigPath());
+  if (options.store) return options.store;
+  const scope = options.scope ?? 'user';
+  const cwd = options.cwd ?? process.cwd();
+  return createMCPConfigStore(resolveStorePath(scope, cwd));
+}
+
+function getConsentStore(options: MCPCliOptions): MCPConsentStore {
+  return options.consentStore ?? createMCPConsentStore(mcpConsentPath());
 }
 
 export interface MCPAddArgs {
@@ -41,6 +66,7 @@ const DEFAULT_PROTOCOL_VERSION = '2024-11-05';
 export async function mcpAdd(args: MCPAddArgs, options: MCPCliOptions = {}): Promise<number> {
   const io = options.io ?? STDIO_IO;
   const store = getStore(options);
+  const scope = options.scope ?? 'user';
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(args.name)) {
     io.err(`✗ invalid name "${args.name}" — must be alphanumeric, '-', '_'\n`);
     return 1;
@@ -56,9 +82,38 @@ export async function mcpAdd(args: MCPAddArgs, options: MCPCliOptions = {}): Pro
     protocolVersion: args.protocolVersion ?? DEFAULT_PROTOCOL_VERSION,
   };
   await store.add(spec);
-  io.out(`✓ added MCP server "${args.name}"\n`);
+  // Running `mcp add` means the user is opting in to this server.
+  // Auto-record consent so `up` doesn't re-prompt for a command the
+  // user literally just typed.
+  await getConsentStore(options).approve(args.name);
+  io.out(`✓ added MCP server "${args.name}" [scope: ${scope}]\n`);
   io.out(`  command: ${args.command}${args.args?.length ? ` ${args.args.join(' ')}` : ''}\n`);
   io.out(`  protocol: ${spec.protocolVersion}\n`);
+  return 0;
+}
+
+/**
+ * `declaragent mcp approve <name>` — explicitly record consent for a
+ * server whose config was added by someone else (e.g. a `.mcp.json`
+ * pulled in via git). Needed when the user boots with `-d` + has MCP
+ * servers that weren't yet consented; the detached child can't prompt.
+ */
+export async function mcpApprove(name: string, options: MCPCliOptions = {}): Promise<number> {
+  const io = options.io ?? STDIO_IO;
+  await getConsentStore(options).approve(name);
+  io.out(`✓ MCP server "${name}" approved\n`);
+  return 0;
+}
+
+/** `declaragent mcp revoke <name>` — opposite of approve. */
+export async function mcpRevoke(name: string, options: MCPCliOptions = {}): Promise<number> {
+  const io = options.io ?? STDIO_IO;
+  const removed = await getConsentStore(options).revoke(name);
+  if (!removed) {
+    io.err(`✗ MCP server "${name}" was not approved\n`);
+    return 1;
+  }
+  io.out(`✓ MCP server "${name}" approval revoked\n`);
   return 0;
 }
 

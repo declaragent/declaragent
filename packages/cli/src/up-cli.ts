@@ -44,7 +44,13 @@ import {
   skillExtension,
 } from '@declaragent/core';
 import { resolveCredentials } from './auth.js';
-import { BUILTIN_TOOLS } from './builtin-tools.js';
+import { buildRuntimeTools } from './builtin-tools.js';
+import {
+  type ConsentResolver,
+  type MCPRuntime,
+  loadScopedMCPServers,
+  startMCPServers,
+} from './mcp-runtime.js';
 import { sessionsDbPath } from './paths.js';
 import { createProviderFromCreds } from './provider-factory.js';
 import { type StartAgentSourcesResult, startAgentSources } from './run-agent-sources.js';
@@ -216,6 +222,8 @@ interface RunningAgent {
   summary: UpAgentSummary;
   sources: StartAgentSourcesResult;
   logger: AgentLogger;
+  /** MCP servers spawned for this agent; shutdown on stopAll. */
+  mcp?: MCPRuntime;
   /**
    * Detach handle returned by `dispatcher.attach(bus)`. Only present
    * when the agent has an LLM provider configured + at least one
@@ -239,6 +247,13 @@ interface UpRuntime {
    */
   provider: ReturnType<typeof createProviderFromCreds> | null;
   defaultModel: string;
+  /**
+   * MCP consent resolver. Interactive foreground `up` renders the Ink
+   * consent UI; detached + non-TTY boots set this to `undefined` so
+   * un-consented servers are skipped with a warning (fail-closed
+   * per-server, never blocks boot).
+   */
+  mcpConsent?: ConsentResolver;
 }
 
 async function runForeground(
@@ -261,10 +276,18 @@ async function runForeground(
 
   // Shared across every agent this up-process hosts.
   const creds = resolveCredentials();
+  // Detached child is spawned without a controlling TTY + runs the
+  // __detached branch below. In both cases consent prompts can't land,
+  // so we leave `mcpConsent` undefined → un-consented MCP servers are
+  // skipped with a warning rather than blocking boot. The user can
+  // pre-consent via `declaragent mcp add` (auto-approves) or a future
+  // `mcp approve <name>` verb.
+  const interactive = _args.__detached !== true && process.stdin.isTTY === true;
   const runtime: UpRuntime = {
     sessionStore: createSqliteSessionStore({ path: sessionsDbPath() }),
     provider: creds ? createProviderFromCreds({ creds }) : null,
     defaultModel: 'claude-sonnet-4-5',
+    ...(interactive && { mcpConsent: createInteractiveMCPConsent() }),
   };
   if (!creds) {
     io.out(
@@ -356,6 +379,25 @@ async function bringUp(
   }
   const agentId = loaded.spec.name;
   const logger = openAgentLog(agentId);
+  const coreLogger = agentLoggerToCoreLogger(logger);
+
+  // Spawn any MCP servers configured across user/project/local scopes.
+  // Happens BEFORE source/dispatcher wiring so the engine gets the full
+  // tool list from the start. A failure here is per-server soft-failed
+  // inside `startMCPServers` — we never abort the whole agent boot over
+  // one misconfigured MCP.
+  const scopedMcp = await loadScopedMCPServers({ agentDir });
+  const mcp = await startMCPServers({
+    servers: scopedMcp,
+    logger: coreLogger,
+    ...(runtime.mcpConsent !== undefined && { consent: runtime.mcpConsent }),
+  });
+  if (mcp.tools.length > 0) {
+    io.out(`  ${agentId}: ${mcp.tools.length} MCP tool(s) loaded\n`);
+  }
+  for (const s of mcp.skipped) {
+    io.out(`    note: MCP server "${s.name}" (${s.scope}) skipped — ${s.reason}\n`);
+  }
 
   const eventSourcesPath = findEventSourcesConfig(agentDir);
   if (eventSourcesPath === undefined) {
@@ -372,6 +414,7 @@ async function bringUp(
         },
       },
       logger,
+      mcp,
     };
   }
 
@@ -422,6 +465,7 @@ async function bringUp(
         runtime,
         sources,
         logger,
+        mcpTools: mcp.tools,
       });
     } catch (err) {
       // A dispatcher-attach failure used to manifest as "events sit
@@ -445,6 +489,7 @@ async function bringUp(
     summary: { id: agentId, path: agentDir, sources: summary },
     sources,
     logger,
+    mcp,
     ...(detachDispatcher !== undefined && { detachDispatcher }),
   };
 }
@@ -466,8 +511,9 @@ async function attachDispatcherToAgent(opts: {
   runtime: UpRuntime;
   sources: StartAgentSourcesResult;
   logger: AgentLogger;
+  mcpTools?: readonly import('@declaragent/core').Tool[];
 }): Promise<() => void> {
-  const { loaded, runtime, sources, logger } = opts;
+  const { loaded, runtime, sources, logger, mcpTools } = opts;
   const bus = sources.bus;
   const eventStore = sources.eventStore;
   if (!bus) {
@@ -497,7 +543,7 @@ async function attachDispatcherToAgent(opts: {
 
   const engine = createEngine({
     provider,
-    tools: [...BUILTIN_TOOLS],
+    tools: [...buildRuntimeTools(mcpTools !== undefined ? { mcpTools } : {})],
     permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
     createChildSession: () => runtime.sessionStore.create(spec),
   });
@@ -586,8 +632,44 @@ async function stopAll(running: RunningAgent[]): Promise<void> {
     } catch {
       // swallow — best-effort shutdown
     }
+    try {
+      await r.mcp?.shutdown();
+    } catch {
+      // swallow — best-effort shutdown
+    }
     r.logger.close();
   }
+}
+
+/**
+ * Render the MCP consent Ink UI inline. Dynamic-imports React + Ink so
+ * non-TTY code paths (detached, tests) don't pull them in. Returns a
+ * resolver the MCP runtime invokes once per un-consented server.
+ */
+function createInteractiveMCPConsent(): ConsentResolver {
+  return async (spec, scope) => {
+    const [{ render }, { MCPConsentUI }, React] = await Promise.all([
+      import('ink'),
+      import('./mcp-consent-ui.js'),
+      import('react'),
+    ]);
+    return new Promise<boolean>((resolveBool) => {
+      let decided = false;
+      const instance = render(
+        React.createElement(MCPConsentUI, {
+          spec,
+          scope,
+          onDecision: (approved: boolean) => {
+            decided = true;
+            resolveBool(approved);
+          },
+        }),
+      );
+      void instance.waitUntilExit().then(() => {
+        if (!decided) resolveBool(false);
+      });
+    });
+  };
 }
 
 async function gracefulStop(pid: number, io: UpIO): Promise<void> {

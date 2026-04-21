@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mcpAdd, mcpList, mcpRemove } from './mcp-cli.js';
+import { mcpAdd, mcpApprove, mcpList, mcpRemove, mcpRevoke } from './mcp-cli.js';
 import { createMCPConfigStore } from './mcp-config.js';
+import { createMCPConsentStore } from './mcp-consent.js';
 
 let workDir: string;
 let storePath: string;
@@ -102,5 +103,48 @@ describe('mcp add / list / remove', () => {
     const fail = captureIO();
     expect(await mcpRemove('a', { io: fail.io, store })).toBe(1);
     expect(fail.stderr).toContain('not configured');
+  });
+
+  test('add auto-records consent for the named server', async () => {
+    const store = createMCPConfigStore(storePath);
+    const consentStore = createMCPConsentStore(join(workDir, 'mcp-consent.json'));
+    await mcpAdd(
+      { name: 'pre-approved', command: 'x' },
+      { io: captureIO().io, store, consentStore },
+    );
+    expect(await consentStore.isApproved('pre-approved')).toBe(true);
+  });
+
+  test('add labels the scope in output', async () => {
+    const store = createMCPConfigStore(storePath);
+    const consentStore = createMCPConsentStore(join(workDir, 'mcp-consent.json'));
+    const cap = captureIO();
+    await mcpAdd(
+      { name: 's', command: 'x' },
+      { io: cap.io, store, consentStore, scope: 'project' },
+    );
+    expect(cap.stdout).toContain('[scope: project]');
+  });
+});
+
+describe('mcp approve / revoke', () => {
+  test('approve flips the consent bit + revoke flips it back', async () => {
+    const consentStore = createMCPConsentStore(join(workDir, 'mcp-consent.json'));
+    const ap = captureIO();
+    expect(await mcpApprove('new-server', { io: ap.io, consentStore })).toBe(0);
+    expect(ap.stdout).toContain('approved');
+    expect(await consentStore.isApproved('new-server')).toBe(true);
+
+    const rv = captureIO();
+    expect(await mcpRevoke('new-server', { io: rv.io, consentStore })).toBe(0);
+    expect(rv.stdout).toContain('revoked');
+    expect(await consentStore.isApproved('new-server')).toBe(false);
+  });
+
+  test('revoke returns 1 when nothing was approved under that name', async () => {
+    const consentStore = createMCPConsentStore(join(workDir, 'mcp-consent.json'));
+    const cap = captureIO();
+    expect(await mcpRevoke('never-approved', { io: cap.io, consentStore })).toBe(1);
+    expect(cap.stderr).toContain('not approved');
   });
 });

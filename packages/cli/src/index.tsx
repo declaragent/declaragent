@@ -34,7 +34,8 @@ import { fleetStatus } from './fleet-status-cli.js';
 import { type InitOptions, InitWizard, type WizardResult, runInit } from './init-wizard.js';
 import { logs as tailLogs } from './logs-cli.js';
 import { mailboxDepth, mailboxDrain } from './mailbox-cli.js';
-import { mcpAdd, mcpList, mcpRemove } from './mcp-cli.js';
+import { mcpAdd, mcpApprove, mcpList, mcpRemove, mcpRevoke } from './mcp-cli.js';
+import type { MCPScope } from './mcp-runtime.js';
 import { migrateConfig } from './migrate-cli.js';
 import { pluginInfo, pluginInstall, pluginList, pluginRemove } from './plugin-cli.js';
 import { PluginConsent } from './plugin-consent.js';
@@ -358,15 +359,34 @@ async function runMcpSubcommand(
     }
     return mcpRemove(name);
   }
+  if (action === 'approve') {
+    const name = rest[0];
+    if (!name) {
+      process.stderr.write('usage: declaragent mcp approve <name>\n');
+      return 1;
+    }
+    return mcpApprove(name);
+  }
+  if (action === 'revoke') {
+    const name = rest[0];
+    if (!name) {
+      process.stderr.write('usage: declaragent mcp revoke <name>\n');
+      return 1;
+    }
+    return mcpRevoke(name);
+  }
   if (action === 'add') {
     const name = rest[0];
     if (!name) {
-      process.stderr.write('usage: declaragent mcp add <name> --command <cmd> [--args a,b,c]\n');
+      process.stderr.write(
+        'usage: declaragent mcp add <name> --command <cmd> [--args a,b,c] [--scope user|project|local]\n',
+      );
       return 1;
     }
     let command: string | undefined;
     let argsList: string[] | undefined;
     let protocolVersion: string | undefined;
+    let scope: MCPScope = 'user';
     for (let i = 1; i < rest.length; i += 1) {
       const flag = rest[i];
       const value = rest[i + 1];
@@ -379,18 +399,28 @@ async function runMcpSubcommand(
       } else if (flag === '--protocol' || flag === '--protocol-version') {
         protocolVersion = value;
         i += 1;
+      } else if (flag === '--scope') {
+        if (value !== 'user' && value !== 'project' && value !== 'local') {
+          process.stderr.write(`--scope must be one of user|project|local (got "${value}")\n`);
+          return 1;
+        }
+        scope = value;
+        i += 1;
       }
     }
     if (!command) {
       process.stderr.write('--command is required for `mcp add`\n');
       return 1;
     }
-    return mcpAdd({
-      name,
-      command,
-      ...(argsList ? { args: argsList } : {}),
-      ...(protocolVersion ? { protocolVersion } : {}),
-    });
+    return mcpAdd(
+      {
+        name,
+        command,
+        ...(argsList ? { args: argsList } : {}),
+        ...(protocolVersion ? { protocolVersion } : {}),
+      },
+      { scope },
+    );
   }
   process.stderr.write(`unknown mcp subcommand: ${action ?? '(none)'}\n`);
   return 1;

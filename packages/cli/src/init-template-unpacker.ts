@@ -224,6 +224,13 @@ export function unpackTemplate(opts: UnpackOptions, fs: UnpackFS = DEFAULT_FS): 
       path: join(opts.outDir, 'README.md'),
       contents: stub.readme,
     },
+    // Empty project-scope MCP config so teams can share a git-tracked
+    // list of servers the agent needs. `declaragent mcp add --scope
+    // project` appends to this file.
+    {
+      path: join(opts.outDir, '.mcp.json'),
+      contents: `${JSON.stringify({ version: 1, servers: [] }, null, 2)}\n`,
+    },
   ];
   if (opts.multiTenant) {
     const tenantId = opts.tenantId ?? 'default';
