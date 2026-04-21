@@ -37,6 +37,7 @@ import {
   createEngine,
   createEventDispatcher,
   createExtensionRegistry,
+  createHookRegistry,
   createPermissionGate,
   createSendMessageTool,
   createSqliteSessionStore,
@@ -54,6 +55,7 @@ import {
   startMCPServers,
 } from './mcp-runtime.js';
 import { sessionsDbPath } from './paths.js';
+import { type PluginRuntime, startPluginRuntime } from './plugins-runtime.js';
 import { createProviderFromCreds } from './provider-factory.js';
 import { type StartAgentSourcesResult, startAgentSources } from './run-agent-sources.js';
 import {
@@ -228,6 +230,8 @@ interface RunningAgent {
   mcp?: MCPRuntime;
   /** Channel registry + mailbox for this agent; shutdown on stopAll. */
   channels?: ChannelRuntime;
+  /** Activated plugins (if any); deactivated on stopAll. */
+  plugins?: PluginRuntime;
   /**
    * Detach handle returned by `dispatcher.attach(bus)`. Only present
    * when the agent has an LLM provider configured + at least one
@@ -481,9 +485,10 @@ async function bringUp(
   // `outcome: pending` forever and the skill never runs. With it,
   // `target: {type: skill, name: X}` events flow into an engine turn.
   let detachDispatcher: (() => void) | undefined;
+  let plugins: PluginRuntime | undefined;
   if (sources.bus && runtime.provider) {
     try {
-      detachDispatcher = await attachDispatcherToAgent({
+      const attached = await attachDispatcherToAgent({
         loaded,
         runtime,
         sources,
@@ -491,6 +496,16 @@ async function bringUp(
         mcpTools: mcp.tools,
         ...(channelsRuntime && { channelsRuntime }),
       });
+      detachDispatcher = attached.detach;
+      plugins = attached.plugins;
+      if (plugins.activations.length > 0) {
+        io.out(
+          `  ${agentId}: ${plugins.activations.length} plugin(s) active (${plugins.tools.length} tool(s) contributed)\n`,
+        );
+      }
+      for (const s of plugins.skipped) {
+        io.out(`    note: plugin "${s.name}" skipped — ${s.reason}\n`);
+      }
     } catch (err) {
       // A dispatcher-attach failure used to manifest as "events sit
       // forever in `pending`" with no signal. Surface the actual
@@ -515,6 +530,7 @@ async function bringUp(
     logger,
     mcp,
     ...(channelsRuntime && { channels: channelsRuntime }),
+    ...(plugins && { plugins }),
     ...(detachDispatcher !== undefined && { detachDispatcher }),
   };
 }
@@ -531,6 +547,11 @@ async function bringUp(
  * the outcome would quietly stay `null` — the symptom user hit in
  * the fleet test.
  */
+interface AttachDispatcherResult {
+  detach: () => void;
+  plugins: PluginRuntime;
+}
+
 async function attachDispatcherToAgent(opts: {
   loaded: LoadedAgent;
   runtime: UpRuntime;
@@ -538,14 +559,20 @@ async function attachDispatcherToAgent(opts: {
   logger: AgentLogger;
   mcpTools?: readonly import('@declaragent/core').Tool[];
   channelsRuntime?: ChannelRuntime;
-}): Promise<() => void> {
+}): Promise<AttachDispatcherResult> {
   const { loaded, runtime, sources, logger, mcpTools, channelsRuntime } = opts;
   const bus = sources.bus;
   const eventStore = sources.eventStore;
+  const emptyPluginRuntime: PluginRuntime = {
+    tools: [],
+    activations: [],
+    skipped: [],
+    shutdown: async () => {},
+  };
   if (!bus) {
     // Shouldn't happen — caller checks before invoking — but keep
     // the type-narrow explicit.
-    return () => {};
+    return { detach: () => {}, plugins: emptyPluginRuntime };
   }
 
   const spec: AgentSpec = {
@@ -564,8 +591,29 @@ async function attachDispatcherToAgent(opts: {
     await registry.register(skillExtension(skill));
   }
 
+  // Activate every consented plugin BEFORE the engine is constructed so
+  // plugin-contributed tools reach the tool array and plugin skills are
+  // visible to the dispatcher's skill lookup.
+  const hookRegistry = createHookRegistry({ logger: coreLogger });
+  const plugins = await startPluginRuntime({
+    registry,
+    hookRegistry,
+    logger: coreLogger,
+  });
+  if (plugins.activations.length > 0) {
+    logger.write({
+      level: 'info',
+      event: 'plugins.activated',
+      count: plugins.activations.length,
+      tools: plugins.tools.length,
+    });
+  }
+  for (const s of plugins.skipped) {
+    logger.write({ level: 'warn', event: 'plugins.skipped', name: s.name, reason: s.reason });
+  }
+
   const provider = runtime.provider;
-  if (!provider) return () => {};
+  if (!provider) return { detach: () => {}, plugins };
 
   const extraTools: import('@declaragent/core').Tool[] = [];
   if (channelsRuntime !== undefined) {
@@ -576,6 +624,7 @@ async function attachDispatcherToAgent(opts: {
       }) as import('@declaragent/core').Tool,
     );
   }
+  extraTools.push(...plugins.tools);
 
   const engine = createEngine({
     provider,
@@ -586,6 +635,7 @@ async function attachDispatcherToAgent(opts: {
       }),
     ],
     permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+    hookRegistry,
     createChildSession: () => runtime.sessionStore.create(spec),
   });
 
@@ -643,7 +693,7 @@ async function attachDispatcherToAgent(opts: {
     skills: loaded.skills.length,
     skillNames: loaded.skills.map((s) => s.lookupName),
   });
-  return unsub;
+  return { detach: unsub, plugins };
 }
 
 function printBanner(io: UpIO, agent: RunningAgent): void {
@@ -667,6 +717,11 @@ async function stopAll(running: RunningAgent[]): Promise<void> {
       r.detachDispatcher?.();
     } catch {
       // swallow — best-effort
+    }
+    try {
+      await r.plugins?.shutdown();
+    } catch {
+      // swallow — best-effort shutdown
     }
     try {
       await r.sources.stop();
