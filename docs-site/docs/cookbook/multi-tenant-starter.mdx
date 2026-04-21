@@ -26,12 +26,13 @@ Canonical starter: [`templates/multi-tenant-starter/`](https://github.com/declar
 ## Smoke-test
 
 ```bash
-declaragent daemon &
+declaragent up -d
 declaragent tenants list
 declaragent tenants show acme-prod
 declaragent tenants diff                  # shows pending config changes
 declaragent audit verify --tenant acme-prod --json
 declaragent secrets list --provider vault --json
+declaragent down                          # when finished
 ```
 
 Cross-tenant boundary-violation test:

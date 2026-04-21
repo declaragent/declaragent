@@ -41,7 +41,12 @@ Usage:
 
   declaragent extensions
 
-  declaragent daemon
+  declaragent up [-d|--detach] [-f <path>]         # bring agents online (compose-like)
+  declaragent down                                  # stop agents brought up by \`up\`
+  declaragent ps                                    # list bound agents + sources
+  declaragent logs [-f|--follow] [<agent-id>]       # tail per-agent event logs
+
+  declaragent daemon                                # legacy user-global daemon
   declaragent daemon-status
   declaragent daemon-reload
   declaragent daemon-shutdown [--no-drain]

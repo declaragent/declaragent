@@ -6,7 +6,7 @@ sidebar_label: Two tenants, one daemon
 
 # Run two tenants on one daemon
 
-Multi-tenancy is a first-class primitive. One `declaragent daemon` process can host N tenants with isolated:
+Multi-tenancy is a first-class primitive. One `declaragent up` process can host N tenants with isolated:
 
 - Session state (`(tenantId, sessionId)` is the composite key after slice 0).
 - Message bus (per-tenant bus strategy — no cross-tenant leaks).
@@ -46,7 +46,7 @@ tenants:
 ## Verify
 
 ```bash
-declaragent daemon &
+declaragent up -d
 declaragent tenants list
 declaragent tenants show acme-prod
 declaragent tenants show beta-tenant

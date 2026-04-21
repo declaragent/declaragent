@@ -36,11 +36,18 @@ See the canonical starter at [`templates/concierge/`](https://github.com/declara
 ## Run locally
 
 ```bash
-declaragent daemon &
-declaragent
+declaragent up -d    # bind Slack channel + event-sources, detach to the background
+declaragent ps       # confirm the concierge is bound
+declaragent logs -f  # watch events fire in real time
 ```
 
-Mention the bot in a channel — the agent greets, reads the repo, and replies in-thread.
+Mention the bot in a channel — the agent greets, reads the repo, and replies in-thread. `declaragent down` stops the agent when you're finished.
+
+If you prefer a foreground REPL session instead of `up -d`:
+
+```bash
+declaragent up       # foreground; Ctrl-C to stop
+```
 
 ## Key points
 

@@ -12,6 +12,8 @@ import TabItem from '@theme/TabItem';
 
 Three install paths. Pick whichever fits your machine — all three produce the same `declaragent` binary on your `$PATH`.
 
+Since 0.4.1, a second alias `d9t` is installed alongside `declaragent` — same launcher, same flags, shorter to type. Use either.
+
 <Tabs groupId="installer">
 <TabItem value="curl" label="curl">
 
@@ -74,7 +76,11 @@ Knobs are delegated to the curl installer — the formula's `install` block simp
 
 ```bash
 declaragent --version
-# declaragent 1.0.0
+# declaragent 0.4.1
+
+# The d9t alias works the same way:
+d9t --version
+# declaragent 0.4.1
 ```
 
 If the binary is on your `$PATH` and prints a version, you're done. Next: [your first agent](/quickstart/first-agent).

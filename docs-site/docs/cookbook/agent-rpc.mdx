@@ -46,15 +46,23 @@ the whole chain.
 ## Run locally — single process
 
 Leave `KAFKA_BROKERS` unset in both `.env` files. Both agents share an
-in-memory broker:
+in-memory broker.
+
+If you've scaffolded them under a `fleet.yaml`, bring the whole fleet
+up in one command:
 
 ```bash
-declaragent run \
-  --agent rpc-client/agent.yaml \
-  --agent rpc-server/agent.yaml
+declaragent up
 ```
 
-Use the REPL to trigger a review:
+Or, for cross-process RPC within one terminal, use `fleet run` which
+shares an in-memory bus:
+
+```bash
+declaragent fleet run --agent rpc-client --agent rpc-server
+```
+
+Trigger a review via the REPL (from the client side):
 
 ```
 > Please review https://github.com/acme/app/pull/42
@@ -72,14 +80,17 @@ for the commented-out `kind: kafka` block.
 Terminal 1 (server first):
 
 ```bash
-cd rpc-server && declaragent run
+cd rpc-server && declaragent up
 ```
 
 Terminal 2:
 
 ```bash
-cd rpc-client && declaragent run
+cd rpc-client && declaragent up
 ```
+
+`declaragent down` in either terminal stops that agent's sources; `ps`
+shows what's currently bound; `logs -f` tails the per-agent event log.
 
 ## What's in the client
 

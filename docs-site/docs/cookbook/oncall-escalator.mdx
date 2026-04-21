@@ -41,12 +41,13 @@ Canonical starter: [`templates/oncall-escalator/`](https://github.com/declaragen
 ## Run locally
 
 ```bash
-declaragent daemon &
+declaragent up -d
 # simulate an alert:
 curl -X POST http://localhost:8787/webhooks/alertmanager \
   -H "X-Alertmanager-Fingerprint: test-123" \
   -H "X-Signature: $(cat fixtures/mock-alert.sig)" \
   --data @fixtures/mock-alert.json
+declaragent logs -f        # watch the triage + DM fire
 ```
 
 The agent triages the alert (reads the runbook links, checks severity) and DMs the on-call engineer on Slack.

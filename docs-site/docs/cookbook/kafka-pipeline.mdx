@@ -23,7 +23,7 @@ Canonical starter: [`templates/kafka-pipeline/`](https://github.com/declaragent/
 ```bash
 cd kafka-pipeline
 docker compose up -d                       # Redpanda single-broker
-declaragent daemon &
+declaragent up -d                          # bind kafka source + start the pipeline
 # produce a test event
 rpk topic produce orders.created --brokers localhost:19092 \
   < fixtures/order.json

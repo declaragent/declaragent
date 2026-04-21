@@ -56,6 +56,19 @@ declaragent
 
 This starts the interactive REPL. Ask it anything about the current directory — the `concierge` template lets the agent use the built-in `Read` / `Glob` / `Grep` tools to find answers.
 
+## Run it as a service
+
+Once you've added an `event-sources.yaml` (webhook, cron, or file-watch), bring the agent online with the docker-compose-style lifecycle verbs:
+
+```bash
+declaragent up -d        # start in the background; prints a pid
+declaragent ps           # shows which agents are bound + their sources
+declaragent logs -f      # tail per-agent event logs
+declaragent down         # stop everything
+```
+
+`up` without `-d` runs in the foreground and exits on Ctrl-C. Re-running `up` while something's already bound reloads — the old process stops cleanly before the new one binds. State lives under `~/.declaragent/` (`up.pid`, `up-state.json`, `logs/<agent-id>.log`).
+
 ## Screenshots
 
 _Screenshot: init wizard provider picker — placeholder, landing 2026-Q2._

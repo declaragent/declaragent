@@ -22,7 +22,15 @@ A **declarative, git-versioned AI agent platform**. An agent is a stable runtime
 
 ## Status
 
-This site tracks **v1.0.0** (release candidate). See the [changelog](https://github.com/declaragent/declaragent/releases) for the per-slice deltas.
+This site tracks **v0.4.1** (latest on npm). See the [changelog](https://github.com/declaragent/declaragent/releases) for the per-release deltas.
+
+## What's new in 0.4
+
+- **`declaragent up / down / ps / logs`** _(0.4.1)_ — docker-compose-style lifecycle for bringing agents online. `up` reads `fleet.yaml` or `agent.yaml` in the cwd, binds every declared source (webhook, cron, file-watch), and runs until `down`. See [first agent → run as a service](/quickstart/first-agent).
+- **`d9t` alias** _(0.4.1)_ — `d9t up` works everywhere `declaragent up` does. Same launcher.
+- **Complete builder-tool matrix** _(0.4.0)_ — `DeclaraAddSource` / `DeclaraAddChannel` / `DeclaraAddMCP` / `DeclaraAddPlugin` now ship, so the builder can author an end-to-end agent (skills + sources + channels + MCP + plugins + secrets + peers) entirely through conversation. See the [builder reference](/reference/builder).
+- **`declaragent fleet run`** _(0.4.0)_ — now runs real LLM turns per RPC (previously a stub echoing the envelope payload).
+- **REPL UX polish** _(0.4.1)_ — bracketed-paste for multi-line input, `/prompt <path>`, `@<path>` file-ref expansion, bare-letter y/n shortcuts for pending proposals. See the [builder reference → REPL input UX](/reference/builder).
 
 <div className="todo-block">
 [placeholder — landing 2026-Q2] Marketing copy + hero screenshot land with

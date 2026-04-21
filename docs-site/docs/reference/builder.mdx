@@ -30,6 +30,10 @@ scope is resolved at session startup in this order: nearest
 | --- | --- |
 | `DeclaraAddSkill({ name, description, body, inputs?, outputs?, agentPath?, addToAgentYaml?, confirmOutsideScope? })` | Author a skill. Writes `<agentPath>/skills/<name>.md` + surgically appends the ref to `agent.yaml` (preserves comments). Refuses bodies that look like leaked secrets. |
 | `DeclaraAddSecret({ ref, provider, usedBy?, tenantScope?, agentPath? })` | Reserve a secret slot. **Never accepts a value** — derives a `DECLARA_*` env-var name, appends a commented block to `.env.example`, and returns an actionable hint. Validates the provider is declared in `secrets.yaml` for non-env providers. |
+| `DeclaraAddSource({ type, id, config, agentPath? })` _(0.4.0)_ | Author an event source on the agent's `event-sources.yaml`. Round-trips through core's loader + the in-process webhook/cron/file-watch adapters; rolls the file back on validation failure. External-broker types (kafka/nats/sqs/amqp/mqtt) pass through structurally and surface as `external: true` so the REPL can hint the user to install the matching adapter. |
+| `DeclaraAddChannel({ type, id, config })` _(0.4.0)_ | Register a user-facing channel (slack / telegram / discord / whatsapp) in the user-global `~/.declaragent/channels.json`. Scope note: channels are shared across agents, not per-scaffold — the tool's hint makes this explicit. Inline structural validation; adapter-level checks stay in `declaragent channels validate`. |
+| `DeclaraAddMCP({ name, command, args?, env?, protocolVersion? })` _(0.4.0)_ | Register a stdio MCP server in the user-global `~/.declaragent/mcp-servers.json`. Mirrors `declaragent mcp add`; refuses duplicates by name. Tools contributed by the server appear as `mcp__<name>__<tool>` after the next REPL restart. |
+| `DeclaraAddPlugin({ pluginPath, confirmOutsideScope? })` _(0.4.0)_ | Install a local plugin into the user-global `~/.declaragent/plugins.json`. Reads + validates `<pluginPath>/plugin.json` via core's loader, records the manifest's declared permissions as `consentedPermissions` — the user's `/yes` on the surrounding proposal IS the consent. |
 | `DeclaraFleetAdd({ template, id?, force?, fleetRoot? })` | Scaffold a new agent into the current fleet from a named template. Wraps the same `addAgentFromTemplate` the CLI verb uses. |
 | `DeclaraAddPeer({ agent, transports, fleetRoot? })` | Append or merge a peer entry in `rpc-peers.yaml`. Preserves comments via `yaml.parseDocument`; validates the final file against core's `peersConfigSchema`. |
 | `DeclaraAuthPlaybook({ provider })` | Return a concise markdown playbook for a supported provider. Pure lookup. Supported: `anthropic`, `openai`, `github`, `slack`, `vault`. |
@@ -134,6 +138,15 @@ Every `DeclaraApplyChange` emits:
 All records share a correlation id so `/history` threads them. The
 hash-chain stays verifiable through `DeclaraAuditVerify({ tenant })`
 or `declaragent audit verify` outside the REPL.
+
+## REPL input UX _(0.4.1)_
+
+Four conversational-flow helpers make long prompts + proposals feel natural:
+
+- **Bracketed paste.** Paste a multi-line prompt into the REPL and every line lands in the input atomically. The REPL enables `CSI ?2004h` on startup and owns a parallel stdin listener that watches for the paste markers; embedded `\n` mid-paste no longer fires submit. Works out of the box in every modern terminal (iTerm2, Terminal.app, Alacritty, Ghostty, VS Code's integrated terminal, tmux). Terminals without bracketed-paste support degrade gracefully.
+- **`/prompt <path>`.** Read a file and submit its contents verbatim as your next user message. Useful for prompts that outgrow a single paste buffer, or for reusing a saved brief.
+- **`@<path>` file refs.** Mention a file inline (`please summarise @README.md`) — the REPL inlines the file contents in a fenced block before sending to the model. Supports absolute, relative (resolved from cwd), and `~/` paths. Dedupes repeated tokens; truncates attachments at 256KB; leaves emails (`user@host.com`) alone.
+- **Bare-letter proposal shortcuts.** When a proposal is pending, a bare `y` / `yes` / `n` / `no` submission routes as `/yes` / `/no`. Explicit-yes proposals (deploys, audit erasures) still require the full phrase — the shortcut bows out safely. The typed `/edit <n> <replacement>` path stays unchanged for revising steps.
 
 ## Environment variables
 
