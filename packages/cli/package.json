@@ -5,7 +5,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "declaragent": "./bin/declaragent.js"
+    "declaragent": "./bin/declaragent.js",
+    "d9t": "./bin/declaragent.js"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",

@@ -18,6 +18,7 @@ import {
 import { daemonReload, daemonShutdown, daemonStart, daemonStatus } from './daemon-cli.js';
 import { deployGcpCloudRun, verifyGcpCloudRunDeploy } from './deploy-cli.js';
 import { dlqList, dlqRedrive, dlqShow } from './dlq-cli.js';
+import { down } from './down-cli.js';
 import { eventsList, eventsReplay, eventsReplayRange, eventsShow } from './events-cli.js';
 import { eventsConfigValidate } from './events-config-cli.js';
 import { extensionsList } from './extensions-cli.js';
@@ -31,18 +32,20 @@ import { fleetDemote, fleetPromote } from './fleet-promote-cli.js';
 import { fleetRun } from './fleet-run.js';
 import { fleetStatus } from './fleet-status-cli.js';
 import { type InitOptions, InitWizard, type WizardResult, runInit } from './init-wizard.js';
+import { logs as tailLogs } from './logs-cli.js';
 import { mailboxDepth, mailboxDrain } from './mailbox-cli.js';
 import { mcpAdd, mcpList, mcpRemove } from './mcp-cli.js';
 import { migrateConfig } from './migrate-cli.js';
 import { pluginInfo, pluginInstall, pluginList, pluginRemove } from './plugin-cli.js';
 import { PluginConsent } from './plugin-consent.js';
 import { type ProviderPreset, getPreset, listPresets } from './providers-registry.js';
-import { runAgent } from './run-agent-cli.js';
+import { ps as listUp } from './ps-cli.js';
 import { secretsDescribe, secretsList, secretsRotate } from './secrets-cli.js';
 import { skillList } from './skill-cli.js';
 import { sourceAdaptersList } from './source-adapters-cli.js';
 import { sourceAdd, sourceList, sourceRemove } from './source-cli.js';
 import { tenantsDiff, tenantsList, tenantsShow } from './tenants-cli.js';
+import { DETACHED_SENTINEL, up } from './up-cli.js';
 import { CLI_VERSION } from './version.js';
 
 interface ParsedArgs {
@@ -111,7 +114,12 @@ Usage:
 
   declaragent extensions
 
-  declaragent daemon
+  declaragent up [-d|--detach] [-f <path>]         # bring agents online (compose-like)
+  declaragent down                                  # stop agents brought up by \`up\`
+  declaragent ps                                    # list bound agents + sources
+  declaragent logs [-f|--follow] [<agent-id>]       # tail per-agent event logs
+
+  declaragent daemon                                # legacy user-global daemon
   declaragent daemon-status
   declaragent daemon-reload
   declaragent daemon-shutdown [--no-drain]
@@ -409,36 +417,39 @@ if (subcommand === 'daemon') {
   const code = await daemonStart();
   process.exit(code);
 }
-if (subcommand === 'run') {
-  // `declaragent run [<dir>]` — load a scaffolded agent + drop into
-  // a REPL with that persona. 0.3.5 wires in-process event sources
-  // (webhook / cron / file-watch); kafka/nats/etc. remain daemon-only.
+if (subcommand === 'up') {
+  // `declaragent up [-d] [-f <path>]` — Docker-Compose-style lifecycle.
+  // Discovers fleet.yaml or agent.yaml in cwd (or -f override), brings
+  // every declared source online, and persists state for `ps` / `logs`
+  // / `down` to consume. `--__detached` is the sentinel the detached
+  // child sees so it doesn't recursively re-spawn.
+  const detach = argv.includes('-d') || argv.includes('--detach');
+  const __detached = argv.includes(DETACHED_SENTINEL);
+  const fIdx = argv.findIndex((a) => a === '-f' || a === '--file');
+  const manifestPath = fIdx >= 0 ? argv[fIdx + 1] : undefined;
+  const upArgs: Parameters<typeof up>[0] = {};
+  if (manifestPath !== undefined) upArgs.manifestPath = manifestPath;
+  if (detach) upArgs.detach = true;
+  if (__detached) upArgs.__detached = true;
+  const code = await up(upArgs);
+  process.exit(code);
+}
+if (subcommand === 'down') {
+  const code = await down();
+  process.exit(code);
+}
+if (subcommand === 'ps') {
+  const code = await listUp();
+  process.exit(code);
+}
+if (subcommand === 'logs') {
   const positional = argv.slice(1).filter((a) => !a.startsWith('-'));
-  const dir = positional[0];
-  const noSources = argv.includes('--no-sources');
-  const runArgs: Parameters<typeof runAgent>[0] = {};
-  if (dir !== undefined) runArgs.dir = dir;
-  if (args.model !== undefined) runArgs.model = args.model;
-  if (noSources) runArgs.noSources = true;
-  const code = await runAgent(runArgs, {
-    renderRepl: async (props) => {
-      const appProps: {
-        agentSpec: typeof props.agentSpec;
-        agentLabel: string;
-        initialMode?: PermissionMode;
-        model?: string;
-      } = {
-        agentSpec: props.agentSpec,
-        agentLabel: props.agentLabel,
-      };
-      if (args.mode) appProps.initialMode = args.mode;
-      if (props.model) appProps.model = props.model;
-      // Awaiting `waitUntilExit()` lets `runAgent`'s finally-block
-      // stop event sources after the REPL closes, not during it.
-      const instance = render(<App {...appProps} />, { exitOnCtrlC: false });
-      await instance.waitUntilExit();
-    },
-  });
+  const agentId = positional[0];
+  const follow = argv.includes('-f') || argv.includes('--follow');
+  const logsArgs: Parameters<typeof tailLogs>[0] = {};
+  if (agentId !== undefined) logsArgs.agentId = agentId;
+  if (follow) logsArgs.follow = true;
+  const code = await tailLogs(logsArgs);
   process.exit(code);
 }
 if (subcommand === 'daemon-status') {
