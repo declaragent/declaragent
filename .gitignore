@@ -24,3 +24,8 @@ coverage
 # by CI). The public Docusaurus surface remains at `docs-site/docs/`.
 # Compiled standalone binary (built by `bun build --compile`; 62 MB)
 packages/cli/bin/declaragent-binary/
+# chaos:quick report artifacts (testkit/scripts/chaos-quick.ts writes
+# timestamped JSON + Markdown reports on every run; CI uploads them
+# as artifacts, local runs should not clutter the tree).
+packages/testkit/chaos-report.*.json
+packages/testkit/chaos-report.*.md

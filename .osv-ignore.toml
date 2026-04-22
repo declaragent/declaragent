@@ -1,0 +1,20 @@
+# OSV-Scanner ignore list (TOML — osv-scanner's expected format).
+#
+# Each [[IgnoredVulns]] block MUST have:
+#   - id      : GHSA-xxxx or CVE-yyyy-NNNN identifier
+#   - reason  : one-line justification (links to the issue tracker OK)
+#   - expires : RFC-3339 date after which the entry is invalid
+#
+# CI (deps-scan.yml) fails the build when any entry's `expires` is in
+# the past, or when required fields are missing. Ignore expiry windows
+# SHOULD be ≤ 90 days to force periodic re-review — longer windows
+# require a note to the platform team.
+#
+# Slice 4 shipped an empty ignore list. Entries land only via a security
+# review ticket that captures the remediation plan.
+#
+# Example entry (uncomment + populate to skip a finding):
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-yyyy-zzzz"
+# reason = "https://github.com/declaragent/declaragent/issues/123 — false positive in dev-only dep"
+# expires = "2026-07-15"
