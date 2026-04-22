@@ -18,7 +18,12 @@ import {
 import { daemonReload, daemonShutdown, daemonStart, daemonStatus } from './daemon-cli.js';
 import { deployGcpCloudRun, verifyGcpCloudRunDeploy } from './deploy-cli.js';
 import { dlqList, dlqRedrive, dlqShow } from './dlq-cli.js';
-import { dlqDispatchDrop, dlqDispatchList, dlqDispatchShow } from './dlq-dispatch-cli.js';
+import {
+  dlqDispatchDrop,
+  dlqDispatchList,
+  dlqDispatchRequeue,
+  dlqDispatchShow,
+} from './dlq-dispatch-cli.js';
 import { down } from './down-cli.js';
 import { eventsList, eventsReplay, eventsReplayRange, eventsShow } from './events-cli.js';
 import { eventsConfigValidate } from './events-config-cli.js';
@@ -142,6 +147,10 @@ Usage:
   declaragent dlq list --source <id> [--since <ms>] [--limit <n>]
   declaragent dlq show --source <id> <entryId>
   declaragent dlq redrive --source <id> <entryId>
+  declaragent dlq list --kind dispatch [--reason <r>] [--min-attempts <n>] [--since <ms>] [--limit <n>]
+  declaragent dlq show --kind dispatch <eventId>
+  declaragent dlq drop --kind dispatch <eventId>
+  declaragent dlq requeue --kind dispatch <eventId> [--agent <id>]
 
   declaragent events-config validate [path]
 
@@ -625,6 +634,7 @@ async function runDlqSubcommand(
   let source: string | undefined;
   let reason: string | undefined;
   let minAttempts: number | undefined;
+  let agent: string | undefined;
   const positional: string[] = [];
   let since: number | undefined;
   let limit: number | undefined;
@@ -641,6 +651,9 @@ async function runDlqSubcommand(
       i += 1;
     } else if (arg === '--source' && value) {
       source = value;
+      i += 1;
+    } else if (arg === '--agent' && value) {
+      agent = value;
       i += 1;
     } else if (arg === '--reason' && value) {
       reason = value;
@@ -689,13 +702,20 @@ async function runDlqSubcommand(
       return dlqDispatchDrop(entryId);
     }
     if (action === 'requeue' || action === 'redrive') {
-      process.stderr.write(
-        'dlq requeue --kind dispatch is not yet wired — the up-process needs a control socket to publish the requeued event onto its live bus. Follow-up after Slice 5.\n',
-      );
-      return 1;
+      const entryId = positional[0];
+      if (!entryId) {
+        process.stderr.write(
+          'usage: declaragent dlq requeue --kind dispatch <eventId> [--agent <id>]\n',
+        );
+        return 1;
+      }
+      return dlqDispatchRequeue({
+        eventId: entryId,
+        ...(agent !== undefined && { agentId: agent }),
+      });
     }
     process.stderr.write(
-      `unknown dlq --kind dispatch subcommand: ${action ?? '(none)'}. Supported: list, show, drop.\n`,
+      `unknown dlq --kind dispatch subcommand: ${action ?? '(none)'}. Supported: list, show, drop, requeue.\n`,
     );
     return 1;
   }
