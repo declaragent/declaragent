@@ -165,6 +165,14 @@ export type {
   EventStoreListFilter,
   EventStoreRecord,
 } from './store.js';
+export { requeue } from './dlq.js';
+export type {
+  RequeueOptions,
+  RequeueRejectionReason,
+  RequeueResult,
+  RequeueResultErr,
+  RequeueResultOk,
+} from './dlq.js';
 export {
   computeNextFire,
   createCronAdapter,
