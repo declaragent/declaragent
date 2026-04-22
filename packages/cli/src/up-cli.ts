@@ -33,7 +33,11 @@ import {
   type AgentSpec,
   CircuitBreaker,
   type CircuitBreakerTransitionEvent,
+  type ControlSocketContext,
+  type ControlSocketServer,
+  type EventBus,
   type EventDispatcher,
+  type EventStore,
   type LLMProvider,
   type LoadedAgent,
   type Logger,
@@ -53,6 +57,7 @@ import {
   loadAgent,
   loadFleet,
   skillExtension,
+  startControlSocket,
   startPrometheusExporter,
   withProviderRateLimit,
 } from '@declaragent/core';
@@ -249,6 +254,21 @@ interface RunningAgent {
    * source; skill-only / creds-missing agents keep this undefined.
    */
   detachDispatcher?: () => void;
+  /**
+   * Control socket bound at `~/.declaragent/<agent-id>/control.sock`.
+   * Speaks the `ping`/`status`/`dlq.requeue`/`reload`/`shutdown` ops
+   * defined in {@link startControlSocket}. Closed during `stopAll`.
+   * @since 0.6.x
+   */
+  controlSocket?: ControlSocketServer;
+  /**
+   * ms-epoch of the last event the agent's bus observed. Updated by a
+   * wildcard subscriber installed when the socket is bound so `status`
+   * can report `lastEventAt` without re-reading the event store.
+   */
+  lastEventAt?: number;
+  /** Unsubscribe the lastEventAt-tracker subscriber on shutdown. */
+  detachLastEventTracker?: () => void;
 }
 
 /**
@@ -606,7 +626,7 @@ async function bringUp(
     });
   }
 
-  return {
+  const running: RunningAgent = {
     summary: { id: agentId, path: agentDir, sources: summary },
     sources,
     logger,
@@ -615,6 +635,131 @@ async function bringUp(
     ...(plugins && { plugins }),
     ...(detachDispatcher !== undefined && { detachDispatcher }),
   };
+
+  // Bind the control socket (§3 item #6 of the Enterprise Production
+  // Plan). One socket per agent at `~/.declaragent/<id>/control.sock`;
+  // speaks the ping/status/dlq.requeue/reload/shutdown ops.
+  //
+  // Failure here is non-fatal — we'd rather let `up` run without a
+  // socket than refuse to start. A `ps` fall-through still works via
+  // the `up-state.json` snapshot.
+  try {
+    const socket = await bindControlSocket({
+      agentId,
+      running,
+      ...(sources.bus && { bus: sources.bus }),
+      ...(sources.eventStore && { eventStore: sources.eventStore }),
+      logger,
+    });
+    if (socket) {
+      running.controlSocket = socket.server;
+      if (socket.detachLastEventTracker) {
+        running.detachLastEventTracker = socket.detachLastEventTracker;
+      }
+      io.out(`  ${agentId}: control socket ${socket.server.socketPath}\n`);
+    }
+  } catch (err) {
+    io.err(
+      `⚠ ${agentId}: control socket failed to bind — ${err instanceof Error ? err.message : String(err)}. Continuing without it.\n`,
+    );
+  }
+
+  return running;
+}
+
+/**
+ * Bind the per-agent control socket. Returns `null` when binding
+ * silently opts out. The returned server is stored on `RunningAgent`
+ * and closed during `stopAll`.
+ *
+ * Why a helper: `bringUp` already has enough going on, and the
+ * closure over `running` / `lastEventAt` is awkward inline.
+ *
+ * @since 0.6.x
+ */
+async function bindControlSocket(opts: {
+  agentId: string;
+  running: RunningAgent;
+  bus?: EventBus;
+  eventStore?: EventStore;
+  logger: AgentLogger;
+}): Promise<{
+  server: ControlSocketServer;
+  detachLastEventTracker?: () => void;
+} | null> {
+  const { agentId, running, bus, eventStore, logger } = opts;
+  const startedAt = Date.now();
+
+  // Install the lastEventAt tracker only when a bus exists. Skill-only
+  // agents never see events so the field stays `undefined`.
+  let detachLastEventTracker: (() => void) | undefined;
+  if (bus) {
+    detachLastEventTracker = bus.subscribe('*', () => {
+      running.lastEventAt = Date.now();
+    });
+  }
+
+  const context: ControlSocketContext = {
+    agentId,
+    pid: process.pid,
+    startedAt,
+    sources: () => {
+      // Map the started summary back to id/type pairs. We don't have
+      // direct refs to `EventSourceInstance` objects here (sources.ts
+      // doesn't surface them), and the control socket only needs the
+      // id+type so the stub below is type-compatible with what the
+      // `status` op extracts.
+      return running.sources.started.map(
+        (s) =>
+          ({
+            id: s.id,
+            type: s.type,
+            start: async () => {},
+            stop: async () => {},
+            pause: async () => {},
+            resume: async () => {},
+            health: async () => ({ status: 'ok' as const }),
+            metrics: () => ({ eventsPublished: 0, lastEventAt: null }),
+          }) as unknown as import('@declaragent/core').EventSourceInstance,
+      );
+    },
+    lastEventAt: () => running.lastEventAt,
+    ...(bus && { bus }),
+    ...(eventStore && { store: eventStore }),
+    reload: () => ({
+      reloaded: false,
+      reason: 'unsupported',
+      message:
+        'hot reload of sources is not implemented; restart `declaragent up` to apply changes',
+    }),
+    // shutdown is wired at the top-level `runForeground` so it reaches
+    // the whole up process, not just one agent. We leave it undefined
+    // here — a later PR (#3 DLQ requeue verb) can add a per-agent
+    // shutdown flag if needed.
+    logger: agentLoggerToCoreLogger(logger),
+  };
+
+  try {
+    const server = await startControlSocket({ context });
+    const result: {
+      server: ControlSocketServer;
+      detachLastEventTracker?: () => void;
+    } = { server };
+    if (detachLastEventTracker) {
+      result.detachLastEventTracker = detachLastEventTracker;
+    }
+    return result;
+  } catch (err) {
+    // Cleanup the subscriber if we installed one before the bind failed.
+    if (detachLastEventTracker) {
+      try {
+        detachLastEventTracker();
+      } catch {
+        // ignore
+      }
+    }
+    throw err;
+  }
 }
 
 /**
@@ -836,6 +981,18 @@ function printBanner(io: UpIO, agent: RunningAgent): void {
 
 async function stopAll(running: RunningAgent[]): Promise<void> {
   for (const r of running) {
+    // Close the control socket first so operators sending `shutdown`
+    // don't race an already-stopping daemon.
+    try {
+      r.detachLastEventTracker?.();
+    } catch {
+      // swallow — best-effort
+    }
+    try {
+      await r.controlSocket?.close();
+    } catch {
+      // swallow — best-effort shutdown
+    }
     try {
       r.detachDispatcher?.();
     } catch {

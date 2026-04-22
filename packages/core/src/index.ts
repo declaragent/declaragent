@@ -2,6 +2,28 @@ export const VERSION = '0.0.1';
 
 export type * from './types/index.js';
 export {
+  connectControlSocket,
+  controlSocketPath,
+  encodeControlSocketMessage,
+  handleControlSocketRequest,
+  isControlSocketRequest,
+  startControlSocket,
+} from './daemon/index.js';
+export type {
+  ControlSocketClient,
+  ControlSocketContext,
+  ControlSocketErrorBody,
+  ControlSocketOp,
+  ControlSocketReloadResult,
+  ControlSocketRequest,
+  ControlSocketRequestBase,
+  ControlSocketResponse,
+  ControlSocketResultByOp,
+  ControlSocketServer,
+  ControlSocketStatus,
+  StartControlSocketOptions,
+} from './daemon/index.js';
+export {
   DEFAULT_TENANT_CONTEXT,
   DEFAULT_TENANT_ID,
   QuotaExceededError,
@@ -251,6 +273,7 @@ export {
   frameEvent,
   handleControlRequest,
   hmacSha256Hex,
+  requeue,
   isControlRequest,
   listEventSources,
   parseCron,
@@ -347,6 +370,11 @@ export type {
   EventSourceTag,
   EventRejectionListFilter,
   EventRejectionRecord,
+  RequeueOptions,
+  RequeueRejectionReason,
+  RequeueResult,
+  RequeueResultErr,
+  RequeueResultOk,
   EventStore,
   EventStoreListFilter,
   EventStoreRecord,
