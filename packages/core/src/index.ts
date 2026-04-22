@@ -131,15 +131,29 @@ export type {
 } from './audit/index.js';
 export {
   createPrometheusRegistry,
+  metricsRoute,
+  startControlPlaneServer,
   startPrometheusExporter,
+  statusRoute,
 } from './observability/index.js';
 export type {
+  ControlPlaneRoute,
+  ControlPlaneServerHandle,
+  ControlPlaneServerInstance,
+  ControlPlaneServerListenOptions,
+  ControlPlaneServerOptions,
   CreatePrometheusRegistryOptions,
   PrometheusExporterListenOptions,
   PrometheusExporterOptions,
   PrometheusExporterServer,
   PrometheusHandle,
   PrometheusRegistry,
+  UpAgentMetricsRollup,
+  UpAgentStatus,
+  UpChannelStatus,
+  UpSourceStatus,
+  UpStatusProvider,
+  UpStatusSnapshot,
 } from './observability/index.js';
 export {
   DEFAULT_DENIAL_ESCALATION,

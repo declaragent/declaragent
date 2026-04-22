@@ -33,6 +33,7 @@ import {
   type AgentSpec,
   CircuitBreaker,
   type CircuitBreakerTransitionEvent,
+  type ControlPlaneServerHandle,
   type ControlSocketContext,
   type ControlSocketServer,
   type EventBus,
@@ -41,9 +42,9 @@ import {
   type LLMProvider,
   type LoadedAgent,
   type Logger,
-  type PrometheusHandle,
   type PrometheusRegistry,
   type Tracer,
+  type UpStatusSnapshot,
   createEngine,
   createEventDispatcher,
   createExtensionRegistry,
@@ -56,9 +57,11 @@ import {
   defaultRateForProvider,
   loadAgent,
   loadFleet,
+  metricsRoute,
   skillExtension,
+  startControlPlaneServer,
   startControlSocket,
-  startPrometheusExporter,
+  statusRoute,
   withProviderRateLimit,
 } from '@declaragent/core';
 import { resolveCredentials } from './auth.js';
@@ -402,25 +405,36 @@ async function runForeground(
   };
   writeUpState(state);
 
-  // Prometheus `/metrics` exporter. Shares `runtime.metrics` with every
+  // Control-plane HTTP listener. Shares `runtime.metrics` with every
   // agent's sources + channels so source/channel counters are scrapable
-  // from a single endpoint. Defaults: on in detached mode (port 9464),
-  // off in foreground mode unless `DECLARAGENT_METRICS_PORT` is set.
-  // Set `DECLARAGENT_METRICS_PORT=0` to disable in detached mode too.
-  // @since 0.6.0-slice.1
+  // from a single endpoint, AND serves the 0.7.0 `/status` snapshot so
+  // `declaragent fleet ps` can aggregate across hosts.
+  //
+  // Defaults: on in detached mode (port 9464), off in foreground mode
+  // unless `DECLARAGENT_METRICS_PORT` is set. Set
+  // `DECLARAGENT_METRICS_PORT=0` to disable in detached mode too.
+  //
+  // Slice 1 (this file) serves `/metrics` + `/status`. `/events`,
+  // `/dlq`, `/audit`, and `/logs` land in subsequent CONTROL_PLANE_PLAN
+  // slices on the same listener.
+  // @since 0.6.0-slice.1 (listener), 0.7.0-slice.1 (router + /status)
   const metricsPort = resolveMetricsPort(_args.__detached === true);
-  let metricsHandle: PrometheusHandle | null = null;
+  let controlPlaneHandle: ControlPlaneServerHandle | null = null;
   if (metricsPort > 0) {
     try {
-      metricsHandle = await startPrometheusExporter({
-        registry: runtime.metrics,
+      controlPlaneHandle = await startControlPlaneServer({
+        routes: [
+          metricsRoute(runtime.metrics),
+          statusRoute(() => buildUpStatusSnapshot(state, running)),
+        ],
         port: metricsPort,
         hostname: '127.0.0.1',
       });
-      io.out(`  metrics: http://127.0.0.1:${metricsHandle.port}/metrics\n`);
+      io.out(`  metrics: http://127.0.0.1:${controlPlaneHandle.port}/metrics\n`);
+      io.out(`  status:  http://127.0.0.1:${controlPlaneHandle.port}/status\n`);
     } catch (err) {
       io.err(
-        `⚠ metrics exporter failed to bind on :${metricsPort} — ${err instanceof Error ? err.message : String(err)}. Continuing without /metrics.\n`,
+        `⚠ control-plane exporter failed to bind on :${metricsPort} — ${err instanceof Error ? err.message : String(err)}. Continuing without HTTP endpoints.\n`,
       );
     }
   }
@@ -435,9 +449,9 @@ async function runForeground(
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
       io.out('\nshutting down…\n');
-      if (metricsHandle) {
+      if (controlPlaneHandle) {
         try {
-          await metricsHandle.close();
+          await controlPlaneHandle.close();
         } catch {
           // best-effort — never block shutdown on a stuck listener
         }
@@ -1116,6 +1130,54 @@ function resolveMetricsPort(isDetached: boolean): number {
     // because the caller logs a bind failure if it matters.
   }
   return isDetached ? 9464 : 0;
+}
+
+/**
+ * Assemble the JSON body served by the control-plane `/status` endpoint.
+ *
+ * Slice 1 scope: populate identity + source summaries from the already-
+ * written {@link UpState}. Channel readiness + live metrics rollups
+ * ({@link UpStatusSnapshot.agents}.channels / metrics) are emitted as
+ * stubs — the next slice plumbs them once the `RunningAgent` record
+ * learns to expose channel/breaker state directly. Consumers MUST
+ * tolerate empty channels + zeroed metrics as "not yet instrumented"
+ * rather than "none".
+ *
+ * The `cliVersion` is sourced from `DECLARAGENT_CLI_VERSION` when set
+ * (the release script injects it), else `'dev'`. Pulled fresh on every
+ * request so a rolling upgrade reflects the new version without a
+ * restart — cheap because the env is read once per `/status` scrape.
+ *
+ * @since 0.7.0-slice.1
+ */
+function buildUpStatusSnapshot(state: UpState, running: RunningAgent[]): UpStatusSnapshot {
+  const cliVersion = process.env.DECLARAGENT_CLI_VERSION ?? 'dev';
+  const startedAtMs = Date.parse(state.startedAt);
+  const nowMs = Date.now();
+  const uptimeMs = Number.isFinite(startedAtMs) ? Math.max(0, nowMs - startedAtMs) : 0;
+  return {
+    version: 1,
+    cliVersion,
+    pid: state.pid,
+    startedAt: state.startedAt,
+    manifestPath: state.manifestPath,
+    agents: running.map((r) => ({
+      id: r.summary.id,
+      path: r.summary.path,
+      uptimeMs,
+      sources: r.summary.sources.map((s) => ({
+        type: s.type,
+        id: s.id,
+        summary: s.summary,
+      })),
+      channels: [],
+      metrics: {
+        eventsDispatched: 0,
+        eventsRejected: 0,
+        breakerOpen: 0,
+      },
+    })),
+  };
 }
 
 /**
