@@ -159,6 +159,8 @@ export type {
 export { DEFAULT_EVENT_RETENTION_MS, createEventStore } from './store.js';
 export type {
   CreateEventStoreOptions,
+  EventRejectionListFilter,
+  EventRejectionRecord,
   EventStore,
   EventStoreListFilter,
   EventStoreRecord,

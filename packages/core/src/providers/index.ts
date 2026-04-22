@@ -28,3 +28,13 @@ export {
   withRetry,
 } from './retry.js';
 export type { RetryConfig } from './retry.js';
+export {
+  DEFAULT_PROVIDER_RATE_PER_SEC,
+  ProviderTokenBucket,
+  defaultRateForProvider,
+  withProviderRateLimit,
+} from './rate-limit.js';
+export type {
+  ProviderRateLimitOptions,
+  ProviderTokenBucketOptions,
+} from './rate-limit.js';

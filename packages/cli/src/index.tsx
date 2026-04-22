@@ -18,6 +18,7 @@ import {
 import { daemonReload, daemonShutdown, daemonStart, daemonStatus } from './daemon-cli.js';
 import { deployGcpCloudRun, verifyGcpCloudRunDeploy } from './deploy-cli.js';
 import { dlqList, dlqRedrive, dlqShow } from './dlq-cli.js';
+import { dlqDispatchDrop, dlqDispatchList, dlqDispatchShow } from './dlq-dispatch-cli.js';
 import { down } from './down-cli.js';
 import { eventsList, eventsReplay, eventsReplayRange, eventsShow } from './events-cli.js';
 import { eventsConfigValidate } from './events-config-cli.js';
@@ -133,7 +134,7 @@ Usage:
   declaragent daemon-reload
   declaragent daemon-shutdown [--no-drain]
 
-  declaragent events list [--kind <k>] [--last <n>] [--correlation <id>] [--outcome <kind>]
+  declaragent events list [--kind <k>] [--last <n>] [--correlation <id>] [--outcome <kind>] [--state circuit-open]
   declaragent events show <id>
   declaragent events replay <id>
   declaragent events replay-range --source <id> --from <ms> [--to <ms>] [--limit <n>] [--filter <expr>] [--no-dispatch]
@@ -542,6 +543,18 @@ async function runEventsSubcommand(
       } else if (flag === '--outcome' && value) {
         args.outcome = value as DispatchOutcome['kind'] | 'pending';
         i += 1;
+      } else if (flag === '--state' && value) {
+        // Slice 3 / PR 3.2 — high-level state filter. Currently only
+        // `circuit-open`, which narrows to rejected events whose reason
+        // is `circuit-open`.
+        if (value === 'circuit-open') {
+          args.state = value;
+        } else {
+          process.stderr.write(
+            `warning: unknown --state value "${value}"; supported: circuit-open. Ignoring.\n`,
+          );
+        }
+        i += 1;
       }
     }
     return eventsList(args);
@@ -605,16 +618,36 @@ async function runDlqSubcommand(
   action: string | undefined,
   rest: readonly string[],
 ): Promise<number> {
-  // Common flag: --source <id>
+  // `--kind` picks the DLQ surface. Default is `source` for backwards
+  // compat with 0.5.x behaviour. `dispatch` (Slice 5 / PR 5.2) routes
+  // to the SQLite-backed `rejected_events` table — no daemon socket.
+  let kind: 'source' | 'dispatch' = 'source';
   let source: string | undefined;
+  let reason: string | undefined;
+  let minAttempts: number | undefined;
   const positional: string[] = [];
   let since: number | undefined;
   let limit: number | undefined;
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
     const value = rest[i + 1];
-    if (arg === '--source' && value) {
+    if (arg === '--kind' && value) {
+      if (value === 'dispatch' || value === 'source') kind = value;
+      else {
+        process.stderr.write(
+          `warning: unknown --kind value "${value}"; supported: source, dispatch. Ignoring.\n`,
+        );
+      }
+      i += 1;
+    } else if (arg === '--source' && value) {
       source = value;
+      i += 1;
+    } else if (arg === '--reason' && value) {
+      reason = value;
+      i += 1;
+    } else if (arg === '--min-attempts' && value) {
+      const n = Number.parseInt(value, 10);
+      if (Number.isFinite(n) && n > 0) minAttempts = n;
       i += 1;
     } else if (arg === '--since' && value) {
       const n = Number.parseInt(value, 10);
@@ -628,6 +661,46 @@ async function runDlqSubcommand(
       positional.push(arg);
     }
   }
+
+  // Dispatch DLQ (Slice 5 / PR 5.2): direct SQLite reads.
+  if (kind === 'dispatch') {
+    if (action === 'list') {
+      return dlqDispatchList({
+        ...(reason !== undefined && { reason }),
+        ...(minAttempts !== undefined && { minAttempts }),
+        ...(since !== undefined && { sinceMs: since }),
+        ...(limit !== undefined && { limit }),
+      });
+    }
+    if (action === 'show') {
+      const entryId = positional[0];
+      if (!entryId) {
+        process.stderr.write('usage: declaragent dlq show --kind dispatch <eventId>\n');
+        return 1;
+      }
+      return dlqDispatchShow(entryId);
+    }
+    if (action === 'drop') {
+      const entryId = positional[0];
+      if (!entryId) {
+        process.stderr.write('usage: declaragent dlq drop --kind dispatch <eventId>\n');
+        return 1;
+      }
+      return dlqDispatchDrop(entryId);
+    }
+    if (action === 'requeue' || action === 'redrive') {
+      process.stderr.write(
+        'dlq requeue --kind dispatch is not yet wired — the up-process needs a control socket to publish the requeued event onto its live bus. Follow-up after Slice 5.\n',
+      );
+      return 1;
+    }
+    process.stderr.write(
+      `unknown dlq --kind dispatch subcommand: ${action ?? '(none)'}. Supported: list, show, drop.\n`,
+    );
+    return 1;
+  }
+
+  // Source DLQ (pre-existing path, IPC through the daemon socket).
   if (!source) {
     process.stderr.write(
       `usage: declaragent dlq ${action ?? '<subcommand>'} --source <id> [args]\n`,
@@ -838,19 +911,32 @@ async function runFleetSubcommand(
     }
     const strategyRaw = flagValue(rest, '--strategy');
     const strategy =
-      strategyRaw === 'rolling' || strategyRaw === 'all-or-nothing' || strategyRaw === 'per-agent'
+      strategyRaw === 'rolling' ||
+      strategyRaw === 'all-or-nothing' ||
+      strategyRaw === 'per-agent' ||
+      strategyRaw === 'canary'
         ? strategyRaw
         : undefined;
     const dryRun = flagSet(rest, '--dry-run');
     const rollback = flagSet(rest, '--rollback');
     const targetConfigPath = flagValue(rest, '--target-config');
+    // Canary soak override. `--canary` is a convenience flag equivalent
+    // to `--strategy canary`; `--canary-wait-ms <n>` overrides the
+    // default 60s soak. Both composable so operators can say
+    // `--canary --canary-wait-ms 120000`.
+    const canaryFlag = flagSet(rest, '--canary');
+    const canaryWaitMsRaw = flagValue(rest, '--canary-wait-ms');
+    const canaryWaitMs =
+      canaryWaitMsRaw !== undefined ? Number.parseInt(canaryWaitMsRaw, 10) : undefined;
+    const resolvedStrategy = canaryFlag ? 'canary' : strategy;
     return fleetDeploy({
       ...(target !== undefined && { target }),
       ...(agents.length > 0 && { agents }),
-      ...(strategy !== undefined && { strategy }),
+      ...(resolvedStrategy !== undefined && { strategy: resolvedStrategy }),
       ...(dryRun && { dryRun: true }),
       ...(rollback && { rollback: true }),
       ...(targetConfigPath !== undefined && { targetConfigPath }),
+      ...(Number.isFinite(canaryWaitMs) && { canaryWaitMs: canaryWaitMs as number }),
       json,
     });
   }

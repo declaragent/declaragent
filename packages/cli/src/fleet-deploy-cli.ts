@@ -209,6 +209,17 @@ export interface ExecuteDeployOptions {
   readonly fleetVersion: string;
   readonly logger: FleetCliIO;
   readonly previousRecord?: FleetDeployRecord;
+  /**
+   * Canary soak window. After the first agent deploys the executor
+   * waits this many ms, then re-runs its health probe before rolling
+   * out the rest. Only honored when `strategy === 'canary'`. Default
+   * 60s — long enough to catch slow-starting crashes, short enough
+   * that one canary doesn't hold up the whole rollout.
+   * @since 0.6.0-slice.8
+   */
+  readonly canaryWaitMs?: number;
+  /** Injectable sleep — tests pin the canary wait to zero. @since 0.6.0-slice.8 */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 export interface ExecuteDeployResult {
@@ -292,6 +303,110 @@ export async function executeDeploy(
         break;
       }
     }
+    if (failed !== undefined) {
+      for (const id of [...deployed].reverse()) {
+        const entry = plan.find((p) => p.agent.id === id);
+        if (!entry) continue;
+        const adapter = pickTarget(entry);
+        if (!adapter.rollback) continue;
+        try {
+          await adapter.rollback(
+            entry.agent,
+            opts.previousRecord ?? emptyPreviousRecord(opts.fleetVersion),
+            contextFor(entry),
+          );
+          rolledBack.push(id);
+        } catch (err) {
+          opts.logger.err(
+            `rollback failed for ${id}: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+      }
+    }
+  } else if (opts.strategy === 'canary') {
+    // Canary: deploy first agent, soak, re-probe, then roll out the
+    // rest. A canary failure (deploy OR post-soak health) rolls back
+    // every deployed agent exactly like `rolling`'s failure path.
+    const canary = plan[0];
+    if (!canary) {
+      return { ok: true, deployed: [], rolledBack: [], outcomes: {} };
+    }
+    const canaryAdapter = pickTarget(canary);
+    const canaryOutcome = await canaryAdapter.deploy(canary.agent, contextFor(canary));
+    if (!canaryOutcome.ok) {
+      failed = canary.agent.id;
+      outcomes[canary.agent.id] = {
+        target: canary.targetKey,
+        ok: false,
+        error: canaryOutcome.error,
+      };
+    } else {
+      deployed.push(canary.agent.id);
+      outcomes[canary.agent.id] = {
+        target: canary.targetKey,
+        ok: true,
+        artifact: canaryOutcome.artifact,
+      };
+      // Soak. In tests the injected sleep resolves synchronously.
+      const sleepMs = opts.canaryWaitMs ?? 60_000;
+      const sleep = opts.sleep ?? defaultSleep;
+      opts.logger.out(
+        `  canary "${canary.agent.id}" deployed. Soaking ${sleepMs}ms before full rollout…\n`,
+      );
+      await sleep(sleepMs);
+      // Post-soak health check — a crash loop often needs a minute to
+      // manifest, which is why we re-probe instead of trusting the
+      // immediate-after-deploy health signal.
+      if (canaryAdapter.healthCheck) {
+        const probe = await canaryAdapter.healthCheck(canary.agent, contextFor(canary));
+        if (!probe.ok) {
+          failed = canary.agent.id;
+          outcomes[canary.agent.id] = {
+            target: canary.targetKey,
+            ok: false,
+            error: `canary-soak-health: ${probe.message ?? 'failed'}`,
+          };
+        } else {
+          opts.logger.out(`  canary "${canary.agent.id}" healthy post-soak. Rolling out rest.\n`);
+        }
+      }
+      // Roll out the remaining agents only if the canary passed.
+      if (failed === undefined) {
+        for (const entry of plan.slice(1)) {
+          const adapter = pickTarget(entry);
+          const outcome = await adapter.deploy(entry.agent, contextFor(entry));
+          if (outcome.ok) {
+            deployed.push(entry.agent.id);
+            outcomes[entry.agent.id] = {
+              target: entry.targetKey,
+              ok: true,
+              artifact: outcome.artifact,
+            };
+            if (adapter.healthCheck) {
+              const probe = await adapter.healthCheck(entry.agent, contextFor(entry));
+              if (!probe.ok) {
+                failed = entry.agent.id;
+                outcomes[entry.agent.id] = {
+                  target: entry.targetKey,
+                  ok: false,
+                  error: `health-probe: ${probe.message ?? 'failed'}`,
+                };
+                break;
+              }
+            }
+          } else {
+            failed = entry.agent.id;
+            outcomes[entry.agent.id] = {
+              target: entry.targetKey,
+              ok: false,
+              error: outcome.error,
+            };
+            break;
+          }
+        }
+      }
+    }
+    // Rollback cascade: same path as `rolling`.
     if (failed !== undefined) {
       for (const id of [...deployed].reverse()) {
         const entry = plan.find((p) => p.agent.id === id);
@@ -400,6 +515,11 @@ export async function executeDeploy(
   };
   if (failed !== undefined) result.failed = failed;
   return result;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function emptyPreviousRecord(fleetVersion: string): FleetDeployRecord {
@@ -520,6 +640,12 @@ export interface FleetDeployArgs {
   rollback?: boolean;
   targetConfigPath?: string;
   json?: boolean;
+  /**
+   * Canary soak window. Only consulted when `strategy === 'canary'`.
+   * Default 60_000 (60s). Tests pin this to 0.
+   * @since 0.6.0-slice.8
+   */
+  canaryWaitMs?: number;
 }
 
 export interface FleetDeployDeps {
@@ -537,6 +663,12 @@ export interface FleetDeployDeps {
   fleetVersion?: string;
   /** Override `Date.now` for deterministic timestamps. */
   now?: () => Date;
+  /**
+   * Injected sleep — used by the canary strategy's soak window.
+   * Tests pin this to a synchronous stub.
+   * @since 0.6.0-slice.8
+   */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export async function fleetDeploy(
@@ -669,12 +801,19 @@ export async function fleetDeploy(
     throw err;
   }
 
-  const result = await executeDeploy(plan, adapters, {
+  const executeOpts: ExecuteDeployOptions = {
     strategy,
     fleet,
     fleetVersion,
     logger: io,
-  });
+  };
+  if (args.canaryWaitMs !== undefined) {
+    (executeOpts as { canaryWaitMs?: number }).canaryWaitMs = args.canaryWaitMs;
+  }
+  if (deps.sleep !== undefined) {
+    (executeOpts as { sleep?: (ms: number) => Promise<void> }).sleep = deps.sleep;
+  }
+  const result = await executeDeploy(plan, adapters, executeOpts);
 
   const now = (deps.now ?? (() => new Date()))();
   const record: FleetDeployRecord = {

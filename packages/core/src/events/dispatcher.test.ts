@@ -13,6 +13,7 @@ import type { RunAgent, RunAgentInput, RunAgentResult } from '../types/agent.js'
 import type { Logger } from '../types/logger.js';
 import type { SessionHandle } from '../types/session.js';
 import { createEventBus } from './bus.js';
+import { CircuitBreaker } from './circuit-breaker.js';
 import { createEventDispatcher, frameEvent } from './dispatcher.js';
 import { createEventStore } from './store.js';
 import type { AgentEvent, EventTarget } from './types.js';
@@ -707,6 +708,210 @@ describe('createEventDispatcher (cross-restart dedup)', () => {
       }),
     );
     expect(outcome.kind).toBe('broadcast');
+  });
+});
+
+describe('dispatcher circuit breakers (Slice 3 / PR 3.1)', () => {
+  test('opens a per-skill breaker after N consecutive skill failures and rejects subsequent events with reason=circuit-open', async () => {
+    const registry = makeRegistry();
+    await registry.register(makeSkillExtension('flaky', 'say hi'));
+    const calls: RunAgentInput[] = [];
+    const runAgent: RunAgent = async (input) => {
+      calls.push(input);
+      throw new Error('provider blew up');
+    };
+    // Small threshold so the test is fast.
+    const breaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 30_000 });
+    const dispatcher = createEventDispatcher({
+      registry,
+      runAgent,
+      createChildSession: () => createMemorySession(),
+      targetBreaker: () => breaker,
+    });
+
+    // First 3 attempts fail with reason=invalid (the executeTarget catch
+    // path maps thrown errors into `invalid`). Each records a failure.
+    for (let i = 0; i < 3; i += 1) {
+      const outcome = await dispatcher.handle(
+        makeEvent({
+          id: `fail-${i}`,
+          target: { type: 'skill', name: 'flaky', inputs: {} },
+        }),
+      );
+      expect(outcome.kind).toBe('rejected');
+      if (outcome.kind === 'rejected') expect(outcome.reason).toBe('invalid');
+    }
+    expect(calls).toHaveLength(3);
+    expect(breaker.state).toBe('open');
+
+    // Fourth attempt: breaker is open → short-circuit to circuit-open
+    // without invoking runAgent.
+    const outcome = await dispatcher.handle(
+      makeEvent({
+        id: 'fail-4',
+        target: { type: 'skill', name: 'flaky', inputs: {} },
+      }),
+    );
+    expect(outcome.kind).toBe('rejected');
+    if (outcome.kind === 'rejected') {
+      expect(outcome.reason).toBe('circuit-open');
+      expect(outcome.details).toContain('flaky');
+    }
+    expect(calls).toHaveLength(3); // runAgent NOT invoked again
+  });
+
+  test('breakers are per-target: one skill opening does not short-circuit siblings', async () => {
+    // Use the skill prompt as the throw-vs-succeed discriminator so we
+    // don't have to parse frameEvent output. 'flaky' always throws;
+    // 'healthy' always succeeds.
+    const registry = makeRegistry();
+    await registry.register(makeSkillExtension('flaky', 'FLAKY_MARKER'));
+    await registry.register(makeSkillExtension('healthy', 'HEALTHY_MARKER'));
+    const runAgent: RunAgent = async (input) => {
+      if (input.userMessage.includes('FLAKY_MARKER')) throw new Error('boom');
+      return okResult();
+    };
+    const breakers = new Map<string, CircuitBreaker>();
+    const getBreaker = (name: string): CircuitBreaker => {
+      let b = breakers.get(name);
+      if (!b) {
+        b = new CircuitBreaker({ failureThreshold: 2, resetTimeoutMs: 30_000 });
+        breakers.set(name, b);
+      }
+      return b;
+    };
+    const dispatcher = createEventDispatcher({
+      registry,
+      runAgent,
+      createChildSession: () => createMemorySession(),
+      targetBreaker: getBreaker,
+    });
+
+    // Two flaky dispatches trip the breaker.
+    await dispatcher.handle(
+      makeEvent({ id: 'a', target: { type: 'skill', name: 'flaky', inputs: {} } }),
+    );
+    await dispatcher.handle(
+      makeEvent({ id: 'b', target: { type: 'skill', name: 'flaky', inputs: {} } }),
+    );
+    expect(breakers.get('flaky')?.state).toBe('open');
+
+    // 'healthy' is unaffected.
+    const ok = await dispatcher.handle(
+      makeEvent({ id: 'c', target: { type: 'skill', name: 'healthy', inputs: {} } }),
+    );
+    expect(ok.kind).toBe('dispatched');
+    expect(breakers.get('healthy')?.state ?? 'closed').toBe('closed');
+
+    // The next flaky event short-circuits (no runAgent throw).
+    const shortCircuit = await dispatcher.handle(
+      makeEvent({ id: 'd', target: { type: 'skill', name: 'flaky', inputs: {} } }),
+    );
+    expect(shortCircuit.kind).toBe('rejected');
+    if (shortCircuit.kind === 'rejected') expect(shortCircuit.reason).toBe('circuit-open');
+  });
+
+  test('rejected outcomes flow into the rejected_events dispatch DLQ (Slice 5 / PR 5.1)', async () => {
+    const registry = makeRegistry();
+    await registry.register(makeSkillExtension('boom', 'BOOM'));
+    const runAgent: RunAgent = async () => {
+      throw new Error('boom');
+    };
+    const store = createEventStore({ db: new Database(':memory:') });
+    const dispatcher = createEventDispatcher({
+      registry,
+      runAgent,
+      createChildSession: () => createMemorySession(),
+      store,
+    });
+
+    // Two rejected dispatches → DLQ row with attempt_count=2.
+    await dispatcher.handle(
+      makeEvent({ id: 'dlq-1', target: { type: 'skill', name: 'boom', inputs: {} } }),
+    );
+    // Second event — different id so dedup doesn't intervene.
+    await dispatcher.handle(
+      makeEvent({ id: 'dlq-2', target: { type: 'skill', name: 'boom', inputs: {} } }),
+    );
+
+    const rows = await store.listRejections();
+    expect(rows).toHaveLength(2);
+    const row = rows.find((r) => r.eventId === 'dlq-1');
+    expect(row?.rejectionReason).toBe('invalid');
+    expect(row?.attemptCount).toBe(1);
+  });
+
+  test('successful dispatch after rejection clears the DLQ row', async () => {
+    const registry = makeRegistry();
+    await registry.register(makeSkillExtension('flaky', 'FLAKY'));
+    let failMode = true;
+    const runAgent: RunAgent = async () => {
+      if (failMode) throw new Error('boom');
+      return okResult();
+    };
+    const store = createEventStore({ db: new Database(':memory:') });
+    const dispatcher = createEventDispatcher({
+      registry,
+      runAgent,
+      createChildSession: () => createMemorySession(),
+      store,
+    });
+    await dispatcher.handle(
+      makeEvent({ id: 'r1', target: { type: 'skill', name: 'flaky', inputs: {} } }),
+    );
+    expect((await store.listRejections()).length).toBe(1);
+
+    // Healed: a new event for the same skill dispatches successfully.
+    // Different event id because the original is already dedup-locked.
+    failMode = false;
+    await dispatcher.handle(
+      makeEvent({ id: 'r2', target: { type: 'skill', name: 'flaky', inputs: {} } }),
+    );
+    // The DLQ row for the healed event's id should be gone; the
+    // still-rejected older event remains in the DLQ until a requeue.
+    expect(await store.getRejection('r2')).toBeUndefined();
+    expect(await store.getRejection('r1')).toBeDefined();
+  });
+
+  test('breaker closes after a successful probe in half-open state', async () => {
+    const registry = makeRegistry();
+    await registry.register(makeSkillExtension('recover', 'RECOVER'));
+    let failMode = true;
+    const runAgent: RunAgent = async () => {
+      if (failMode) throw new Error('boom');
+      return okResult();
+    };
+    let clock = 1_000_000;
+    const breaker = new CircuitBreaker({
+      failureThreshold: 2,
+      resetTimeoutMs: 5_000,
+      now: () => clock,
+    });
+    const dispatcher = createEventDispatcher({
+      registry,
+      runAgent,
+      createChildSession: () => createMemorySession(),
+      targetBreaker: () => breaker,
+    });
+
+    // Trip the breaker.
+    await dispatcher.handle(
+      makeEvent({ id: 'f1', target: { type: 'skill', name: 'recover', inputs: {} } }),
+    );
+    await dispatcher.handle(
+      makeEvent({ id: 'f2', target: { type: 'skill', name: 'recover', inputs: {} } }),
+    );
+    expect(breaker.state).toBe('open');
+
+    // Healed service — advance the clock past the cooldown and fire a
+    // probe. The probe runs (half-open allows), succeeds, breaker closes.
+    failMode = false;
+    clock += 6_000;
+    const probe = await dispatcher.handle(
+      makeEvent({ id: 'probe', target: { type: 'skill', name: 'recover', inputs: {} } }),
+    );
+    expect(probe.kind).toBe('dispatched');
+    expect(breaker.state).toBe('closed');
   });
 });
 

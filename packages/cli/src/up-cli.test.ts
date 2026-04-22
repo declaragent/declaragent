@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -8,6 +9,19 @@ import type {
   startAgentSources,
 } from './run-agent-sources.js';
 import { up } from './up-cli.js';
+
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.unref();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 type StartSourcesFn = typeof startAgentSources;
 
@@ -165,6 +179,146 @@ describe('up verb — single agent', () => {
     const code = await up({}, { io: cap.io, cwd: dir, installSignals: immediateShutdown() });
     expect(code).toBe(1);
     expect(cap.err.join('')).not.toBe('');
+  });
+
+  test('exposes a Prometheus /metrics endpoint when DECLARAGENT_METRICS_PORT is set', async () => {
+    const port = await freePort();
+    const originalPort = process.env.DECLARAGENT_METRICS_PORT;
+    process.env.DECLARAGENT_METRICS_PORT = String(port);
+    try {
+      const cap = captureIo();
+      const code = await up(
+        {},
+        {
+          io: cap.io,
+          cwd: dir,
+          startSources: stubSources().fn,
+          installSignals: immediateShutdown(),
+        },
+      );
+      expect(code).toBe(0);
+      const text = cap.out.join('');
+      expect(text).toContain(`metrics: http://127.0.0.1:${port}/metrics`);
+      expect(text).toContain('✓ down');
+    } finally {
+      if (originalPort === undefined) {
+        // biome-ignore lint/performance/noDelete: `delete` is the canonical way to remove a process.env entry; assigning `undefined` sets the string "undefined" and contaminates later tests.
+        delete process.env.DECLARAGENT_METRICS_PORT;
+      } else {
+        process.env.DECLARAGENT_METRICS_PORT = originalPort;
+      }
+    }
+  });
+
+  test('skips the metrics endpoint in foreground mode when env var is unset', async () => {
+    const originalPort = process.env.DECLARAGENT_METRICS_PORT;
+    // biome-ignore lint/performance/noDelete: see above — preserve env-var removal.
+    delete process.env.DECLARAGENT_METRICS_PORT;
+    try {
+      const cap = captureIo();
+      const code = await up(
+        {},
+        {
+          io: cap.io,
+          cwd: dir,
+          startSources: stubSources().fn,
+          installSignals: immediateShutdown(),
+        },
+      );
+      expect(code).toBe(0);
+      const text = cap.out.join('');
+      expect(text).not.toContain('metrics: http://');
+    } finally {
+      if (originalPort !== undefined) {
+        process.env.DECLARAGENT_METRICS_PORT = originalPort;
+      }
+    }
+  });
+
+  test('skips the metrics endpoint when DECLARAGENT_METRICS_PORT=0 (explicit disable)', async () => {
+    const originalPort = process.env.DECLARAGENT_METRICS_PORT;
+    process.env.DECLARAGENT_METRICS_PORT = '0';
+    try {
+      const cap = captureIo();
+      await up(
+        {},
+        {
+          io: cap.io,
+          cwd: dir,
+          startSources: stubSources().fn,
+          installSignals: immediateShutdown(),
+        },
+      );
+      expect(cap.out.join('')).not.toContain('metrics: http://');
+    } finally {
+      if (originalPort === undefined) {
+        // biome-ignore lint/performance/noDelete: see above.
+        delete process.env.DECLARAGENT_METRICS_PORT;
+      } else {
+        process.env.DECLARAGENT_METRICS_PORT = originalPort;
+      }
+    }
+  });
+
+  test('stays quiet about OTel when OTEL_EXPORTER_OTLP_ENDPOINT is unset', async () => {
+    const original = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    // biome-ignore lint/performance/noDelete: see above.
+    delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    try {
+      const cap = captureIo();
+      const code = await up(
+        {},
+        {
+          io: cap.io,
+          cwd: dir,
+          startSources: stubSources().fn,
+          installSignals: immediateShutdown(),
+        },
+      );
+      expect(code).toBe(0);
+      const all = cap.out.join('') + cap.err.join('');
+      expect(all).not.toContain('otel:');
+      expect(all).not.toContain('tracing could not start');
+    } finally {
+      if (original !== undefined) process.env.OTEL_EXPORTER_OTLP_ENDPOINT = original;
+    }
+  });
+
+  test('warns with install hint when OTEL_EXPORTER_OTLP_ENDPOINT is set but peer dep is missing', async () => {
+    const original = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318';
+    try {
+      const cap = captureIo();
+      const code = await up(
+        {},
+        {
+          io: cap.io,
+          cwd: dir,
+          startSources: stubSources().fn,
+          installSignals: immediateShutdown(),
+        },
+      );
+      // Boot still succeeds — the runtime falls back to the noop tracer.
+      expect(code).toBe(0);
+      const errText = cap.err.join('');
+      // The concrete peer-dep-missing message only fires if the host
+      // has NOT installed `@opentelemetry/api`. The repo deliberately
+      // doesn't declare it, so this assertion holds for CI; if a dev
+      // installs it locally the "otel: tracing enabled" stdout banner
+      // appears instead and the error stream stays empty.
+      const otelActive = cap.out.join('').includes('otel: tracing enabled');
+      if (!otelActive) {
+        expect(errText).toContain('tracing could not start');
+        expect(errText).toContain('npm i @opentelemetry/api');
+      }
+    } finally {
+      if (original === undefined) {
+        // biome-ignore lint/performance/noDelete: see above.
+        delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+      } else {
+        process.env.OTEL_EXPORTER_OTLP_ENDPOINT = original;
+      }
+    }
   });
 
   test('respects an explicit -f manifest override', async () => {

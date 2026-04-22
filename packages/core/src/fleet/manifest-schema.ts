@@ -88,7 +88,13 @@ const environmentSchema = z
 
 // ── Deploy ─────────────────────────────────────────────────────────────
 
-const deployStrategySchema = z.enum(['rolling', 'all-or-nothing', 'per-agent']);
+/**
+ * Slice 8 of 0.6.0 adds `'canary'`: deploy the FIRST agent in the plan,
+ * soak for {@link canaryWaitMs}, re-run health checks, then deploy the
+ * rest only if the canary stays healthy. On canary failure every
+ * deployed agent rolls back.
+ */
+const deployStrategySchema = z.enum(['rolling', 'all-or-nothing', 'per-agent', 'canary']);
 
 const deployHealthGateSchema = z
   .object({

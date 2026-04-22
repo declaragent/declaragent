@@ -32,6 +32,12 @@ export type {
   ValidateChannelsOptions,
   ValidateChannelsReport,
 } from './config-loader.js';
+export { createChannelInboundBridge } from './inbound-bridge.js';
+export type {
+  ChannelInboundBridge,
+  ChannelInboundBridgeOptions,
+  InboundRoute,
+} from './inbound-bridge.js';
 export {
   createChannelOutboundBridge,
   extractAssistantContent,

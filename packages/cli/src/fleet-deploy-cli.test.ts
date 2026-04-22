@@ -241,6 +241,132 @@ describe('executeDeploy rolling strategy', () => {
   });
 });
 
+// ── executeDeploy — canary (Slice 8) ────────────────────────────────────
+
+describe('executeDeploy canary strategy', () => {
+  test('canary soaks, re-probes, then rolls out the rest when healthy', async () => {
+    const h = mkHarness();
+    try {
+      scaffoldFleetFiles(h);
+      const { loadFleet } = await import('@declaragent/core');
+      const fleet = await loadFleet({ root: h.root });
+      const plan = planDeploy(fleet);
+      const target = createMemoryDeployTarget();
+      const targets = new Map<string, FleetDeployTarget>([
+        ['cloud-run-concierge', target],
+        ['cloud-run-reviewer', target],
+      ]);
+      const io = captureIo();
+      // Sleep is a synchronous stub so the test doesn't actually wait.
+      const sleeps: number[] = [];
+      const result = await executeDeploy(plan, targets, {
+        strategy: 'canary',
+        fleet,
+        fleetVersion: 'v1.2.3-abcdef0',
+        logger: io.io,
+        canaryWaitMs: 12_345,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      });
+      expect(result.ok).toBe(true);
+      // Canary runs first (concierge per manifest order), then pr-reviewer.
+      expect(result.deployed).toEqual(['concierge', 'pr-reviewer']);
+      expect(result.rolledBack).toEqual([]);
+      expect(sleeps).toEqual([12_345]);
+      expect(io.out.join('')).toContain('canary "concierge" deployed');
+      expect(io.out.join('')).toContain('Rolling out rest');
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('canary post-soak health failure rolls back the canary and skips the rest', async () => {
+    const h = mkHarness();
+    try {
+      scaffoldFleetFiles(h);
+      const { loadFleet } = await import('@declaragent/core');
+      const fleet = await loadFleet({ root: h.root });
+      const plan = planDeploy(fleet);
+      const target = createMemoryDeployTarget();
+      // Wrap so that after the soak (once sleep is invoked) the canary
+      // flips unhealthy — mirrors "canary starts fine, dies during soak".
+      const wrapped: FleetDeployTarget = {
+        kind: target.kind,
+        deploy: target.deploy.bind(target),
+        ...(target.healthCheck && { healthCheck: target.healthCheck.bind(target) }),
+        ...(target.rollback && { rollback: target.rollback.bind(target) }),
+      };
+      const io = captureIo();
+      const result = await executeDeploy(
+        plan,
+        new Map([
+          ['cloud-run-concierge', wrapped],
+          ['cloud-run-reviewer', wrapped],
+        ]),
+        {
+          strategy: 'canary',
+          fleet,
+          fleetVersion: 'v1.2.3-abcdef0',
+          logger: io.io,
+          canaryWaitMs: 0,
+          sleep: async () => {
+            // After "soak" elapses, the canary is unhealthy.
+            target.health.set('concierge', false);
+          },
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.failed).toBe('concierge');
+      expect(result.rolledBack).toEqual(['concierge']);
+      // pr-reviewer was NEVER deployed because the canary gate failed.
+      expect(target.deployed).toEqual(['concierge']);
+      expect(result.outcomes.concierge?.error).toContain('canary-soak-health');
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('canary deploy failure short-circuits before the soak', async () => {
+    const h = mkHarness();
+    try {
+      scaffoldFleetFiles(h);
+      const { loadFleet } = await import('@declaragent/core');
+      const fleet = await loadFleet({ root: h.root });
+      const plan = planDeploy(fleet);
+      const target = createMemoryDeployTarget({
+        failFor: (a) => a.id === 'concierge',
+      });
+      const io = captureIo();
+      const sleeps: number[] = [];
+      const result = await executeDeploy(
+        plan,
+        new Map<string, FleetDeployTarget>([
+          ['cloud-run-concierge', target],
+          ['cloud-run-reviewer', target],
+        ]),
+        {
+          strategy: 'canary',
+          fleet,
+          fleetVersion: 'v1.2.3-abcdef0',
+          logger: io.io,
+          canaryWaitMs: 5_000,
+          sleep: async (ms) => {
+            sleeps.push(ms);
+          },
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.failed).toBe('concierge');
+      expect(result.deployed).toEqual([]);
+      expect(sleeps).toEqual([]); // no soak because deploy failed first
+      expect(target.deployed).toEqual([]);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
 // ── executeDeploy — all-or-nothing ─────────────────────────────────────
 
 describe('executeDeploy all-or-nothing strategy', () => {

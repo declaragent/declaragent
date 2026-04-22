@@ -4,6 +4,7 @@ import { lookupSkill, runSkill } from '../skills/runner.js';
 import type { RunAgent, RunAgentResult } from '../types/agent.js';
 import type { Logger } from '../types/logger.js';
 import type { AgentSpec, SessionHandle } from '../types/session.js';
+import type { CircuitBreaker } from './circuit-breaker.js';
 import { PerTargetRateLimiter, type RateLimitSpec } from './rate-limiter.js';
 import type { EventStore } from './store.js';
 import type {
@@ -85,6 +86,22 @@ export interface CreateEventDispatcherOptions extends DispatcherSessionFactories
    * reason: 'rate-limit' }`.
    */
   rateLimits?: RateLimitSpec;
+  /**
+   * Per-target circuit breaker factory. Called the first time a given
+   * skill target is routed; subsequent invocations reuse the returned
+   * breaker. Return `undefined` to disable breaker protection for a
+   * specific target. When the option itself is omitted, no breakers
+   * are consulted and behavior matches pre-0.6 dispatch.
+   *
+   * Scope: currently guards `target.type === 'skill'` only. `sub-agent`
+   * and session targets fall through without breaker protection. A
+   * broken skill short-circuits to `{ kind: 'rejected', reason:
+   * 'circuit-open' }` until the breaker flips to `half-open` and a
+   * probe succeeds.
+   *
+   * @since 0.6.0-slice.3
+   */
+  targetBreaker?(targetName: string): CircuitBreaker | undefined;
 }
 
 export function createEventDispatcher(options: CreateEventDispatcherOptions): EventDispatcher {
@@ -213,27 +230,44 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
         if (!createChildSession) {
           return rejected('no-handler', 'createChildSession factory not provided');
         }
+        // Circuit-breaker gate (PR 3.1). Fail-fast when the target's
+        // breaker is `open` so retries don't pile up while the skill is
+        // known bad. `half-open` is treated as `closed` — the breaker's
+        // own probe bookkeeping decides whether the probe succeeds.
+        const breaker = options.targetBreaker?.(target.name);
+        if (breaker && !breaker.allow()) {
+          return rejected(
+            'circuit-open',
+            `skill "${target.name}" breaker is ${breaker.state}; cooldown in progress`,
+          );
+        }
         const parentId = originSessionId(event.source) ?? `__event:${event.id}`;
-        const turnResult = await runSkill(target.name, {
-          registry,
-          inputs: { ...target.inputs, __event: frameEvent(event) },
-          ...(hookRegistry !== undefined && { hooks: hookRegistry }),
-          runAgent,
-          createChildSession: () => {
-            // runSkill expects a synchronous factory. We bridge by invoking
-            // the host factory synchronously; if it returns a Promise the
-            // factory is misconfigured for skill routing.
-            const maybe = createChildSession(parentId);
-            if (isPromise(maybe)) {
-              throw new Error(
-                'createChildSession must return a SessionHandle synchronously for skill routing',
-              );
-            }
-            return maybe;
-          },
-          turn: { sessionId: parentId, turnId: event.id, depth: 0 },
-        });
-        return dispatched(parentId, turnResult);
+        try {
+          const turnResult = await runSkill(target.name, {
+            registry,
+            inputs: { ...target.inputs, __event: frameEvent(event) },
+            ...(hookRegistry !== undefined && { hooks: hookRegistry }),
+            runAgent,
+            createChildSession: () => {
+              // runSkill expects a synchronous factory. We bridge by invoking
+              // the host factory synchronously; if it returns a Promise the
+              // factory is misconfigured for skill routing.
+              const maybe = createChildSession(parentId);
+              if (isPromise(maybe)) {
+                throw new Error(
+                  'createChildSession must return a SessionHandle synchronously for skill routing',
+                );
+              }
+              return maybe;
+            },
+            turn: { sessionId: parentId, turnId: event.id, depth: 0 },
+          });
+          breaker?.record(true);
+          return dispatched(parentId, turnResult);
+        } catch (err) {
+          breaker?.record(false);
+          throw err;
+        }
       }
 
       case 'sub-agent': {
@@ -332,6 +366,14 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
         reason: 'loop',
         details: `causedBy chain contains triggerId "${getTriggerId(current.source) ?? '<none>'}"`,
       };
+      if (store) {
+        try {
+          await store.markOutcome(current.id, outcome);
+          await store.upsertRejection(current.id, outcome.reason, outcome.details);
+        } catch {
+          // best-effort
+        }
+      }
       if (hookRegistry) {
         await hookRegistry.fire('event.after', { event: current, outcome });
       }
@@ -360,6 +402,7 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
         if (store) {
           try {
             await store.markOutcome(current.id, outcome);
+            await store.upsertRejection(current.id, outcome.reason, outcome.details);
           } catch {
             // best-effort — matches the rest of the store path
           }
@@ -398,6 +441,36 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
           eventId: current.id,
           err: err instanceof Error ? err.message : String(err),
         });
+      }
+      // 5a. Dispatch DLQ (Slice 5 / PR 5.1) — every rejected outcome is
+      //     upserted into rejected_events so operators can enumerate
+      //     stuck events without scanning the much larger events table.
+      //     The rate-limit short-circuit above (step 4a) ALSO flows
+      //     through here because both paths converge on a single
+      //     markOutcome call only in the target-routing path — so we
+      //     additionally stamp the DLQ row there.
+      if (outcome.kind === 'rejected') {
+        try {
+          await store.upsertRejection(current.id, outcome.reason, outcome.details);
+        } catch (err) {
+          logger.warn('event.store.upsertRejection.error', {
+            eventId: current.id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      // 5b. If the event was successfully dispatched AFTER previously
+      //     being rejected, clear its DLQ row so the list doesn't
+      //     surface an already-healed event as stuck.
+      if (outcome.kind === 'dispatched' || outcome.kind === 'broadcast') {
+        try {
+          await store.deleteRejection(current.id);
+        } catch (err) {
+          logger.warn('event.store.deleteRejection.error', {
+            eventId: current.id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
 
@@ -484,7 +557,7 @@ function dispatched(sessionId: string, result: RunAgentResult): DispatchOutcome 
 }
 
 function rejected(
-  reason: 'rate-limit' | 'unauthorized' | 'no-handler' | 'loop' | 'invalid',
+  reason: 'rate-limit' | 'unauthorized' | 'no-handler' | 'loop' | 'invalid' | 'circuit-open',
   details?: string,
 ): DispatchOutcome {
   return details !== undefined

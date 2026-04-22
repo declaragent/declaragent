@@ -94,6 +94,36 @@ describe('eventsList', () => {
     expect(text).toContain('evt-a');
     expect(text).not.toContain('evt-b');
   });
+
+  test('--state circuit-open only surfaces breaker-rejected events', async () => {
+    // Slice 3 / PR 3.2 — verifies the synthetic state filter narrows
+    // rejected-kind events down to those whose reason is circuit-open,
+    // leaving sibling rejected outcomes (e.g. rate-limit) out.
+    const store = makeStore();
+    await store.record({ ...SAMPLE_EVENT, id: 'evt-open' });
+    await store.markOutcome('evt-open', {
+      kind: 'rejected',
+      reason: 'circuit-open',
+      details: 'skill "greet" breaker is open; cooldown in progress',
+    });
+    await store.record({ ...SAMPLE_EVENT, id: 'evt-rl' });
+    await store.markOutcome('evt-rl', {
+      kind: 'rejected',
+      reason: 'rate-limit',
+    });
+    await store.record({ ...SAMPLE_EVENT, id: 'evt-ok' });
+    await store.markOutcome('evt-ok', { kind: 'broadcast' });
+
+    const { out, io } = captureIO();
+    const code = await eventsList({ state: 'circuit-open' }, { store, io });
+    expect(code).toBe(0);
+    const text = out.join('');
+    expect(text).toContain('evt-open');
+    expect(text).toContain('rejected:circuit-open');
+    expect(text).not.toContain('evt-rl');
+    expect(text).not.toContain('evt-ok');
+    expect(text).toContain('events (1)');
+  });
 });
 
 describe('eventsShow', () => {

@@ -16,6 +16,8 @@ coverage
 .npmrc
 # Runtime state created by `declaragent fleet run` + the daemon
 .declaragent/
+# Claude Code local agent state
+.claude/
 # macOS noise
 .DS_Store
 # `/docs/` is now checked in (planning docs are visible in-repo + used

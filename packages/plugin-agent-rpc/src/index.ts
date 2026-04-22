@@ -42,3 +42,11 @@ export type {
   MemoryBus,
   MemoryTransport,
 } from './memory-transport.js';
+export { createKafkaTransport } from './kafka-transport.js';
+export type {
+  CreateKafkaTransportOptions,
+  KafkaClientLike,
+  KafkaConsumerLike,
+  KafkaJSModule,
+  KafkaProducerLike,
+} from './kafka-transport.js';

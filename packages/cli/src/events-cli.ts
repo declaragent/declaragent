@@ -71,9 +71,17 @@ export interface EventsListArgs {
   last?: number;
   correlation?: string;
   outcome?: DispatchOutcome['kind'] | 'pending';
+  /**
+   * High-level convenience filter. Currently recognizes `'circuit-open'`
+   * which matches `rejected` outcomes whose reason is `circuit-open` — the
+   * states a Slice-3 circuit breaker emits when short-circuiting dispatch.
+   * Combinable with `--kind` / `--correlation`; overrides `--outcome`.
+   * @since 0.6.0-slice.3 (PR 3.2)
+   */
+  state?: 'circuit-open';
 }
 
-/** `declaragent events list [--kind <k>] [--last <n>] [--correlation <id>] [--outcome <k>]` */
+/** `declaragent events list [--kind <k>] [--last <n>] [--correlation <id>] [--outcome <k> | --state <s>]` */
 export async function eventsList(args: EventsListArgs, deps: EventsCliDeps = {}): Promise<number> {
   const io = deps.io ?? STDIO_IO;
   const { store, close } = resolveStore(deps);
@@ -81,10 +89,21 @@ export async function eventsList(args: EventsListArgs, deps: EventsCliDeps = {})
     const filter: EventStoreListFilter = {};
     if (args.kind !== undefined) filter.kind = args.kind;
     if (args.correlation !== undefined) filter.correlationId = args.correlation;
-    if (args.outcome !== undefined) filter.outcomeKind = args.outcome;
+    if (args.state === 'circuit-open') {
+      // The store only filters by outcome.kind; narrow to 'rejected' and
+      // post-filter for `reason === 'circuit-open'` below.
+      filter.outcomeKind = 'rejected';
+    } else if (args.outcome !== undefined) {
+      filter.outcomeKind = args.outcome;
+    }
     if (args.last !== undefined) filter.limit = args.last;
 
-    const rows = await store.list(filter);
+    let rows = await store.list(filter);
+    if (args.state === 'circuit-open') {
+      rows = rows.filter(
+        (r) => r.outcome?.kind === 'rejected' && r.outcome.reason === 'circuit-open',
+      );
+    }
     if (rows.length === 0) {
       io.out('no events.\n');
       return 0;

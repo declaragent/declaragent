@@ -14,7 +14,7 @@
     },
     "examples/phase5-demo": {
       "name": "@declaragent-examples/phase5-demo",
-      "version": "0.0.0",
+      "version": "0.0.5",
       "dependencies": {
         "@declaragent/core": "workspace:*",
         "@declaragent/testkit": "workspace:*",
@@ -22,7 +22,7 @@
     },
     "packages/channel-discord": {
       "name": "@declaragent/channel-discord",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "devDependencies": {
         "@declaragent/testkit": "workspace:*",
       },
@@ -32,7 +32,7 @@
     },
     "packages/channel-slack": {
       "name": "@declaragent/channel-slack",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "devDependencies": {
         "@declaragent/testkit": "workspace:*",
       },
@@ -42,7 +42,7 @@
     },
     "packages/channel-telegram": {
       "name": "@declaragent/channel-telegram",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "devDependencies": {
         "@declaragent/testkit": "workspace:*",
       },
@@ -52,23 +52,24 @@
     },
     "packages/channel-whatsapp": {
       "name": "@declaragent/channel-whatsapp",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "devDependencies": {
-        "@declaragent/testkit": "^0.1.0",
+        "@declaragent/testkit": "^2.0.0",
       },
       "peerDependencies": {
-        "@declaragent/core": "^0.1.0",
+        "@declaragent/core": "^0.3.1",
       },
     },
     "packages/cli": {
       "name": "@declaragent/cli",
-      "version": "0.1.8",
+      "version": "0.5.21",
       "bin": {
         "declaragent": "./bin/declaragent.js",
+        "d9t": "./bin/declaragent.js",
       },
       "dependencies": {
-        "@declaragent/core": "^0.1.0",
-        "@declaragent/plugin-agent-rpc": "^0.1.0",
+        "@declaragent/core": "^0.3.1",
+        "@declaragent/plugin-agent-rpc": "^2.0.0",
         "ink": "^5.0.1",
         "ink-text-input": "^6.0.0",
         "react": "^18.3.1",
@@ -80,12 +81,12 @@
         "react-devtools-core": "^4.28.0",
       },
       "optionalDependencies": {
-        "@declaragent/channel-whatsapp": "^0.1.0",
+        "@declaragent/channel-whatsapp": "^2.0.1",
       },
     },
     "packages/core": {
       "name": "@declaragent/core",
-      "version": "0.1.0",
+      "version": "0.3.1",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.89.0",
         "chokidar": "^5.0.0",
@@ -95,14 +96,14 @@
     },
     "packages/plugin-agent-rpc": {
       "name": "@declaragent/plugin-agent-rpc",
-      "version": "0.1.0",
+      "version": "2.0.0",
       "peerDependencies": {
-        "@declaragent/core": "^0.1.0",
+        "@declaragent/core": "^0.3.0",
       },
     },
     "packages/source-amqp": {
       "name": "@declaragent/source-amqp",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "dependencies": {
         "amqplib": "^0.10.4",
       },
@@ -115,17 +116,17 @@
     },
     "packages/source-kafka": {
       "name": "@declaragent/source-kafka",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "dependencies": {
         "kafkajs": "^2.2.4",
       },
       "peerDependencies": {
-        "@declaragent/core": "^0.1.0",
+        "@declaragent/core": "^0.3.1",
       },
     },
     "packages/source-mqtt": {
       "name": "@declaragent/source-mqtt",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "dependencies": {
         "mqtt": "^5.10.0",
       },
@@ -135,7 +136,7 @@
     },
     "packages/source-nats": {
       "name": "@declaragent/source-nats",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "dependencies": {
         "nats": "^2.28.0",
       },
@@ -145,7 +146,7 @@
     },
     "packages/source-sqs": {
       "name": "@declaragent/source-sqs",
-      "version": "0.1.0",
+      "version": "2.0.1",
       "dependencies": {
         "@aws-sdk/client-sqs": "^3.645.0",
       },
@@ -155,14 +156,15 @@
     },
     "packages/testkit": {
       "name": "@declaragent/testkit",
-      "version": "0.1.0",
+      "version": "2.0.0",
       "dependencies": {
         "kafkajs": "^2.2.4",
         "yaml": "^2.8.3",
       },
       "peerDependencies": {
-        "@declaragent/core": "^0.1.0",
-        "@declaragent/source-kafka": "^0.1.0",
+        "@declaragent/core": "^0.3.0",
+        "@declaragent/plugin-agent-rpc": "^2.0.0",
+        "@declaragent/source-kafka": "^2.0.0",
       },
     },
   },

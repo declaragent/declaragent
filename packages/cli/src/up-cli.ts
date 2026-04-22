@@ -31,19 +31,30 @@ import {
   AgentConfigError,
   type AgentEvent,
   type AgentSpec,
+  CircuitBreaker,
+  type CircuitBreakerTransitionEvent,
   type EventDispatcher,
+  type LLMProvider,
   type LoadedAgent,
   type Logger,
+  type PrometheusHandle,
+  type PrometheusRegistry,
+  type Tracer,
   createEngine,
   createEventDispatcher,
   createExtensionRegistry,
   createHookRegistry,
+  createOtelBridge,
   createPermissionGate,
+  createPrometheusRegistry,
   createSendMessageTool,
   createSqliteSessionStore,
+  defaultRateForProvider,
   loadAgent,
   loadFleet,
   skillExtension,
+  startPrometheusExporter,
+  withProviderRateLimit,
 } from '@declaragent/core';
 import { resolveCredentials } from './auth.js';
 import { buildRuntimeTools } from './builtin-tools.js';
@@ -262,6 +273,23 @@ interface UpRuntime {
    * per-server, never blocks boot).
    */
   mcpConsent?: ConsentResolver;
+  /**
+   * Prometheus registry shared across every agent this up-process
+   * hosts. Passed into `startAgentSources` + `startChannelRuntime` as
+   * `deps.metrics`, so source + channel adapters produce Prometheus
+   * samples for free. An HTTP exporter serves the scrape endpoint
+   * when one is active (see {@link runForeground}).
+   * @since 0.6.0-slice.1
+   */
+  metrics: PrometheusRegistry;
+  /**
+   * OTel-bridged tracer, populated only when `OTEL_EXPORTER_OTLP_ENDPOINT`
+   * is set and `@opentelemetry/api` is installed. Threaded into sources
+   * + channels via `deps.tracer` so `BaseSourceInstance.getInstruments()`
+   * emits real OTel spans. Undefined → adapters keep their noop tracer.
+   * @since 0.6.0-slice.2
+   */
+  tracer?: Tracer;
 }
 
 async function runForeground(
@@ -291,12 +319,32 @@ async function runForeground(
   // pre-consent via `declaragent mcp add` (auto-approves) or a future
   // `mcp approve <name>` verb.
   const interactive = _args.__detached !== true && process.stdin.isTTY === true;
+  const tracer = await maybeCreateOtelTracer(io);
+  const metrics = createPrometheusRegistry();
+  // Wrap the provider (when one is configured) with a per-provider rate
+  // limiter (Slice 4). Defaults: Anthropic 50 rps, OpenRouter 20 rps.
+  // Env vars:
+  //   DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1 → skip wrapping entirely
+  //   DECLARAGENT_PROVIDER_RATE_LIMIT_RPS=<n>  → override the default
+  const provider = creds
+    ? wrapProviderWithRateLimit({
+        provider: createProviderFromCreds({ creds }),
+        providerId: creds.providerId,
+        metrics,
+        io,
+      })
+    : null;
   const runtime: UpRuntime = {
     sessionStore: createSqliteSessionStore({ path: sessionsDbPath() }),
-    provider: creds ? createProviderFromCreds({ creds }) : null,
+    provider,
     defaultModel: 'claude-sonnet-4-5',
+    metrics,
+    ...(tracer !== undefined && { tracer }),
     ...(interactive && { mcpConsent: createInteractiveMCPConsent() }),
   };
+  if (tracer !== undefined) {
+    io.out(`  otel: tracing enabled (OTLP endpoint ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT})\n`);
+  }
   if (!creds) {
     io.out(
       '⚠ no provider credentials found — sources will bind and events will land in the store, but skill dispatch is skipped until you run `declaragent auth login`.\n\n',
@@ -334,6 +382,29 @@ async function runForeground(
   };
   writeUpState(state);
 
+  // Prometheus `/metrics` exporter. Shares `runtime.metrics` with every
+  // agent's sources + channels so source/channel counters are scrapable
+  // from a single endpoint. Defaults: on in detached mode (port 9464),
+  // off in foreground mode unless `DECLARAGENT_METRICS_PORT` is set.
+  // Set `DECLARAGENT_METRICS_PORT=0` to disable in detached mode too.
+  // @since 0.6.0-slice.1
+  const metricsPort = resolveMetricsPort(_args.__detached === true);
+  let metricsHandle: PrometheusHandle | null = null;
+  if (metricsPort > 0) {
+    try {
+      metricsHandle = await startPrometheusExporter({
+        registry: runtime.metrics,
+        port: metricsPort,
+        hostname: '127.0.0.1',
+      });
+      io.out(`  metrics: http://127.0.0.1:${metricsHandle.port}/metrics\n`);
+    } catch (err) {
+      io.err(
+        `⚠ metrics exporter failed to bind on :${metricsPort} — ${err instanceof Error ? err.message : String(err)}. Continuing without /metrics.\n`,
+      );
+    }
+  }
+
   io.out(`\n✓ up — ${running.length} agent${running.length === 1 ? '' : 's'} bound.\n`);
   io.out('  Ctrl+C to stop.\n\n');
 
@@ -344,6 +415,13 @@ async function runForeground(
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
       io.out('\nshutting down…\n');
+      if (metricsHandle) {
+        try {
+          await metricsHandle.close();
+        } catch {
+          // best-effort — never block shutdown on a stuck listener
+        }
+      }
       await stopAll(running);
       clearUpState();
       io.out('✓ down\n');
@@ -446,6 +524,8 @@ async function bringUp(
     // any visible signal.
     logger: agentLoggerToCoreLogger(logger),
     recordToStore: !willAttachDispatcher,
+    metrics: runtime.metrics,
+    ...(runtime.tracer !== undefined && { tracer: runtime.tracer }),
     onEvent: (ev: AgentEvent) => {
       logger.write({
         kind: ev.kind,
@@ -464,6 +544,8 @@ async function bringUp(
       bus: sources.bus,
       logger: coreLogger,
       agentDir,
+      metrics: runtime.metrics,
+      ...(runtime.tracer !== undefined && { tracer: runtime.tracer }),
     });
     const channelCount = channelsRuntime.channels.list().length;
     if (channelCount > 0) {
@@ -639,6 +721,46 @@ async function attachDispatcherToAgent(opts: {
     createChildSession: () => runtime.sessionStore.create(spec),
   });
 
+  // Per-skill circuit breakers (Slice 3 / PR 3.1). A skill that throws
+  // N consecutive times trips to `open`, short-circuiting dispatch for
+  // the cool-down window. Lazy — breakers are created the first time a
+  // target routes, so skills that are never invoked don't allocate.
+  //
+  // Defaults (failureThreshold: 10, resetTimeoutMs: 30s) are generous
+  // enough to absorb typical LLM retry storms without false-positive
+  // trips. Operators can tune via `agent.yaml#reliability.circuitBreaker`
+  // once that schema lands (PR 3.1 ships the wiring with defaults only).
+  const breakers = new Map<string, CircuitBreaker>();
+  const getBreaker = (targetName: string): CircuitBreaker => {
+    const existing = breakers.get(targetName);
+    if (existing) return existing;
+    const breaker = new CircuitBreaker({ failureThreshold: 10, resetTimeoutMs: 30_000 });
+    const agentId = spec.name;
+    breaker.onTransition((ev: CircuitBreakerTransitionEvent) => {
+      runtime.metrics
+        .counter(
+          'declaragent.dispatcher.breaker.transitions',
+          'Dispatcher target circuit-breaker transitions',
+        )
+        .inc(1, { agent: agentId, target: targetName, from: ev.from, to: ev.to });
+      runtime.metrics
+        .gauge(
+          'declaragent.dispatcher.breaker.state',
+          'Current breaker state (0=closed, 1=half-open, 2=open)',
+        )
+        .set(stateToNumeric(ev.to), { agent: agentId, target: targetName });
+      logger.write({
+        level: ev.to === 'open' ? 'warn' : 'info',
+        event: 'dispatcher.breaker-transition',
+        target: targetName,
+        from: ev.from,
+        to: ev.to,
+      });
+    });
+    breakers.set(targetName, breaker);
+    return breaker;
+  };
+
   const dispatcher: EventDispatcher = createEventDispatcher({
     registry,
     runAgent: engine.runAgent,
@@ -646,6 +768,7 @@ async function attachDispatcherToAgent(opts: {
     ...(eventStore && { store: eventStore }),
     createSession: () => runtime.sessionStore.create(spec),
     createChildSession: () => runtime.sessionStore.create(spec),
+    targetBreaker: getBreaker,
   });
 
   // Subscribe ourselves + invoke `dispatcher.handle()` explicitly
@@ -812,6 +935,134 @@ function findEventSourcesConfig(agentDir: string): string | undefined {
     if (existsSync(p)) return p;
   }
   return undefined;
+}
+
+/**
+ * Resolve the Prometheus exporter port.
+ *
+ * Priority: `DECLARAGENT_METRICS_PORT` env var (`0` disables) overrides
+ * the mode-specific default. In detached mode we default to `9464` (OTel
+ * convention) so long-running daemons are scrapable by default. In
+ * foreground mode we default to `0` (off) to keep test harnesses and
+ * transient `declaragent up` sessions from colliding on the port.
+ *
+ * @since 0.6.0-slice.1
+ */
+function resolveMetricsPort(isDetached: boolean): number {
+  const raw = process.env.DECLARAGENT_METRICS_PORT;
+  if (raw !== undefined && raw !== '') {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 65535) {
+      return parsed;
+    }
+    // Invalid override → fall through to default; we don't warn here
+    // because the caller logs a bind failure if it matters.
+  }
+  return isDetached ? 9464 : 0;
+}
+
+/**
+ * Auto-enable OpenTelemetry tracing when `OTEL_EXPORTER_OTLP_ENDPOINT`
+ * is set. We wrap `createOtelBridge()` — which loads the peer-dep
+ * `@opentelemetry/api` at runtime. When the peer dep is missing the
+ * bridge throws {@link ObservabilityError}; we catch, warn with a
+ * concrete install hint, and return undefined so the runtime falls
+ * back to its internal noop tracer.
+ *
+ * Metrics are NOT routed through the bridge — we keep the dedicated
+ * Prometheus registry for pull-based scraping and only use OTel for
+ * span export. Operators that want metrics in OTel too can run an
+ * OTel collector with a Prometheus scrape receiver (see OTEL_SETUP.md).
+ *
+ * @since 0.6.0-slice.2
+ */
+/**
+ * Apply the default provider-level rate limiter from Slice 4. Emits
+ * wait counters + a histogram through the shared metrics registry so
+ * the Prometheus endpoint surfaces the throttle activity. Env var
+ * escape hatches:
+ *
+ *   - `DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1` bypasses the wrap
+ *     entirely. Useful for load tests + offline backfills.
+ *   - `DECLARAGENT_PROVIDER_RATE_LIMIT_RPS=<n>` overrides the preset's
+ *     default. Floating-point values accepted.
+ *
+ * @since 0.6.0-slice.4
+ */
+function wrapProviderWithRateLimit(opts: {
+  provider: LLMProvider;
+  providerId: string;
+  metrics: PrometheusRegistry;
+  io: UpIO;
+}): LLMProvider {
+  if (process.env.DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE === '1') {
+    opts.io.out('  rate-limit: disabled via DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE\n');
+    return opts.provider;
+  }
+  const override = process.env.DECLARAGENT_PROVIDER_RATE_LIMIT_RPS;
+  let rate: number;
+  if (override !== undefined && override !== '') {
+    const parsed = Number.parseFloat(override);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      rate = parsed;
+    } else {
+      opts.io.err(
+        `⚠ DECLARAGENT_PROVIDER_RATE_LIMIT_RPS="${override}" is not a positive number; using default.\n`,
+      );
+      rate = defaultRateForProvider(opts.providerId);
+    }
+  } else {
+    rate = defaultRateForProvider(opts.providerId);
+  }
+  opts.io.out(
+    `  rate-limit: ${rate} rps (provider=${opts.providerId}; env DECLARAGENT_PROVIDER_RATE_LIMIT_RPS overrides, DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1 opts out)\n`,
+  );
+  const waitsCounter = opts.metrics.counter(
+    'declaragent.provider.rate_limit.waits',
+    'Provider rate-limiter wait events',
+  );
+  const waitMsHistogram = opts.metrics.histogram(
+    'declaragent.provider.rate_limit.wait_ms',
+    'Provider rate-limiter wait duration in ms',
+  );
+  return withProviderRateLimit(opts.provider, {
+    ratePerSec: rate,
+    onWait: (waitMs) => {
+      waitsCounter.inc(1, { provider: opts.providerId });
+      waitMsHistogram.observe(waitMs, { provider: opts.providerId });
+    },
+  });
+}
+
+/**
+ * Map the {@link CircuitBreakerState} to a numeric value so Prometheus
+ * gauge panels can render the state as a step chart. Ordering mirrors
+ * severity: closed (0) → half-open (1) → open (2) so alert rules can
+ * fire on `> 1` without special-casing strings.
+ *
+ * @since 0.6.0-slice.3
+ */
+function stateToNumeric(s: 'closed' | 'half-open' | 'open'): number {
+  if (s === 'open') return 2;
+  if (s === 'half-open') return 1;
+  return 0;
+}
+
+async function maybeCreateOtelTracer(io: UpIO): Promise<Tracer | undefined> {
+  if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) return undefined;
+  try {
+    const bridge = await createOtelBridge({
+      meterName: '@declaragent/core',
+      tracerName: '@declaragent/core',
+    });
+    return bridge.tracer;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    io.err(
+      `⚠ OTEL_EXPORTER_OTLP_ENDPOINT is set but tracing could not start: ${msg}\n  Install peer deps to enable:\n    npm i @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http\n  Falling back to noop tracer — the up-loop will still work, just without spans.\n`,
+    );
+    return undefined;
+  }
 }
 
 function manifestDir(manifestPath: string): string {

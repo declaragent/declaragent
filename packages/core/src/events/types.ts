@@ -169,7 +169,19 @@ export type DispatchOutcome =
   | { kind: 'duplicate'; firstSeenAt: number; eventId: string }
   | {
       kind: 'rejected';
-      reason: 'rate-limit' | 'unauthorized' | 'no-handler' | 'loop' | 'invalid';
+      reason:
+        | 'rate-limit'
+        | 'unauthorized'
+        | 'no-handler'
+        | 'loop'
+        | 'invalid'
+        /**
+         * Dispatch target's circuit breaker is `open`. Consecutive failures
+         * tripped the breaker; new events for this target short-circuit
+         * until the cool-down elapses and a probe succeeds.
+         * @since 0.6.0-slice.3
+         */
+        | 'circuit-open';
       details?: string;
     };
 

@@ -34,6 +34,8 @@ import {
   type EventSourceInstance,
   type EventStore,
   type Logger,
+  type MetricsRegistry,
+  type Tracer,
   createCronAdapter,
   createEventBus,
   createEventStore,
@@ -154,6 +156,23 @@ export interface StartAgentSourcesOptions {
    * @since 0.5.0-slice.1
    */
   agentDir?: string;
+  /**
+   * Metrics registry passed to every source instance via `deps.metrics`.
+   * When omitted, sources fall back to their internal noop registry.
+   * `declaragent up` supplies a shared {@link PrometheusRegistry} so the
+   * `/metrics` endpoint reports source-level counters + histograms for
+   * every agent hosted in the up-process.
+   * @since 0.6.0-slice.1
+   */
+  metrics?: MetricsRegistry;
+  /**
+   * Tracer passed to every source instance via `deps.tracer`. When
+   * omitted, sources fall back to their internal noop tracer.
+   * `declaragent up` populates this when `OTEL_EXPORTER_OTLP_ENDPOINT`
+   * is set so adapters emit real OTel spans for every ingested message.
+   * @since 0.6.0-slice.2
+   */
+  tracer?: Tracer;
 }
 
 export interface StartAgentSourcesResult {
@@ -291,6 +310,8 @@ export async function startAgentSources(
         logger,
         configDir: configDir(),
         normalizer,
+        ...(options.metrics !== undefined && { metrics: options.metrics }),
+        ...(options.tracer !== undefined && { tracer: options.tracer }),
       });
       await inst.start();
       instances.push(inst);

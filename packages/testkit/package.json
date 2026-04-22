@@ -34,6 +34,7 @@
   },
   "peerDependencies": {
     "@declaragent/core": "^0.3.0",
+    "@declaragent/plugin-agent-rpc": "^2.0.0",
     "@declaragent/source-kafka": "^2.0.0"
   },
   "dependencies": {

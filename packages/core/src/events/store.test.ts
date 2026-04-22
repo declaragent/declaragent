@@ -248,3 +248,88 @@ describe('createEventStore', () => {
     expect(record?.event.payload).toBeNull();
   });
 });
+
+// ── Slice 5 / PR 5.1 — dispatch DLQ ─────────────────────────────────────
+
+describe('createEventStore: rejected_events (dispatch DLQ)', () => {
+  test('upsertRejection inserts a new row with attempt=1 on first call', async () => {
+    const db = memDb();
+    const store = createEventStore({ db });
+    await store.record(makeEvent({ id: 'e1' }));
+    await store.upsertRejection('e1', 'invalid', 'skill threw', 1_700_000_000_000);
+
+    const rec = await store.getRejection('e1');
+    expect(rec).toBeDefined();
+    expect(rec?.eventId).toBe('e1');
+    expect(rec?.rejectionReason).toBe('invalid');
+    expect(rec?.details).toBe('skill threw');
+    expect(rec?.attemptCount).toBe(1);
+    expect(rec?.firstSeenMs).toBe(1_700_000_000_000);
+    expect(rec?.lastSeenMs).toBe(1_700_000_000_000);
+  });
+
+  test('upsertRejection bumps attempt_count + last_seen on repeat calls without changing first_seen', async () => {
+    const db = memDb();
+    const store = createEventStore({ db });
+    await store.record(makeEvent({ id: 'e1' }));
+    await store.upsertRejection('e1', 'circuit-open', 'breaker open', 1_000);
+    await store.upsertRejection('e1', 'circuit-open', 'breaker still open', 2_000);
+    await store.upsertRejection('e1', 'invalid', 'different reason now', 3_000);
+
+    const rec = await store.getRejection('e1');
+    expect(rec?.attemptCount).toBe(3);
+    expect(rec?.firstSeenMs).toBe(1_000);
+    expect(rec?.lastSeenMs).toBe(3_000);
+    // Latest-write-wins on reason + details
+    expect(rec?.rejectionReason).toBe('invalid');
+    expect(rec?.details).toBe('different reason now');
+  });
+
+  test('listRejections filters by reason, sinceMs, minAttempts', async () => {
+    const db = memDb();
+    const store = createEventStore({ db });
+    for (const id of ['a', 'b', 'c']) await store.record(makeEvent({ id }));
+    await store.upsertRejection('a', 'circuit-open', undefined, 1_000);
+    await store.upsertRejection('b', 'rate-limit', undefined, 2_000);
+    await store.upsertRejection('b', 'rate-limit', undefined, 3_000);
+    await store.upsertRejection('c', 'circuit-open', undefined, 4_000);
+    await store.upsertRejection('c', 'circuit-open', undefined, 5_000);
+    await store.upsertRejection('c', 'circuit-open', undefined, 6_000);
+
+    const all = await store.listRejections();
+    expect(all).toHaveLength(3);
+    // Newest-first order
+    expect(all[0]?.eventId).toBe('c');
+
+    const circuits = await store.listRejections({ reason: 'circuit-open' });
+    expect(circuits.map((r) => r.eventId).sort()).toEqual(['a', 'c']);
+
+    const recent = await store.listRejections({ sinceMs: 4_000 });
+    expect(recent.map((r) => r.eventId).sort()).toEqual(['c']);
+
+    const poison = await store.listRejections({ minAttempts: 3 });
+    expect(poison.map((r) => r.eventId)).toEqual(['c']);
+  });
+
+  test('deleteRejection returns true on success and false when no row existed', async () => {
+    const db = memDb();
+    const store = createEventStore({ db });
+    await store.record(makeEvent({ id: 'e1' }));
+    await store.upsertRejection('e1', 'invalid', undefined);
+    expect(await store.deleteRejection('e1')).toBe(true);
+    expect(await store.getRejection('e1')).toBeUndefined();
+    expect(await store.deleteRejection('e1')).toBe(false);
+  });
+
+  test('listRejections respects limit', async () => {
+    const db = memDb();
+    const store = createEventStore({ db });
+    for (let i = 0; i < 10; i += 1) {
+      const id = `e${i}`;
+      await store.record(makeEvent({ id }));
+      await store.upsertRejection(id, 'invalid', undefined, 1_000 + i);
+    }
+    const rows = await store.listRejections({ limit: 3 });
+    expect(rows).toHaveLength(3);
+  });
+});

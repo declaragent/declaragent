@@ -20,8 +20,12 @@ import type {
   EventBus,
   Logger,
   Mailbox,
+  MetricsRegistry,
+  Tracer,
 } from '@declaragent/core';
+import type { ChannelInboundBridge, InboundRoute } from '@declaragent/core';
 import {
+  createChannelInboundBridge,
   createChannelRegistry,
   createMailbox,
   discoverChannelAdapters,
@@ -49,6 +53,20 @@ export interface StartChannelRuntimeOptions {
   sessionsDb?: string;
   /** Extra search paths for channel adapter discovery. Default: agent dir + cwd + configDir. */
   agentDir?: string;
+  /**
+   * Metrics registry passed to every channel instance via `deps.metrics`.
+   * Shared with {@link startAgentSources} by `declaragent up` so inbound
+   * + outbound counters land in the same `/metrics` exposition.
+   * @since 0.6.0-slice.1
+   */
+  metrics?: MetricsRegistry;
+  /**
+   * Tracer passed to every channel instance via `deps.tracer`. Shared
+   * with {@link startAgentSources} by `declaragent up` so the same
+   * trace covers source → channel bookkeeping when OTel is enabled.
+   * @since 0.6.0-slice.2
+   */
+  tracer?: Tracer;
 }
 
 /**
@@ -123,6 +141,12 @@ export async function startChannelRuntime(
     };
   }
 
+  // Collect inbound routes per channel (Slice 6 / PR 6.1) so we can
+  // wire the bridge once the instances are registered. Parsing is
+  // defensive: malformed entries log + skip rather than abort, so one
+  // bad inbound block doesn't stop a whole config from loading.
+  const routesByChannel: Record<string, readonly InboundRoute[]> = {};
+
   for (const entry of loaded.channels) {
     const adapter = byType.get(entry.type);
     if (adapter === undefined) {
@@ -144,10 +168,15 @@ export async function startChannelRuntime(
         logger: opts.logger.child({ channel: entry.type }),
         configDir: configDir(),
         channels: registry,
+        ...(opts.metrics !== undefined && { metrics: opts.metrics }),
+        ...(opts.tracer !== undefined && { tracer: opts.tracer }),
       });
       registry.register(instance);
       instances.push(instance);
       opts.logger.info('channels.channel-ready', { type: entry.type, id: instance.id });
+
+      const routes = parseInboundRoutes(entry.config, opts.logger);
+      if (routes.length > 0) routesByChannel[instance.id] = routes;
     } catch (err) {
       skipped.push({
         type: entry.type,
@@ -160,6 +189,22 @@ export async function startChannelRuntime(
     }
   }
 
+  // Single bridge per up-process, shared across all channels. The bus
+  // is the same one every adapter publishes inbound events onto, so one
+  // subscription covers every channel.
+  let bridge: ChannelInboundBridge | undefined;
+  const hasRoutes = Object.values(routesByChannel).some((r) => r.length > 0);
+  if (hasRoutes) {
+    bridge = createChannelInboundBridge({
+      bus: opts.bus,
+      routesByChannel,
+      logger: opts.logger,
+    });
+    opts.logger.info('channels.inbound-bridge.ready', {
+      channelIds: Object.keys(routesByChannel),
+    });
+  }
+
   let stopped = false;
   return {
     channels: registry,
@@ -168,6 +213,11 @@ export async function startChannelRuntime(
     shutdown: async () => {
       if (stopped) return;
       stopped = true;
+      try {
+        bridge?.detach();
+      } catch {
+        // best-effort — detach is idempotent by contract
+      }
       await Promise.all(
         instances.map(async (inst) => {
           try {
@@ -184,6 +234,66 @@ export async function startChannelRuntime(
       }
     },
   };
+}
+
+/**
+ * Extract `inbound.routes` from a channel entry's config object. The
+ * config is `Record<string, unknown>` at this layer, so we validate
+ * shape defensively and skip entries that don't match. Shape:
+ *
+ * ```json
+ * "inbound": { "routes": [{ "event": "chat.mention", "skill": "triage" }, …] }
+ * ```
+ *
+ * @since 0.6.0-slice.6
+ */
+function parseInboundRoutes(
+  config: Readonly<Record<string, unknown>>,
+  logger: Logger,
+): readonly InboundRoute[] {
+  const inbound = config.inbound;
+  if (inbound === undefined || inbound === null) return [];
+  if (typeof inbound !== 'object') {
+    logger.warn('channels.inbound-config.invalid', {
+      reason: `inbound must be an object (got ${typeof inbound})`,
+    });
+    return [];
+  }
+  const routesRaw = (inbound as { routes?: unknown }).routes;
+  if (routesRaw === undefined || routesRaw === null) return [];
+  if (!Array.isArray(routesRaw)) {
+    logger.warn('channels.inbound-config.invalid', {
+      reason: 'inbound.routes must be an array',
+    });
+    return [];
+  }
+  const out: InboundRoute[] = [];
+  for (const [i, raw] of routesRaw.entries()) {
+    if (!raw || typeof raw !== 'object') {
+      logger.warn('channels.inbound-config.route-invalid', {
+        index: i,
+        reason: 'entry is not an object',
+      });
+      continue;
+    }
+    const r = raw as Record<string, unknown>;
+    if (typeof r.event !== 'string' || r.event.length === 0) {
+      logger.warn('channels.inbound-config.route-invalid', {
+        index: i,
+        reason: 'event must be a non-empty string',
+      });
+      continue;
+    }
+    if (typeof r.skill !== 'string' || r.skill.length === 0) {
+      logger.warn('channels.inbound-config.route-invalid', {
+        index: i,
+        reason: 'skill must be a non-empty string',
+      });
+      continue;
+    }
+    out.push({ event: r.event, skill: r.skill });
+  }
+  return out;
 }
 
 function uniquePaths(paths: readonly (string | undefined)[]): string[] {

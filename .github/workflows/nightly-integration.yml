@@ -1,0 +1,121 @@
+name: nightly — fleet RPC over Kafka
+
+# Slice 7 of RELEASE_0_6_0_PLAN. Exercises the Kafka RPC transport
+# end-to-end through a live Redpanda. Gated behind FLEET_INTEGRATION=1
+# so it only runs on this workflow's schedule, not on every PR (the
+# broker startup costs ~15s and flake risk isn't worth paying per-PR).
+#
+# Exit criterion for 0.6.0 promotion beta → rc: 7 consecutive green
+# nightlies. Failures file a GitHub issue so oncall sees the regression;
+# they do NOT block unrelated PRs.
+
+on:
+  schedule:
+    # 08:00 UTC daily — early in the US morning, gives the team a fresh
+    # signal before real work starts. Adjust if the runner pool is
+    # congested at this hour.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      retries:
+        description: 'Override retry count for flake investigation'
+        required: false
+        default: '3'
+
+concurrency:
+  group: nightly-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fleet-rpc-kafka:
+    name: fleet RPC round-trip (Kafka)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build core + plugin-agent-rpc
+        run: |
+          bun run --filter '@declaragent/core' build
+          bun run --filter '@declaragent/plugin-agent-rpc' build
+
+      - name: Start Redpanda broker
+        run: |
+          set -euo pipefail
+          docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml up -d
+          echo "Waiting for Redpanda to go healthy..."
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' declaragent-kafka-redpanda 2>/dev/null || echo 'missing')"
+            echo "  attempt $i: $status"
+            [ "${status}" = "healthy" ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' declaragent-kafka-redpanda | grep -q healthy
+
+      - name: Run fleet RPC integration tests
+        env:
+          FLEET_INTEGRATION: '1'
+          KAFKA_BROKERS: localhost:19092
+        run: |
+          set -euo pipefail
+          RETRIES="${{ github.event.inputs.retries || '3' }}"
+          attempt=1
+          while [ "${attempt}" -le "${RETRIES}" ]; do
+            echo "=== attempt ${attempt}/${RETRIES} ==="
+            if bun test packages/testkit/src/fleet-integration/; then
+              echo "integration test passed on attempt ${attempt}"
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+          done
+          echo "integration test failed after ${RETRIES} attempts"
+          exit 1
+
+      - name: Dump broker logs on failure
+        if: failure()
+        run: |
+          docker logs declaragent-kafka-redpanda --tail 200 || true
+          docker ps -a || true
+
+      - name: Stop Redpanda
+        if: always()
+        run: |
+          docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml down --volumes || true
+
+  # File a tracking issue on failure. PRs don't block — nightly flakes
+  # should be investigated through the issue tracker, not by gating
+  # feature work on an infra test that may be transient.
+  report-failure:
+    name: File tracking issue on failure
+    needs: fleet-rpc-kafka
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `nightly fleet-integration failed on ${new Date().toISOString().slice(0, 10)}`;
+            const body = [
+              `Nightly fleet RPC integration test failed.`,
+              ``,
+              `**Workflow run:** ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+              ``,
+              `Labeled \`nightly-flake\` for triage. Close when resolved.`,
+              `Reopen automatically disabled — each failure files a fresh issue so trends are visible.`,
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['nightly-flake', 'slice-7'],
+            });
