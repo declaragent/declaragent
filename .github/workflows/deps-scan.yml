@@ -84,11 +84,13 @@ jobs:
             --format=sarif \
             --output=osv-results.sarif \
             . || true
-          # Exit 1 on any CRITICAL finding; warn on HIGH via the SARIF.
+          # Exit 1 on any advisory match (osv-scanner's default
+          # behaviour). The `--max-severity` flag was removed upstream;
+          # the ignore list (enforced with expiry above) is how we ack
+          # known-non-critical findings.
           osv-scanner \
             --lockfile=bun.lock \
             --config=.osv-ignore.toml \
-            --max-severity=critical \
             .
 
       - name: Upload SARIF to code-scanning
