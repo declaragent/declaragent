@@ -171,17 +171,26 @@ jobs:
     steps:
       - name: Detect release context
         id: ctx
+        # `${{ ... }}` expressions are interpolated into the shell script
+        # as raw text BEFORE bash starts. A commit message or PR title
+        # containing backticks, `$(...)`, or `;` would execute as the
+        # runner user — real shell-injection vector. Pass via env so the
+        # values are quoted by the runner, not the shell parser.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
-          pr_title="${{ github.event.pull_request.title }}"
-          head_msg="${{ github.event.head_commit.message }}"
           is_release="false"
           # `startsWith` semantics without relying on the contexts
-          # dropping newlines into the expression.
-          case "${pr_title}" in
+          # dropping newlines into the expression. PR titles are one
+          # line; head_commit.message is the FIRST line followed by
+          # body — only match against the first line.
+          head_first_line="${HEAD_MSG%%$'\n'*}"
+          case "${PR_TITLE}" in
             "chore: version packages"*) is_release="true" ;;
           esac
-          case "${head_msg}" in
+          case "${head_first_line}" in
             "chore: version packages"*) is_release="true" ;;
           esac
           echo "is_release=${is_release}" >> "$GITHUB_OUTPUT"
