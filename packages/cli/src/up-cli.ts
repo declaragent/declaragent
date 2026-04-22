@@ -58,6 +58,7 @@ import {
   createSendMessageTool,
   createSqliteAuditSink,
   createSqliteSessionStore,
+  createToolRateLimitGate,
   defaultRateForProvider,
   dlqRoute,
   eventsRoute,
@@ -950,6 +951,26 @@ async function attachDispatcherToAgent(opts: {
   }
   extraTools.push(...plugins.tools);
 
+  // Enterprise Production Plan §3 Item #7 — per-tool token-bucket gate.
+  // Built only when `agent.yaml#tools.rateLimit` has at least one entry,
+  // to avoid allocating buckets for agents that opt out. Audit sink not
+  // wired here yet — `up` doesn't currently construct one; tenancy-aware
+  // callers that do can set it on `createEngine({ toolRateLimit })`.
+  const toolRateLimit =
+    Object.keys(loaded.toolRateLimits).length > 0
+      ? createToolRateLimitGate({
+          limits: loaded.toolRateLimits,
+          onWait: ({ tool, waitMs }) => {
+            runtime.metrics
+              .counter('declaragent.tool.rate_limit.waits_total', 'Tool rate-limit waits by tool')
+              .inc(1, { agent: spec.name, tool });
+            runtime.metrics
+              .counter('declaragent.tool.rate_limit.wait_ms', 'Cumulative ms waited per tool')
+              .inc(waitMs, { agent: spec.name, tool });
+          },
+        })
+      : undefined;
+
   const engine = createEngine({
     provider,
     tools: [
@@ -961,6 +982,7 @@ async function attachDispatcherToAgent(opts: {
     permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
     hookRegistry,
     createChildSession: () => runtime.sessionStore.create(spec),
+    ...(toolRateLimit !== undefined && { toolRateLimit }),
   });
 
   // Per-skill circuit breakers (Slice 3 / PR 3.1). A skill that throws

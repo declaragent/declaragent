@@ -129,6 +129,53 @@ describe('loadAgent', () => {
     const loaded = await loadAgent({ agentDir: dir });
     expect(loaded.toolNames).toEqual([]);
   });
+
+  test('toolRateLimits parses tools.rateLimit and defaults burst to rps', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        'name: x',
+        'model: y',
+        'systemPrompt: z',
+        'tools:',
+        '  defaults: [Bash, Read]',
+        '  rateLimit:',
+        '    Bash: { rps: 1 }',
+        '    Read: { rps: 10, burst: 30 }',
+        '',
+      ].join('\n'),
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.toolRateLimits).toEqual({
+      Bash: { rps: 1, burst: 1 },
+      Read: { rps: 10, burst: 30 },
+    });
+  });
+
+  test('toolRateLimits is empty when rateLimit block omitted', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      'name: x\nmodel: y\nsystemPrompt: z\ntools:\n  defaults: [Read]\n',
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.toolRateLimits).toEqual({});
+  });
+
+  test('rejects rateLimit with rps <= 0', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        'name: x',
+        'model: y',
+        'systemPrompt: z',
+        'tools:',
+        '  rateLimit:',
+        '    Bash: { rps: 0 }',
+        '',
+      ].join('\n'),
+    );
+    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/rateLimit|rps|validation/i);
+  });
 });
 
 describe('composeSystemPromptWithSkills', () => {

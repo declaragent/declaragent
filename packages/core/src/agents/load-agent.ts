@@ -66,6 +66,23 @@ const agentYamlSchema = z
     tools: z
       .object({
         defaults: z.array(z.string()).optional(),
+        /**
+         * Enterprise Production Plan §3 Item #7 — per-tool rate limit
+         * config. Keys are tool names (`Bash`, `Write`, `mcp__github__list_issues`, …);
+         * values are `{ rps, burst? }`. Omitted tools are uncapped.
+         * `burst` defaults to `rps` at load time (see `ToolRateLimitGate`).
+         *
+         * @since 0.6.x
+         */
+        rateLimit: z
+          .record(
+            z.string().min(1),
+            z.object({
+              rps: z.number().positive(),
+              burst: z.number().positive().optional(),
+            }),
+          )
+          .optional(),
       })
       .passthrough()
       .optional(),
@@ -74,11 +91,27 @@ const agentYamlSchema = z
 
 export type AgentYaml = z.infer<typeof agentYamlSchema>;
 
+/**
+ * Per-tool rate-limit config as loaded from `agent.yaml#tools.rateLimit`.
+ * `burst` is normalised to a concrete value at load time (default = rps).
+ *
+ * @since 0.6.x — Enterprise Production Plan §3 Item #7
+ */
+export interface LoadedToolRateLimit {
+  readonly rps: number;
+  readonly burst: number;
+}
+
 export interface LoadedAgent {
   readonly spec: AgentSpec;
   readonly skills: readonly Skill[];
   /** Tool names declared under `tools.defaults`. CLI resolves to actual `Tool` objects. */
   readonly toolNames: readonly string[];
+  /**
+   * Per-tool rate limits parsed from `tools.rateLimit`. Empty when the
+   * block is omitted. CLI passes this straight to `createToolRateLimitGate`.
+   */
+  readonly toolRateLimits: Readonly<Record<string, LoadedToolRateLimit>>;
   readonly agentDir: string;
   readonly agentYamlPath: string;
   /** Lookup-name collisions surfaced by the skill loader; callers may warn. */
@@ -161,10 +194,25 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
     ...(cfg.subagentDepthCap !== undefined && { subagentDepthCap: cfg.subagentDepthCap }),
   };
 
+  // Normalise the rate-limit block. Missing `burst` defaults to `rps`
+  // (matches ToolRateLimitGate behaviour — a full second of steady-state
+  // calls absorbable without sleeping).
+  const rawRateLimit = cfg.tools?.rateLimit;
+  const toolRateLimits: Record<string, LoadedToolRateLimit> = {};
+  if (rawRateLimit) {
+    for (const [toolName, entry] of Object.entries(rawRateLimit)) {
+      toolRateLimits[toolName] = {
+        rps: entry.rps,
+        burst: entry.burst ?? entry.rps,
+      };
+    }
+  }
+
   return {
     spec,
     skills: skillLoad.skills,
     toolNames: cfg.tools?.defaults ?? [],
+    toolRateLimits,
     agentDir,
     agentYamlPath,
     skillConflicts: skillLoad.conflicts,

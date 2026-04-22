@@ -104,6 +104,32 @@ export interface AuthCheckAuditRecord {
 }
 
 /**
+ * Per-tool rate-limit stall. Emitted by the {@link import('../tools/rate-limit-gate.js').ToolRateLimitGate}
+ * when a tool invocation had to wait for a token longer than the configured
+ * `auditThresholdMs` (default 1000 ms). Short waits are silent — auditing
+ * every few-ms blip would bloat the chain without operational value.
+ *
+ * @since 0.6.x — Enterprise Production Plan §3 Item #7
+ */
+export interface RateLimitedAuditRecord {
+  kind: 'rate_limited';
+  ts: number;
+  tenantId: string;
+  /** Tool name whose bucket was empty. */
+  tool: string;
+  /** Configured steady-state rate (rps). */
+  rps: number;
+  /** Configured burst capacity. */
+  burst: number;
+  /** Wall-clock time the caller waited, in ms. */
+  waitMs: number;
+  /** Session the call originated from (when available). */
+  sessionId?: string;
+  /** Correlation id threaded through from the originating event. */
+  correlationId?: string;
+}
+
+/**
  * Erasure tombstone — surfaced by queries in place of records that
  * `TenantAuditSink.erase()` has scrubbed. Keeps the hash-chain verifier
  * able to confirm continuity even after right-to-erasure requests.
@@ -138,6 +164,7 @@ export type TenantAuditRecord =
   | TenantBoundaryAuditRecord
   | QuotaExceededAuditRecord
   | AuthCheckAuditRecord
+  | (RateLimitedAuditRecord & { tenantId: string })
   | ErasedAuditRecord;
 
 /** @since 1.0.0 */

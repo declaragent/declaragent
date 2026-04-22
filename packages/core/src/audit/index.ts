@@ -3,6 +3,7 @@ export type {
   EraseOptions,
   ErasedAuditRecord,
   QuotaExceededAuditRecord,
+  RateLimitedAuditRecord,
   RetentionPruneOptions,
   StoredAuditEntry,
   TenantAuditQuery,

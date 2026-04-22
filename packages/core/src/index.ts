@@ -198,6 +198,7 @@ export {
   Read,
   Write,
   createSendMessageTool,
+  createToolRateLimitGate,
   permissionKeyFor as sendMessagePermissionKey,
 } from './tools/index.js';
 export type {
@@ -217,6 +218,10 @@ export type {
   CreateSendMessageToolDeps,
   SendMessageInput,
   SendMessageOutput,
+  ToolRateLimitAcquireContext,
+  ToolRateLimitConfig,
+  ToolRateLimitGate,
+  ToolRateLimitGateOptions,
   WriteInput,
   WriteOutput,
 } from './tools/index.js';
@@ -481,7 +486,12 @@ export type {
   SkillTier,
 } from './skills/index.js';
 export { AgentConfigError, composeSystemPromptWithSkills, loadAgent } from './agents/load-agent.js';
-export type { AgentYaml, LoadAgentOptions, LoadedAgent } from './agents/load-agent.js';
+export type {
+  AgentYaml,
+  LoadAgentOptions,
+  LoadedAgent,
+  LoadedToolRateLimit,
+} from './agents/load-agent.js';
 export {
   DEFAULT_PLUGIN_STORE_FILE,
   PluginActivationError,
