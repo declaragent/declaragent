@@ -37,9 +37,12 @@ jobs:
           bun-version: latest
       - name: Install deps
         run: bun install --frozen-lockfile
-      - name: Run chaos:quick
-        working-directory: packages/testkit
-        run: bun run chaos:quick
+      - name: Diagnose workspace link state
+        run: |
+          ls -la packages/testkit/node_modules/@declaragent/ 2>&1 || echo "no @declaragent symlink in testkit"
+          bun --version
+      - name: Run chaos:quick (via filter, so Bun's workspace-aware runner picks up deps)
+        run: bun run --filter '@declaragent/testkit' chaos:quick
       - name: Upload chaos report
         if: always()
         uses: actions/upload-artifact@v4
@@ -108,10 +111,10 @@ jobs:
           failed = []
           for entry in data.get('IgnoredVulns', []):
               eid = entry.get('id', '<missing id>')
-              expires_raw = entry.get('expires')
+              expires_raw = entry.get("ignoreUntil")
               reason = entry.get('reason')
               if not expires_raw:
-                  failed.append(f"{eid}: missing `expires`")
+                  failed.append(f"{eid}: missing `ignoreUntil`")
                   continue
               if not reason:
                   failed.append(f"{eid}: missing `reason`")

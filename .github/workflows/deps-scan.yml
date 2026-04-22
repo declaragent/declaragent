@@ -42,10 +42,10 @@ jobs:
           entries = data.get('IgnoredVulns', [])
           for entry in entries:
               eid = entry.get('id', '<missing id>')
-              expires_raw = entry.get('expires')
+              expires_raw = entry.get("ignoreUntil")
               reason = entry.get('reason')
               if not expires_raw:
-                  failed.append(f"{eid}: missing `expires` (required)")
+                  failed.append(f"{eid}: missing `ignoreUntil` (required)")
                   continue
               if not reason:
                   failed.append(f"{eid}: missing `reason` (required)")
