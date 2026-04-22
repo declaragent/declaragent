@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/core",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Runtime core for Declaragent — declarative AI agent platform.",
   "license": "Apache-2.0",
   "type": "module",
@@ -13,7 +13,11 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",

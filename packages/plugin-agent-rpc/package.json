@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/plugin-agent-rpc",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Agent-to-agent RPC runtime for Declaragent (v1.1). Provides the RequestAgent tool, agent-inbox source adapter, and an in-memory transport for tests.",
   "license": "Apache-2.0",
   "type": "module",
@@ -13,7 +13,11 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
@@ -23,7 +27,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@declaragent/core": "^0.3.0"
+    "@declaragent/core": "^0.4.0"
   },
   "declaragent": {
     "kind": "event-source-adapter",

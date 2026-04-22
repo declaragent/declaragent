@@ -1,5 +1,241 @@
 # @declaragent/cli
 
+## 0.6.0
+
+### Minor Changes
+
+- 8bddcc1: **Slice 1 of 0.6.0 production hardening — Prometheus `/metrics` endpoint wired into `declaragent up`.**
+
+  `up` now constructs a shared `PrometheusRegistry` and threads it through `startAgentSources` + `startChannelRuntime` via `deps.metrics`. Every source and channel adapter that already writes to `deps.metrics` (external broker adapters, `BaseChannelInstance` counters) automatically surfaces samples through `/metrics` with no adapter changes.
+
+  An HTTP exporter binds to `127.0.0.1:9464` (OTel convention) by default in detached mode (`up -d`). Foreground mode stays quiet unless `DECLARAGENT_METRICS_PORT` is set. Set `DECLARAGENT_METRICS_PORT=0` to disable entirely; any other valid port number overrides the default.
+
+  Exposition format is OpenMetrics text, served by the existing `startPrometheusExporter` from `@declaragent/core/observability/prometheus`. Remote scrapes are rejected by default (localhost only) — matches the Phase-3 daemon control-socket posture.
+
+  Plan reference: `docs/RELEASE_0_6_0_PLAN.md` Slice 1 (PR 1.2; PR 1.1 shipped previously as Phase 6 slice 2).
+
+- 8bddcc1: **Slice 2 of 0.6.0 production hardening — OpenTelemetry auto-enable.**
+
+  `declaragent up` now auto-wires `createOtelBridge()` when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. No code changes, no flags — install the peer deps (`@opentelemetry/api` + an SDK + OTLP trace exporter) and set the env var. Every source and channel receives the bridged tracer via `deps.tracer`, so `BaseSourceInstance`'s `source.message` spans export to your OTLP collector.
+
+  Fallback behavior: if the env var is set but `@opentelemetry/api` isn't installed, `up` prints a one-line warning with the exact `npm i` command and continues with the noop tracer. The boot loop never blocks on OTel.
+
+  Metrics stay in the Prometheus registry (Slice 1) — we keep OTel for tracing only. Operators who want metrics in OTel too should run an OTel collector with the Prometheus receiver in front; the existing `OTEL_SETUP.md` §5 recipe still applies.
+
+  Plan reference: `docs/RELEASE_0_6_0_PLAN.md` Slice 2. Docs: `docs/OTEL_SETUP.md` §1.
+
+- 8bddcc1: **Slice 3 of 0.6.0 production hardening — circuit breakers in the dispatcher.**
+
+  ### Core (@declaragent/core)
+
+  `createEventDispatcher` grows an optional `targetBreaker(targetName): CircuitBreaker | undefined` callback. When supplied, `target.type === 'skill'` routing consults the breaker:
+
+  - `breaker.allow()` checked before `runSkill`. If the breaker is `open` (post-cooldown state not yet elapsed), the dispatcher short-circuits to `{ kind: 'rejected', reason: 'circuit-open', details }` without invoking the skill.
+  - The call outcome is recorded via `breaker.record(success)` — success on a clean turn, failure on a thrown error. The error is re-thrown so the dispatcher's existing catch-and-map-to-`invalid` path still fires.
+
+  `DispatchOutcome`'s rejected-reason union gains `'circuit-open'`. Existing consumers compile unchanged — the union widens, callers that exhaustively switch need to add a case (documented in the CHANGELOG).
+
+  Scope: only `case 'skill'` is wrapped. `sub-agent` + `session` targets fall through without breaker protection. Extending breakers to those targets is a follow-up once an operator need appears.
+
+  ### CLI (@declaragent/cli)
+
+  `declaragent up` lazily creates one `CircuitBreaker` per skill target (10 consecutive failures → 30-s cooldown). Every transition bumps:
+
+  - `declaragent_dispatcher_breaker_transitions_total{agent, target, from, to}` (counter)
+  - `declaragent_dispatcher_breaker_state{agent, target}` gauge (0=closed / 1=half-open / 2=open)
+
+  Both are scrapable through the `/metrics` endpoint shipped in Slice 1. Transitions also log at warn/info level through `declaragent logs <agent>` so operators don't need a Prometheus stack to notice a trip.
+
+  `declaragent events list --state circuit-open` filters persisted events down to those whose dispatch was rejected by a breaker. Combinable with `--kind` / `--correlation`; supersedes `--outcome` when both are passed.
+
+  ### Intentional deferrals
+
+  - **`agent.yaml#reliability.circuitBreaker` schema** — plan called for `failureThreshold` / `cooldownMs` / `halfOpenProbes` override fields. The breakers are on by default with sane values; adding the schema is a small follow-up that doesn't block the slice's goal. Deferred to an 0.6.x patch once operators request tuning.
+  - **`declaragent ps` column** — reporting live breaker state would need a runtime query surface up-state doesn't have today. Deferred alongside the Slice 5 store work that's about to add `rejected_events` anyway.
+
+  Plan reference: `docs/RELEASE_0_6_0_PLAN.md` Slice 3.
+
+- 8bddcc1: **Slice 4 of 0.6.0 production hardening — default provider rate limits.**
+
+  ### Core (@declaragent/core)
+
+  New `withProviderRateLimit(provider, options)` wrapper at `packages/core/src/providers/rate-limit.ts`. Applies a token-bucket limiter before every `complete()` call (and the first chunk of a streaming call). When the bucket is empty, the call awaits the refill — no events dropped, no synthetic 429s thrown. `ProviderTokenBucket` + `defaultRateForProvider(providerId)` helpers exported alongside for users composing their own stacks.
+
+  Published steady-state defaults:
+
+  | Provider   | Rate (requests/sec) | Source                                       |
+  | ---------- | ------------------- | -------------------------------------------- |
+  | Anthropic  | 50                  | Tier-4 Opus published rate                   |
+  | OpenRouter | 20                  | Conservative cap below their proxy throttles |
+  | Unknown    | 10                  | Fallback — safe for a fresh key              |
+
+  The wrapper fires an `onWait(ms)` hook when a call queues for a token. The hook must not throw; if it does, the wrapper swallows the error and still serves the call. Calling `take()` on a healthy bucket returns synchronously with `waitedMs === 0` so the happy path carries zero overhead beyond a map-lookup.
+
+  ### CLI (@declaragent/cli)
+
+  `declaragent up` now wraps the per-process `LLMProvider` with the new limiter using `defaultRateForProvider(creds.providerId)`. Every wait bumps:
+
+  - `declaragent_provider_rate_limit_waits_total{provider}` (counter)
+  - `declaragent_provider_rate_limit_wait_ms{provider}` (histogram)
+
+  Scrapable through the `/metrics` endpoint from Slice 1. The startup banner prints the active rate + the env-var escape hatches so operators see the limit immediately.
+
+  **Migration note:** existing loud-dev workloads that hammer the provider will now queue instead of burning tokens against the ratelimiter server-side. Two escape hatches:
+
+  ```bash
+  # Opt out entirely (load tests, backfills)
+  export DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1
+
+  # Override the rate (floating-point rps)
+  export DECLARAGENT_PROVIDER_RATE_LIMIT_RPS=200
+  ```
+
+  ### Intentional deferrals
+
+  - **`agent.yaml#reliability.rateLimits` schema** — consistent with Slices 2 + 3, the schema extension is a follow-up once operators ask. Env vars are the MVP surface.
+  - **Streaming rate-limit + per-model granularity** — streams go through the same limiter (first-chunk gated), but finer-grained limits (e.g. `claude-opus-4-7` faster than `haiku`) are a future feature once we have real operator data on which models get throttled.
+
+  Plan reference: `docs/RELEASE_0_6_0_PLAN.md` Slice 4.
+
+- 8bddcc1: **Slice 5 of 0.6.0 production hardening — dispatch DLQ with requeue ledger.**
+
+  ### Core (@declaragent/core)
+
+  New `rejected_events` SQLite table shipped as part of the event store schema. Narrow on purpose: event bodies stay in `events`, this overlay tracks only `event_id`, `rejection_reason`, `details`, `attempt_count`, `first_seen_ms`, `last_seen_ms`. Indexed by `rejection_reason` and `last_seen_ms` for fast admin queries.
+
+  `EventStore` grows four methods backed by the new table:
+
+  - `upsertRejection(eventId, reason, details, nowMs?)` — idempotent insert / update. First call creates the row with attempt=1; subsequent calls bump `attempt_count` + `last_seen_ms` while preserving `first_seen_ms`.
+  - `getRejection(eventId)` — single lookup.
+  - `listRejections({ reason?, sinceMs?, minAttempts?, limit? })` — newest-first enumeration with filter support.
+  - `deleteRejection(eventId)` — removes the ledger row (used automatically when a subsequent dispatch of the same event id succeeds).
+
+  Dispatcher changes: every `{ kind: 'rejected', … }` outcome now upserts a DLQ row (loop / rate-limit / target-execution errors / circuit-open / invalid). Dispatched + broadcast outcomes auto-delete any stale DLQ row for the event id so the list reflects only currently-stuck events.
+
+  ### CLI (@declaragent/cli)
+
+  New `declaragent dlq --kind dispatch` surface (falls back to the legacy source DLQ when `--kind` is omitted):
+
+  | Verb                                                                                        | Description                                                                            |
+  | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+  | `dlq list --kind dispatch [--reason <r>] [--min-attempts <n>] [--since <ms>] [--limit <n>]` | Enumerate rejected events, newest-first.                                               |
+  | `dlq show --kind dispatch <eventId>`                                                        | JSON dump — rejection ledger + original event body + last outcome.                     |
+  | `dlq drop --kind dispatch <eventId>`                                                        | Acknowledge / abandon. Removes the DLQ row; leaves the event + outcome history intact. |
+
+  ### Intentional deferral — active requeue
+
+  `dlq requeue --kind dispatch <eventId>` is **not wired** in 0.6.0. Active requeue requires a control socket on the running `up` process so the verb can publish the requeued event onto the live in-memory bus. `up` doesn't expose one today (metrics HTTP + signal-driven shutdown only). When the CLI detects `dlq requeue --kind dispatch`, it prints a clear deferral message + exit code 1.
+
+  This is why AGENTS.md §7 "Event dispatch DLQ" flips from ❌ to 🟡 rather than ✅: the _tracking_ is complete, but the automated requeue loop is a follow-up. `dlq drop` is the current escape hatch for abandoning stuck events.
+
+  Plan reference: `docs/RELEASE_0_6_0_PLAN.md` Slice 5.
+
+- 8bddcc1: **Slice 6 of 0.6.0 production hardening — inbound channel routing.**
+
+  ### Core (@declaragent/core)
+
+  New `createChannelInboundBridge({ bus, routesByChannel, logger? })` at `packages/core/src/channels/inbound-bridge.ts`. Adapter-agnostic: matches on `source.channelId` + `event.kind`, so Slack / Telegram / Discord / WhatsApp all work through the same wiring without adapter changes.
+
+  For every session-targeted channel event that matches a configured route, the bridge publishes an additional event with `target: { type: 'skill', name: route.skill }` and `meta.causedBy` linking back to the original. The original session-target event still flows through — bridged dispatch is **additive**, not a replacement. `target.type === 'skill'` events skip the bridge (re-entry guard).
+
+  ### CLI (@declaragent/cli)
+
+  `channels-runtime.ts` (used by `declaragent up`) parses an optional `inbound.routes` block from each channel entry in `channels.json`:
+
+  ```jsonc
+  {
+    "channels": [
+      {
+        "id": "slack-main",
+        "type": "slack",
+        "config": {
+          /* … */
+        },
+        "inbound": {
+          "routes": [
+            { "event": "chat.mention", "skill": "triage" },
+            { "event": "chat.dm", "skill": "chat" }
+          ]
+        }
+      }
+    ]
+  }
+  ```
+
+  One bridge per up-process, shared across every configured channel. Detaches cleanly on shutdown. Malformed route entries log a warning and skip — one bad block doesn't prevent the rest of the config from loading.
+
+  ### What unlocks
+
+  A Slack mention → skill invocation now works end-to-end with no plugins and no custom routing code:
+
+  1. User @mentions the bot in a Slack workspace.
+  2. Slack adapter emits `chat.mention` onto the bus with `target: session`.
+  3. The bridge matches the channel id + kind and publishes a skill-target copy.
+  4. The dispatcher routes to the configured skill, which replies via `SendMessage` (shipped in 0.5.x).
+
+  Same flow for Telegram, Discord, and WhatsApp — no adapter-specific deltas needed. The "PR 6.2" portion of the plan (Telegram/Discord/WhatsApp inbound) is subsumed by PR 6.1's adapter-agnostic design, shipped in a single changeset.
+
+  ### Intentional scope cuts
+
+  - **Inbound auth / principal pass-through** — the bridged event copies the original's `auth` + `meta.principal`, so skill-level permission checks see the right channel user. No new work needed.
+  - **Fan-out across multiple channels** — not yet tested in production with 4+ active channels. The design supports it (single bridge instance, O(routes) per event), but real-world fan-out gets proven during Slice 7's fleet integration soak.
+
+  Plan reference: `docs/RELEASE_0_6_0_PLAN.md` Slice 6.
+
+- 8bddcc1: **Slice 8 of 0.6.0 production hardening — fleet deploy canary strategy.**
+
+  ### Core (@declaragent/core)
+
+  `FleetDeployStrategy` union widens with `'canary'`. The manifest schema (`fleet.yaml → deploy.strategy`) accepts the new value; existing `'rolling'` / `'all-or-nothing'` / `'per-agent'` strategies are unchanged.
+
+  ### CLI (@declaragent/cli)
+
+  `executeDeploy` gains a `canary` branch:
+
+  1. Deploy the first agent in the plan.
+  2. Soak for `canaryWaitMs` (default 60_000).
+  3. Re-run the adapter's health probe post-soak.
+  4. If healthy, roll out the remaining agents one-at-a-time (same semantics as `rolling`, including per-agent health probe + cascade rollback on any failure).
+  5. If the canary deploy fails OR the post-soak probe fails, roll back the canary and skip the rest.
+
+  The post-soak probe is the key value add: a crash loop often needs a minute to manifest after startup, so re-probing after the soak catches "looked healthy at deploy time, dies seconds later" regressions that a plain rolling deploy would propagate across the whole fleet.
+
+  CLI flags:
+
+  ```bash
+  declaragent fleet deploy --canary                    # strategy=canary, 60s soak
+  declaragent fleet deploy --strategy canary           # equivalent
+  declaragent fleet deploy --canary --canary-wait-ms 120000   # 2-minute soak
+  ```
+
+  New `sleep` injection on `FleetDeployDeps` + `ExecuteDeployOptions` keeps tests deterministic — the harness passes a synchronous stub so the soak window doesn't slow the suite.
+
+  ### Tests
+
+  Three new canary tests in `fleet-deploy-cli.test.ts`:
+
+  - Happy path: canary deploys, soaks, re-probes, rest roll out.
+  - Post-soak failure: canary survives deploy but dies during soak → rollback + skip rest.
+  - Pre-soak deploy failure: canary fails immediately → no soak, no downstream deploys.
+
+  ### Intentional deferrals
+
+  - **`templates/fleet-starter/` docker-compose integration test** — the plan asked for a live local rollback test. The canary logic is exercised by unit tests against `MemoryDeployTarget`, and the existing `rolling`/`all-or-nothing` pattern is already covered by an integration path. A docker-compose rollback drill is follow-up infra work, better slotted with Slice 7's nightly soak.
+  - **Canary traffic-splitting** — today's canary is "deploy one, wait, verify, then deploy rest" at the fleet level. True traffic-splitting (10% of requests to canary) needs target-adapter support; Cloud Run revisions do this natively, K8s needs an ingress controller, Docker Compose can't. Deferred until the `gcp-cloud-run` adapter lands.
+
+  Plan reference: `docs/RELEASE_0_6_0_PLAN.md` Slice 8.
+
+### Patch Changes
+
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+  - @declaragent/core@0.4.0
+  - @declaragent/plugin-agent-rpc@3.0.0
+
 ## 0.5.21
 
 ### Patch Changes

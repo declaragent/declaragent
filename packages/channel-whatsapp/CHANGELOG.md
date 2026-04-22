@@ -1,5 +1,16 @@
 # @declaragent/channel-whatsapp
 
+## 3.0.0
+
+### Patch Changes
+
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+- Updated dependencies [8bddcc1]
+  - @declaragent/core@0.4.0
+
 ## 2.0.1
 
 ### Patch Changes
