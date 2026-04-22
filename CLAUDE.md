@@ -4,7 +4,7 @@ Project memory for Declaragent. Read this first when starting work here.
 
 - **Name:** Declaragent (official).
 - **Domain:** [declaragent.dev](https://declaragent.dev)
-- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest published `@declaragent/cli@0.5.21`. `0.6.0` is staged (eight slices merged, tag + publish gated on operator sign-off — see `docs/RELEASE_0_6_0_READINESS.md`).
+- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest published `@declaragent/cli@0.6.0` (2026-04-22; `npm view @declaragent/cli dist-tags` → `latest: 0.6.0`). Companion bumps: `core@0.4.0`, `plugin-agent-rpc@3.0.0`, `testkit@3.0.0`, all channel-* + source-* packages at `3.0.0` (peer-dep cascade from core's semver-major-in-0.x).
 - **GitHub org:** `declaragent`.
 - **Theme:** *an agent for enterprises to build and manage fleets of agents.* Declaragent itself is an agent — same core, same tools, same audit — that helps operators author + run everyone else's agents.
 - **Honest capability status:** see **[AGENTS.md](./AGENTS.md)** for the feature-level ledger. For the intent→code audit ("does the first-principles vision actually work at production scale?") see **[docs/FIRST_PRINCIPLES_AUDIT.md](./docs/FIRST_PRINCIPLES_AUDIT.md)**. This file is a project-orientation guide, not a status dashboard.
@@ -44,7 +44,7 @@ See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" f
 
 ---
 
-## Current status (verified 2026-04-22, 0.5.21 on disk, 0.6.0 staged)
+## Current status (verified 2026-04-22, @declaragent/cli@0.6.0 live on npm)
 
 **What works end-to-end** (production-usable single-machine path):
 - `declaragent init` → scaffold with `agent.yaml` + skills + `event-sources.yaml`
@@ -56,7 +56,7 @@ See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" f
 - `declaragent fleet deploy --canary --canary-wait-ms <n>` → canary strategy with post-soak re-probe (0.6.0 Slice 8)
 - Builder toolkit (`DECLARAGENT_BUILDER=on`): conversational authoring for skills, sources, channels, MCP, plugins, secrets, peers, fleet-add
 
-**0.6.0 staged** (tag + publish pending — see `docs/RELEASE_0_6_0_READINESS.md`):
+**0.6.0 shipped** (published 2026-04-22 via local `bun run release` after org-level Actions write-restriction blocked the changesets/action auto-PR path; tags pushed to origin):
 - Prometheus `/metrics` endpoint on `127.0.0.1:9464` when `-d`
 - OpenTelemetry auto-enable when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
 - Per-skill circuit breakers (10 failures → 30s cooldown → half-open probe)

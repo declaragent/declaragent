@@ -1,6 +1,6 @@
 # AGENTS.md
 
-**Honest production-readiness audit of Declaragent, as of 2026-04-22 (CLI v0.5.21 on disk, 0.6.0 pending tag + publish).**
+**Honest production-readiness audit of Declaragent, as of 2026-04-22 (CLI v0.6.0 — published to npm + tagged).**
 
 This file exists because CLAUDE.md's status summary grew optimistic as the surface area expanded. Status claims here are backed by (a) grep of the runtime happy path, and (b) cross-checked against the canonical plan docs under `docs/` — `SPEC_AND_PLAN.md` is the source of truth for *intent*, the code is the source of truth for *what runs*.
 
