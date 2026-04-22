@@ -38,7 +38,9 @@
     "@declaragent/source-kafka": "^3.0.0"
   },
   "dependencies": {
+    "@declaragent/core": "workspace:*",
     "@declaragent/plugin-agent-rpc": "workspace:*",
+    "@declaragent/source-kafka": "workspace:*",
     "kafkajs": "^2.2.4",
     "yaml": "^2.8.3"
   },

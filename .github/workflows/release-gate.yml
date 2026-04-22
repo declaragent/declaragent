@@ -37,9 +37,15 @@ jobs:
           bun-version: latest
       - name: Install deps
         run: bun install --frozen-lockfile
+      # @declaragent/core's package.json "exports" points at ./dist/index.js
+      # (published-package semantics), so sibling workspaces that import
+      # `from '@declaragent/core'` need dist/ to exist. `bun install` doesn't
+      # build workspace packages — we have to run the build explicitly
+      # before running the smoke script that reaches into core.
+      - name: Build workspaces (needed for cross-workspace imports)
+        run: bun run --filter '@declaragent/core' build
       - name: Run chaos:quick
-        working-directory: packages/testkit
-        run: bun run chaos:quick
+        run: bun run --filter '@declaragent/testkit' chaos:quick
       - name: Upload chaos report
         if: always()
         uses: actions/upload-artifact@v4
@@ -95,35 +101,35 @@ jobs:
           import pathlib
           import sys
 
-          path = pathlib.Path('.osv-ignore.yml')
+          # Config is TOML (osv-scanner's expected format). Python 3.11+
+          # ships tomllib in stdlib; ubuntu-latest has 3.12+.
+          path = pathlib.Path('.osv-ignore.toml')
           if not path.exists():
               sys.exit(0)
 
-          try:
-              import yaml  # type: ignore
-          except ImportError:
-              import subprocess
-              subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyyaml'], check=True)
-              import yaml  # type: ignore
+          import tomllib
 
-          data = yaml.safe_load(path.read_text()) or {}
+          data = tomllib.loads(path.read_text())
           today = datetime.date.today()
           failed = []
-          for entry in data.get('ignore', []):
+          for entry in data.get('IgnoredVulns', []):
               eid = entry.get('id', '<missing id>')
-              expires_raw = entry.get('expires')
+              expires_raw = entry.get("ignoreUntil")
               reason = entry.get('reason')
               if not expires_raw:
-                  failed.append(f"{eid}: missing `expires`")
+                  failed.append(f"{eid}: missing `ignoreUntil`")
                   continue
               if not reason:
                   failed.append(f"{eid}: missing `reason`")
                   continue
-              try:
-                  expires = datetime.date.fromisoformat(str(expires_raw))
-              except ValueError:
-                  failed.append(f"{eid}: invalid expires {expires_raw}")
-                  continue
+              if isinstance(expires_raw, datetime.date):
+                  expires = expires_raw
+              else:
+                  try:
+                      expires = datetime.date.fromisoformat(str(expires_raw))
+                  except ValueError:
+                      failed.append(f"{eid}: invalid expires {expires_raw}")
+                      continue
               if expires < today:
                   failed.append(f"{eid}: expired on {expires}")
           if failed:
@@ -131,12 +137,17 @@ jobs:
                   print(f"::error::{line}")
               sys.exit(1)
           PY
-      - name: osv-scanner (CRITICAL only for gate)
+      # The `--max-severity` flag was removed from osv-scanner. The
+      # gate is now "scan completes without CRITICAL findings" —
+      # osv-scanner already exits non-zero on any advisory match, and
+      # the ignore-list (enforced with expiry in the previous step) is
+      # how we ack known-non-critical findings. If sharper severity
+      # gating is needed, post-process the JSON output.
+      - name: osv-scanner (CRITICAL gate)
         run: |
           osv-scanner \
             --lockfile=bun.lock \
-            --config=.osv-ignore.yml \
-            --max-severity=critical \
+            --config=.osv-ignore.toml \
             .
 
   nightly-sentinel:

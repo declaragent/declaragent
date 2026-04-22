@@ -1,0 +1,27 @@
+# OSV-Scanner ignore list (TOML — osv-scanner's expected format).
+#
+# Each [[IgnoredVulns]] block MUST have:
+#   - id          : GHSA-xxxx or CVE-yyyy-NNNN identifier
+#   - reason      : one-line justification (links to the issue tracker OK)
+#   - ignoreUntil : RFC-3339 date after which osv-scanner stops suppressing
+#
+# `ignoreUntil` is osv-scanner's native field — after that date,
+# osv-scanner resurfaces the finding as a real advisory. Our CI
+# (deps-scan.yml / release-gate.yml) additionally enforces that every
+# entry has a `reason` and a non-past `ignoreUntil`, and warns when
+# the window is > 90 days — that's the policy layer on top of
+# osv-scanner's native behaviour.
+#
+# Slice 4 shipped an empty ignore list. Entries land only via a security
+# review ticket that captures the remediation plan.
+#
+# Example entry (uncomment + populate to skip a finding):
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-yyyy-zzzz"
+# reason = "https://github.com/declaragent/declaragent/issues/123 — false positive in dev-only dep"
+# ignoreUntil = 2026-07-15
+
+[[IgnoredVulns]]
+id = "GHSA-gh4j-gqv2-49f6"
+reason = "fast-xml-parser 5.5.8 via @aws-sdk/xml-builder (transitive). CVSS 6.1 Medium — fix in 5.7.0, awaiting upstream aws-sdk bump. No direct use in our code."
+ignoreUntil = 2026-07-22

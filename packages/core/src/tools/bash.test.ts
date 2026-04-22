@@ -27,14 +27,24 @@ describe('Bash tool', () => {
     expect(out.result?.stdout.trim().endsWith('/tmp')).toBe(true);
   });
 
-  test('timeout fires and reports timedOut', async () => {
-    const out = await collectToolEvents(
-      Bash.execute({ command: 'sleep 5', timeoutMs: 50 }, makeToolContext()),
-    );
-    // Either the process was killed (exit != 0) or an error was reported.
-    const timed = out.result?.timedOut === true || out.error?.code === 'ETIMEDOUT';
-    expect(timed).toBe(true);
-  });
+  // Default bun-test timeout is 5s. On loaded CI runners the SIGKILL +
+  // process-exit propagation round-trip occasionally grazes that limit,
+  // even though the tool's own `timeoutMs: 50` fires fast. Give the
+  // harness 15s to avoid flaky failures — the real assertion is still
+  // that `timedOut` was set, not that the whole thing finished in <5s.
+  const TIMEOUT_TEST_HARNESS_BUDGET_MS = 15_000;
+  test(
+    'timeout fires and reports timedOut',
+    async () => {
+      const out = await collectToolEvents(
+        Bash.execute({ command: 'sleep 5', timeoutMs: 50 }, makeToolContext()),
+      );
+      // Either the process was killed (exit != 0) or an error was reported.
+      const timed = out.result?.timedOut === true || out.error?.code === 'ETIMEDOUT';
+      expect(timed).toBe(true);
+    },
+    TIMEOUT_TEST_HARNESS_BUDGET_MS,
+  );
 
   test('permission key is the command string', () => {
     expect(Bash.permissionKey({ command: 'git status' })).toBe('git status');

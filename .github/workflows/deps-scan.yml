@@ -27,35 +27,38 @@ jobs:
           import sys
           import pathlib
 
-          path = pathlib.Path('.osv-ignore.yml')
+          # Config is TOML because that's what osv-scanner consumes.
+          # Python 3.11+ ships tomllib; this runs on ubuntu-latest which
+          # has 3.12+, so no extra install step.
+          path = pathlib.Path('.osv-ignore.toml')
           if not path.exists():
               sys.exit(0)
 
-          try:
-              import yaml  # type: ignore
-          except ImportError:
-              import subprocess
-              subprocess.run([sys.executable, '-m', 'pip', 'install', 'pyyaml'], check=True)
-              import yaml  # type: ignore
+          import tomllib
 
-          data = yaml.safe_load(path.read_text()) or {}
+          data = tomllib.loads(path.read_text())
           today = datetime.date.today()
           failed = []
-          for entry in data.get('ignore', []):
+          entries = data.get('IgnoredVulns', [])
+          for entry in entries:
               eid = entry.get('id', '<missing id>')
-              expires_raw = entry.get('expires')
+              expires_raw = entry.get("ignoreUntil")
               reason = entry.get('reason')
               if not expires_raw:
-                  failed.append(f"{eid}: missing `expires` (required)")
+                  failed.append(f"{eid}: missing `ignoreUntil` (required)")
                   continue
               if not reason:
                   failed.append(f"{eid}: missing `reason` (required)")
                   continue
-              try:
-                  expires = datetime.date.fromisoformat(str(expires_raw))
-              except ValueError:
-                  failed.append(f"{eid}: `expires` must be YYYY-MM-DD, got {expires_raw!r}")
-                  continue
+              # TOML dates parse as datetime.date; strings still need coercing.
+              if isinstance(expires_raw, datetime.date):
+                  expires = expires_raw
+              else:
+                  try:
+                      expires = datetime.date.fromisoformat(str(expires_raw))
+                  except ValueError:
+                      failed.append(f"{eid}: `expires` must be YYYY-MM-DD, got {expires_raw!r}")
+                      continue
               if expires < today:
                   failed.append(
                       f"{eid}: expired on {expires} — remediate or renew the ignore with a new expiry"
@@ -64,7 +67,7 @@ jobs:
               for line in failed:
                   print(f"::error::osv-ignore: {line}")
               sys.exit(1)
-          print(f"::notice::osv-ignore ok ({len(data.get('ignore', []))} entries)")
+          print(f"::notice::osv-ignore ok ({len(entries)} entries)")
           PY
 
       - name: Install osv-scanner
@@ -77,15 +80,17 @@ jobs:
         run: |
           osv-scanner \
             --lockfile=bun.lock \
-            --config=.osv-ignore.yml \
+            --config=.osv-ignore.toml \
             --format=sarif \
             --output=osv-results.sarif \
             . || true
-          # Exit 1 on any CRITICAL finding; warn on HIGH via the SARIF.
+          # Exit 1 on any advisory match (osv-scanner's default
+          # behaviour). The `--max-severity` flag was removed upstream;
+          # the ignore list (enforced with expiry above) is how we ack
+          # known-non-critical findings.
           osv-scanner \
             --lockfile=bun.lock \
-            --config=.osv-ignore.yml \
-            --max-severity=critical \
+            --config=.osv-ignore.toml \
             .
 
       - name: Upload SARIF to code-scanning

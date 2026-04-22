@@ -11,11 +11,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Quickstart',
       link: { type: 'doc', id: 'quickstart/index' },
-      items: [
-        'quickstart/installing',
-        'quickstart/first-agent',
-        'quickstart/conversational-tour',
-      ],
+      items: ['quickstart/installing', 'quickstart/first-agent', 'quickstart/conversational-tour'],
     },
   ],
 
