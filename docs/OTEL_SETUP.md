@@ -2,13 +2,16 @@
 
 Wiring instructions for exporting Declaragent's event-source metrics + spans to an OpenTelemetry-compatible backend. Covers:
 
-1. [Installing the SDK](#1-install-the-sdk)
-2. [Booting the host + bridging into the adapter deps](#2-boot-the-sdk-and-bridge-into-the-source)
-3. [OTLP HTTP to a collector](#3-otlp-http-exporter)
-4. [Prometheus scrape](#4-prometheus-scrape)
-5. [End-to-end docker recipe](#5-end-to-end-docker-recipe)
+1. [Auto-enable with `declaragent up`](#1-auto-enable-with-declaragent-up) — zero-code, just set env vars
+2. [Installing the SDK (peer deps)](#2-install-the-sdk-peer-deps)
+3. [Custom hosts — manual bridge](#3-custom-hosts--manual-bridge)
+4. [OTLP HTTP to a collector](#4-otlp-http-exporter)
+5. [Prometheus scrape](#5-prometheus-scrape)
+6. [End-to-end docker recipe](#6-end-to-end-docker-recipe)
 
-All of the metrics described below are defined in `packages/core/src/events/base-source.ts` (slice 6). There is nothing to instrument in your adapter — the base class emits the full set whenever `SourceDependencies.metrics` is wired.
+As of 0.6.0, `declaragent up` auto-enables the OTel tracer bridge when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and `@opentelemetry/api` is installed — there is no code to write.
+
+All of the metrics described below are defined in `packages/core/src/events/base-source.ts` (slice 6). There is nothing to instrument in your adapter — the base class emits the full set whenever `SourceDependencies.metrics` is wired. `declaragent up` wires a shared `PrometheusRegistry` by default (scrapable at `:9464/metrics` in detached mode) and a bridged OTel tracer when the env var is set.
 
 ## Metrics reference
 
@@ -28,20 +31,45 @@ The OTel bridge translates these into OTLP counter / up-down-counter / histogram
 
 Spans are also emitted: one `source.message` span per ingested message, with attributes for `message.id`, `message.topic`, `event.id`, `event.kind`, `correlation.id` (when present), and `outcome` (`published` / `filtered` / `no-normalizer`).
 
-## 1. Install the SDK
+## 1. Auto-enable with `declaragent up`
 
-The `@declaragent/core` package declares `@opentelemetry/api` as a peer dep only — nothing is pulled in by default. To opt in, install the SDK in your host application:
+Two steps — no code changes:
+
+1. Install the peer deps (see §2) wherever `declaragent` runs.
+2. Set `OTEL_EXPORTER_OTLP_ENDPOINT` in the environment before starting the agent:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+declaragent up -d
+```
+
+`up` detects the env var, calls `createOtelBridge()` internally, and threads the bridged tracer into every source + channel via `deps.tracer`. You will see one of these banners at startup:
+
+- `otel: tracing enabled (OTLP endpoint http://localhost:4318)` — peer deps present, tracer active.
+- `⚠ OTEL_EXPORTER_OTLP_ENDPOINT is set but tracing could not start: …` — peer dep missing; the up-loop continues with the noop tracer. Install peer deps and re-run.
+
+Metrics are NOT routed through the bridge — `up` keeps its dedicated Prometheus registry for pull-based scraping. If you want metrics in your OTel backend too, run an OTel collector with the Prometheus receiver in front (see §5).
+
+**Unset the env var** to disable auto-enable. There is no other knob.
+
+## 2. Install the SDK (peer deps)
+
+The `@declaragent/core` package declares `@opentelemetry/api` as a peer dep only — nothing is pulled in by default. The auto-enable path in §1 needs at minimum:
 
 ```bash
 npm install \
   @opentelemetry/api \
   @opentelemetry/sdk-node \
-  @opentelemetry/auto-instrumentations-node \
-  @opentelemetry/exporter-metrics-otlp-http \
   @opentelemetry/exporter-trace-otlp-http
 ```
 
-## 2. Boot the SDK and bridge into the source
+Add `@opentelemetry/auto-instrumentations-node` and `@opentelemetry/exporter-metrics-otlp-http` if you want auto-instrumentation of other Node modules or OTLP metric export. The declaragent-side bridge doesn't need them — the span exporter alone is enough for tracing.
+
+If you're running the declaragent CLI globally, install the peer deps alongside it in the same node_modules: `npm install -g @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http`.
+
+## 3. Custom hosts — manual bridge
+
+When embedding `@declaragent/core` in your own host (not using the `declaragent` CLI), boot the SDK explicitly and call `createOtelBridge` yourself:
 
 ```ts
 // otel.ts — imported BEFORE any declaragent code so the bridge can pick it up.
@@ -95,7 +123,7 @@ const daemon = await startDaemon({
 
 `BaseSourceInstance.getInstruments()` is lazy — no cost until the first message lands — so adding / removing the bridge is a cheap configuration toggle.
 
-## 3. OTLP HTTP exporter
+## 4. OTLP HTTP exporter
 
 Endpoints are the standard OTel HTTP paths:
 
@@ -111,7 +139,7 @@ Environment overrides honored by the SDK:
 - `OTEL_EXPORTER_OTLP_HEADERS` — for hosted OTel backends (Honeycomb, New Relic, Datadog).
 - `OTEL_RESOURCE_ATTRIBUTES` — extra resource labels, comma-separated.
 
-## 4. Prometheus scrape
+## 5. Prometheus scrape
 
 The easiest path: run an OTel collector that receives OTLP and exposes a Prometheus endpoint. No host-side Prometheus client library required.
 
@@ -162,7 +190,7 @@ scrape_configs:
       - targets: ['otel-collector:9464']
 ```
 
-## 5. End-to-end docker recipe
+## 6. End-to-end docker recipe
 
 A ready-to-run stack lives in `packages/testkit/observability/`. Boot everything with a single command:
 

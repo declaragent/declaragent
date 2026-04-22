@@ -7,32 +7,51 @@ sidebar_position: 1
 
 # Declaragent
 
-A **declarative, git-versioned AI agent platform**. An agent is a stable runtime core plus a declarative `agent.yaml` that lives in your repo.
+**An agent for enterprises to build and manage fleets of agents.**
+
+One `agent.yaml` in git describes identity, capabilities, tools, skills, event sources, channels, secrets, and who can call whom. One CLI — `declaragent` — is itself an agent built on `@declaragent/core`, the same runtime you'd ship to production. No second implementation, no vendor dashboard locked out of your repo.
+
+## The four pillars
+
+1. **Define** agents declaratively — capabilities, skills, inbound + outbound channels, peers to call.
+2. **Deploy + monitor** fleets — one-command rollout, rolling + canary strategies, Prometheus + OpenTelemetry out of the box.
+3. **Independent by default** — each agent owns its session, secrets, and sources. Delegation between agents is explicit via `rpc-peers.yaml`.
+4. **Tools + MCP** — seven built-in tools, full MCP server support (stdio / HTTP / SSE / OAuth PKCE), plugin-contributed extensions.
+
+See [FIRST_PRINCIPLES_AUDIT.md](https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_AUDIT.md) for an evidence-backed map of intent → code.
 
 ## Where to go next
 
 <div className="card-grid">
 
-- **[Quickstart →](/quickstart)** — the 10-minute path. Install, run `declaragent init`, deploy to GCP Cloud Run.
+- **[Quickstart →](/quickstart)** — the 10-minute path. Install, run `declaragent init`, observe it with Prometheus + OTel.
 - **[Reference →](/reference)** — the `agent.yaml` schema, CLI verbs, env vars, provider matrix, extension registry.
-- **[Cookbook →](/cookbook)** — walkthroughs for each template and cross-cutting recipes (deploy, rotate a secret, run two tenants).
+- **[Cookbook →](/cookbook)** — walkthroughs for each template and cross-cutting recipes (multi-agent fleets, deploys, secrets rotation, multi-tenant).
 - **[Troubleshooting →](/troubleshooting)** — error-code reference, install + deploy flowcharts, runbook index.
 
 </div>
 
 ## Status
 
-This site tracks **v0.4.1** (latest on npm). See the [changelog](https://github.com/declaragent/declaragent/releases) for the per-release deltas.
+This site tracks **v0.5.21** (latest on npm) with **0.6.0 staged** (eight slices merged; tag + publish gated by operator sign-off — see [RELEASE_0_6_0_READINESS.md](https://github.com/declaragent/declaragent/blob/main/docs/RELEASE_0_6_0_READINESS.md)). See the [changelog](https://github.com/declaragent/declaragent/releases) for the per-release deltas.
 
-## What's new in 0.4
+## What's new in 0.6.0 (staged)
 
-- **`declaragent up / down / ps / logs`** _(0.4.1)_ — docker-compose-style lifecycle for bringing agents online. `up` reads `fleet.yaml` or `agent.yaml` in the cwd, binds every declared source (webhook, cron, file-watch), and runs until `down`. See [first agent → run as a service](/quickstart/first-agent).
-- **`d9t` alias** _(0.4.1)_ — `d9t up` works everywhere `declaragent up` does. Same launcher.
-- **Complete builder-tool matrix** _(0.4.0)_ — `DeclaraAddSource` / `DeclaraAddChannel` / `DeclaraAddMCP` / `DeclaraAddPlugin` now ship, so the builder can author an end-to-end agent (skills + sources + channels + MCP + plugins + secrets + peers) entirely through conversation. See the [builder reference](/reference/builder).
-- **`declaragent fleet run`** _(0.4.0)_ — now runs real LLM turns per RPC (previously a stub echoing the envelope payload).
-- **REPL UX polish** _(0.4.1)_ — bracketed-paste for multi-line input, `/prompt <path>`, `@<path>` file-ref expansion, bare-letter y/n shortcuts for pending proposals. See the [builder reference → REPL input UX](/reference/builder).
+- **Prometheus `/metrics` endpoint** _(Slice 1)_ — scrape on `127.0.0.1:9464` when running `declaragent up -d`. Source + channel counters flow through the shared registry automatically.
+- **OpenTelemetry auto-enable** _(Slice 2)_ — set `OTEL_EXPORTER_OTLP_ENDPOINT`, install the peer deps, and `up` wires the bridged tracer into every source + channel. No code changes.
+- **Per-skill circuit breakers** _(Slice 3)_ — 10 consecutive failures trip the breaker, 30-s cooldown, half-open probe re-closes. State + transitions exported as Prometheus counters. `declaragent events list --state circuit-open` filter.
+- **Default provider rate limits** _(Slice 4)_ — token bucket at the LLM call site. Anthropic 50 rps / OpenRouter 20 rps / unknown 10 rps. Env escape hatches for loud-dev workloads.
+- **Dispatch DLQ** _(Slice 5)_ — `rejected_events` table tracks every rejected dispatch; `declaragent dlq list/show/drop --kind dispatch` for audit + acknowledge.
+- **Inbound channels → skills** _(Slice 6)_ — `channels.json#inbound.routes` maps Slack mentions / Telegram DMs / Discord / WhatsApp events to skills with one line of config.
+- **Kafka RPC transport** _(Slice 7)_ — `createKafkaTransport` carries `RequestAgent` envelopes across processes. Nightly integration CI against Redpanda.
+- **Canary fleet deploys** _(Slice 8)_ — `declaragent fleet deploy --canary --canary-wait-ms <n>`: deploy one agent, soak, re-probe, then roll out the rest. Auto-rollback on post-soak failure.
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Marketing copy + hero screenshot land with
-the announcement blog post (Phase 7 slice 9).
-</div>
+## What's new in 0.5.x (shipped)
+
+The five runtime-activation slices that unlocked end-to-end 0.6.0 work:
+
+- **External source adapter discovery** _(0.5.0)_ — `declaragent up` now auto-discovers `@declaragent/source-*` packages installed in `node_modules`. Kafka, NATS, SQS, AMQP, MQTT all start when installed.
+- **MCP runtime activation** _(0.5.0–0.5.1)_ — stdio + HTTP + SSE + OAuth PKCE + `@server:resource` references.
+- **Channel runtime + `SendMessage`** _(0.5.0)_ — `up` spins every channel in `channels.json`; skills can call `SendMessage({kind:'channel', …})` without plugin wiring.
+- **Plugin runtime activation** _(0.5.0)_ — consented plugins load at `up` time, contributing tools / skills / commands / hooks.
+- **Non-memory RPC transports + `RequestAgent`** _(0.5.0)_ — `declaragent fleet run` honors every transport kind declared in `capabilities.yaml`; `RequestAgent` is appended to the per-agent tool list when `rpc-peers.yaml` is present.

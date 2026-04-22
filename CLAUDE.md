@@ -4,9 +4,10 @@ Project memory for Declaragent. Read this first when starting work here.
 
 - **Name:** Declaragent (official).
 - **Domain:** [declaragent.dev](https://declaragent.dev)
-- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest `@declaragent/cli@0.4.16` (2026-04-21).
+- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest published `@declaragent/cli@0.5.21`. `0.6.0` is staged (eight slices merged, tag + publish gated on operator sign-off — see `docs/RELEASE_0_6_0_READINESS.md`).
 - **GitHub org:** `declaragent`.
-- **Honest capability status:** see **[AGENTS.md](./AGENTS.md)**. This file is a project-orientation guide, not a status dashboard — AGENTS.md is the source of truth for "does feature X actually work end-to-end today?".
+- **Theme:** *an agent for enterprises to build and manage fleets of agents.* Declaragent itself is an agent — same core, same tools, same audit — that helps operators author + run everyone else's agents.
+- **Honest capability status:** see **[AGENTS.md](./AGENTS.md)** for the feature-level ledger. For the intent→code audit ("does the first-principles vision actually work at production scale?") see **[docs/FIRST_PRINCIPLES_AUDIT.md](./docs/FIRST_PRINCIPLES_AUDIT.md)**. This file is a project-orientation guide, not a status dashboard.
 
 ## What this project is
 
@@ -20,34 +21,59 @@ The reference implementation archive — the leaked Claude Code source — lives
 
 When the plan and a background doc disagree, `SPEC_AND_PLAN.md` wins.
 
-## Current status (verified 2026-04-21, CLI 0.4.16)
+## First-principles scoreboard
+
+A fleet of agents has four pillars. Current state (see `docs/FIRST_PRINCIPLES_AUDIT.md` for evidence + per-row detail):
+
+| Pillar | Single-machine | Enterprise (multi-host, soak-proven, SSO/SIEM/GitOps) |
+| --- | --- | --- |
+| 1 · Define agents (capabilities, skills, inbound/outbound channels, peers) | ✅ | 🟡 — typed capabilities + SSO-bridged channel permissions pending |
+| 2 · Deploy + monitor fleet (up/down/ps/logs + Prometheus + OTel + canary) | ✅ | 🟡 — no managed control plane, no traffic-splitting canary, audit is local SQLite |
+| 3 · Independent agents with optional delegation (memory + Kafka RPC) | ✅ | 🟡 — Kafka transport shipped 0.6.0, soak pending; NATS/SQS/AMQP/MQTT factories missing |
+| 4 · Tools + MCP (7 built-ins + MCP stdio/HTTP/SSE/OAuth PKCE + plugins) | ✅ | 🟡 — no per-tool rate limit, no approval-workflow integration, no auto-recovery for crashed MCP |
+
+**Single-machine production: ✅** ready with 0.6.0 staged — a single host running `declaragent up -d`, webhook/cron in, Claude + MCP tools + Slack/Telegram/Discord/WhatsApp in/out, `/metrics` + OTel + circuit breakers + rate limits + dispatch DLQ all on by default.
+
+**Enterprise production: 🟡** roughly 10–12 focused engineer-weeks of *integration* work (not new architecture):
+1. Finish Kafka soak (Slice 7 tail) + NATS factory — unblocks cross-host + non-Kafka customers.
+2. OIDC/OAuth2 on RPC envelopes (`RpcAuth` shape exists, provider implementations don't).
+3. Managed control plane — aggregator over N `up` processes. **Needs its own plan doc.**
+4. GitOps `fleet render` + SIEM audit export.
+
+See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" for the full ranked list.
+
+---
+
+## Current status (verified 2026-04-22, 0.5.21 on disk, 0.6.0 staged)
 
 **What works end-to-end** (production-usable single-machine path):
 - `declaragent init` → scaffold with `agent.yaml` + skills + `event-sources.yaml`
 - `declaragent auth login` → OpenRouter / Anthropic / env-var credentials
-- `declaragent up [-d]` → binds webhook/cron/file-watch sources, dispatcher routes events to skills, LLM turn runs, outcome recorded
+- `declaragent up [-d]` → binds sources (webhook/cron/file-watch + any installed `@declaragent/source-*`), routes events to skills, LLM turn runs, outcome recorded. Runtime now threads a shared `PrometheusRegistry` + optional OTel tracer into every source + channel, wraps the provider with a token-bucket rate limiter, and applies per-skill circuit breakers. See §"0.6.0 staged" below.
 - `declaragent ps / logs / down` → lifecycle verbs
-- `declaragent events list / audit verify / dlq list` → observability backed by SQLite with hash-chained audit
+- `declaragent events list / audit verify / dlq list` → observability backed by SQLite with hash-chained audit. `events list --state circuit-open` + `dlq list/show/drop --kind dispatch` shipped in 0.6.0.
 - `declaragent deploy gcp-cloud-run` → generates Dockerfile + service.yaml (user runs `gcloud` themselves)
+- `declaragent fleet deploy --canary --canary-wait-ms <n>` → canary strategy with post-soak re-probe (0.6.0 Slice 8)
 - Builder toolkit (`DECLARAGENT_BUILDER=on`): conversational authoring for skills, sources, channels, MCP, plugins, secrets, peers, fleet-add
 
-**What's component-present but not wired to happy paths** (documented gaps):
-- MCP server activation — `mcp add` stores but no runtime loads the servers
-- Plugin activation — `plugin install` stores but no runtime loads the tools
-- External source adapters (Kafka/NATS/SQS/AMQP/MQTT) — packages exist, `declaragent up` doesn't discover them (hardcodes webhook/cron/file-watch)
-- Non-memory RPC transports — `fleet run` hardwires memory bus
-- `RequestAgent` tool — not in `BUILTIN_TOOLS`, so skills can't call other agents without manual plugin wiring
-- Channel delivery — adapters exist, no `SendMessage` tool in built-ins
-- Circuit breakers, default rate limits, `/metrics` endpoint, real `gcloud` push — all component-present, none wired
+**0.6.0 staged** (tag + publish pending — see `docs/RELEASE_0_6_0_READINESS.md`):
+- Prometheus `/metrics` endpoint on `127.0.0.1:9464` when `-d`
+- OpenTelemetry auto-enable when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
+- Per-skill circuit breakers (10 failures → 30s cooldown → half-open probe)
+- Provider rate limits (Anthropic 50rps / OpenRouter 20rps / 10rps default)
+- Dispatch DLQ **tracking** in `rejected_events` — active requeue is a 0.6.x follow-up
+- Inbound channels → skills via `channels.json#inbound.routes` (Slack/Telegram/Discord/WhatsApp)
+- Kafka RPC transport (`createKafkaTransport`) + nightly fleet integration CI — soak proof pending
+- Canary fleet deploys with configurable soak window
 
 **See [AGENTS.md](./AGENTS.md)** for the full evidence-backed matrix with file:line references. If you're about to promise a user a capability, verify against AGENTS.md first.
 
-**Next priorities** (five items to close the largest first-principles gaps — see AGENTS.md § "Prioritized path"):
-1. External source adapter discovery in `up` (~1 day)
-2. Non-memory transports in `fleet run` (~1 day)
-3. `RequestAgent` in `BUILTIN_TOOLS` (~2h)
-4. MCP server activation at runtime (~1 day)
-5. Channel `SendMessage` tool + runtime activation (~1 day)
+**Next priorities after 0.6.0 publishes** (ordered by leverage):
+1. Dispatch-DLQ active requeue — needs a control socket on `up` (~1 day once the socket exists)
+2. Full `fleet run` boot over Kafka with mocked LLM handlers — closes Slice 7's soak gap
+3. NATS / SQS / AMQP / MQTT RPC transport factories — same pattern as `createKafkaTransport`
+4. Broker-specific fleet integration tests (beyond Kafka)
+5. v1.1 Agent Graph — schema work for typed capabilities per `AGENT_RPC_PLAN.md`
 
 ## Stack
 

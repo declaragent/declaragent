@@ -3,17 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Declaragent — production AI agents, declared in your repo</title>
+    <title>Declaragent — an agent to build and manage agents for enterprise</title>
     <meta
       name="description"
-      content="One agent.yaml in git. Hash-chained audit, multi-tenant isolation, secrets rotation, rolling deploys. Every capability configured via one CLI."
+      content="Declaratively define, deploy, and monitor fleets of AI agents. One agent.yaml per agent, one CLI for the fleet. Prometheus + OpenTelemetry + circuit breakers + rate limits + canary deploys, all built-in."
     />
 
     <!-- Open Graph -->
-    <meta property="og:title" content="Declaragent — production AI agents" />
+    <meta property="og:title" content="Declaragent — an agent to build and manage agents" />
     <meta
       property="og:description"
-      content="One agent.yaml in git. Audit. Tenancy. Secrets rotation. Deploy via CLI."
+      content="Fleet of AI agents for enterprise. Declarative agent.yaml, MCP + plugins + channels, Prometheus + OTel, canary deploys. Declaragent itself is an agent."
     />
     <meta property="og:url" content="https://declaragent.dev" />
     <meta property="og:type" content="website" />
@@ -21,7 +21,7 @@
     <meta name="twitter:title" content="Declaragent" />
     <meta
       name="twitter:description"
-      content="Production AI agents declared in your repo. One CLI, every capability."
+      content="An agent to build and manage agents. Declarative fleet config, enterprise observability, MCP + plugins."
     />
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -76,15 +76,17 @@
       <!-- HERO ─────────────────────────────────────────────────────────── -->
       <section class="hero">
         <div class="hero__copy">
-          <p class="eyebrow">v0.1.3 · on npm, on Homebrew, on curl</p>
+          <p class="eyebrow">v0.5.21 on npm · v0.6.0 staged · Apache-2.0</p>
           <h1>
-            Production AI agents,<br />
-            <span class="accent">declared in your repo.</span>
+            An agent to build and manage<br />
+            <span class="accent">fleets of agents for enterprise.</span>
           </h1>
           <p class="lede">
-            One <code>agent.yaml</code>. Hash-chained audit, per-tenant quotas, secrets
-            rotation, rolling deploys, Prometheus + OpenTelemetry out of the box. Every
-            capability is configured through the same CLI you ship to production.
+            Declare each agent in one <code>agent.yaml</code> — identity, capabilities,
+            skills, MCP servers, plugins, channels, peers. One CLI deploys the fleet,
+            streams metrics, rolls out canaries. Prometheus, OpenTelemetry, circuit
+            breakers, rate limits, dispatch DLQ — all built-in. Declaragent itself is an
+            agent built on the same core you ship to production.
           </p>
           <div class="hero__actions">
             <code class="cmd" id="install-cmd" role="button" tabindex="0"
