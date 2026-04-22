@@ -9,10 +9,10 @@ This is the **tracking doc**. Keep the status board (§1) accurate. Detailed spe
 ## 0 · Summary banner
 
 ```
-Enterprise pillars status:  ▓▓▓▓░  ( 0 / 12 items complete; 3 in review )
+Enterprise pillars status:  ▓▓▓▓░  ( 0 / 12 items complete; 6 in review — PRs #10, #11, #12, #13, #14, #15 )
 Latest release:             @declaragent/cli@0.6.0
 Next milestone:             M1 · Brokers + persistence hardening
-Active blocker:             up-cli.ts merge conflict between #6 (Eng-B) and #5 slice 1 (Eng-C)
+Active blocker:             none — round 2 PRs stack cleanly (B→#11, C→#12); sequential merge will auto-retarget
 ```
 
 Update this banner whenever an item ships.
@@ -26,10 +26,10 @@ Tick checkboxes as work lands. One line per item. If the scope changes, **edit t
 | # | Item | Milestone | Est. | Status | Owner | PR / Evidence |
 | - | --- | --- | :-: | --- | --- | --- |
 | 1 | [ ] Finish Kafka soak — cross-host `fleet run` + 24h drift alarm | M1 | 1 wk | Review | Eng-A | worktree `agent/agent-a001622c` — harness + soak test + weekly-soak.yml + release-gate sentinel; pillar flip pending first green weekly run |
-| 2 | [ ] NATS RPC transport factory | M1 | 3 d | Not started | — | — |
-| 3 | [ ] Dispatch-DLQ active requeue | M1 | 1 d | Unblocked — `requeue()` helper landed in #6 worktree; CLI verb still TODO | — | — |
+| 2 | [ ] NATS RPC transport factory | M1 | 3 d | Review | Eng-A | [PR #13](https://github.com/declaragent/declaragent/pull/13) — `createNatsTransport` + nightly CI + docs; queue-group scope pending per-topic feedback |
+| 3 | [ ] Dispatch-DLQ active requeue | M1 | 1 d | Review | Eng-B | [PR #14](https://github.com/declaragent/declaragent/pull/14) — `dlq requeue --kind dispatch` verb w/ multi-agent `--agent` flag; depends on #11 |
 | 4 | [ ] OIDC / OAuth2 on RPC envelopes | M2 | 1 wk | Not started | — | — |
-| 5 | [ ] Managed control plane (aggregator over N `up`) | M4 | 4 wk | In-progress (Slice 1 partial in review) | Eng-C | worktree `agent/agent-aa20e656` — router + `/metrics` + `/status`; `/events` `/dlq` `/audit` `/logs` deferred to Slice 1 tail |
+| 5 | [ ] Managed control plane (aggregator over N `up`) | M4 | 4 wk | In-progress (Slice 1a + 1b in review) | Eng-C | [PR #12](https://github.com/declaragent/declaragent/pull/12) (1a: router + `/metrics` + `/status`) · [PR #15](https://github.com/declaragent/declaragent/pull/15) (1b: `/events` + `/dlq` + `/audit`). `/logs` SSE deferred to 1c; Slice 2 = auth |
 | 6 | [ ] Control socket on `up` daemon | M5 | 2 d | Review | Eng-B | worktree `agent/agent-a8ae1aa3` — 5 ops (ping/status/dlq.requeue/reload/shutdown); `reload` op stubbed returning `unsupported` |
 | 7 | [ ] Per-tool rate limit | M5 | 3 d | Not started | — | — |
 | 8 | [ ] Auto-recovery for crashed MCP servers | M5 | 4 d | Not started | — | — |
