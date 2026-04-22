@@ -1,0 +1,141 @@
+name: prod smoke — kafka source end-to-end
+
+# Patch 0.5.2 (Bug 3 of PATCH_0_5_2_PLAN). Validates the path a real
+# user takes: `npm install @declaragent/cli @declaragent/source-kafka`,
+# scaffold, produce a message, assert the event lands in the store.
+# 0.5.0/0.5.1 shipped three integration bugs because no CI lane
+# cross-checked discovery + adapter wiring against the published
+# tarball path.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/cli/**'
+      - 'packages/core/**'
+      - 'packages/source-kafka/**'
+      - '.github/workflows/prod-smoke-kafka.yml'
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: prod-smoke-kafka-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: install + produce + assert
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Start Redpanda broker
+        run: |
+          set -euo pipefail
+          docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml up -d
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' declaragent-kafka-redpanda)"
+            [ "${status}" = "healthy" ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' declaragent-kafka-redpanda | grep -q healthy || {
+            docker logs declaragent-kafka-redpanda >&2 || true
+            exit 1
+          }
+          docker exec declaragent-kafka-redpanda rpk topic create smoke.input --partitions 1 --replicas 1
+
+      - name: Stage project + scaffold agent
+        id: stage
+        run: |
+          set -euo pipefail
+          SCRATCH="${RUNNER_TEMP}/smoke"
+          mkdir -p "${SCRATCH}"
+          cd "${SCRATCH}"
+          npm init -y >/dev/null
+          # Latest published — exercise what a real user installs, not
+          # the workspace-linked build tree.
+          npm install --no-audit --no-fund \
+            @declaragent/cli@latest \
+            @declaragent/source-kafka@latest \
+            @declaragent/core@latest
+          cat > agent.yaml <<'YAML'
+          name: smoke
+          model: claude-haiku-4-5
+          systemPrompt: "Test agent; no LLM creds in CI so events stay pending."
+          skills: []
+          event-sources:
+            - ./event-sources.yaml
+          YAML
+          cat > event-sources.yaml <<'YAML'
+          - type: kafka
+            config:
+              id: smoke-consumer
+              transport:
+                brokers: [localhost:19092]
+                clientId: declaragent-smoke
+                consumerGroup: declaragent-smoke
+                topics: [smoke.input]
+                fromBeginning: true
+              routing:
+                format: json
+                kindSelector: { const: smoke.event }
+                targetSelector: { type: skill, name: noop }
+          YAML
+          echo "scratch=${SCRATCH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Start declaragent up (bun + JS dist, working around Bug 2)
+        working-directory: ${{ steps.stage.outputs.scratch }}
+        run: |
+          set -euo pipefail
+          # Published tarball ships a compiled binary whose resolver
+          # can't locate `@declaragent/core` when it dynamically imports
+          # an external adapter's dist/index.js. 0.5.2's launcher picks
+          # this path automatically; invoking the JS dist directly
+          # documents the contract CI is validating.
+          bun node_modules/@declaragent/cli/dist/index.js up -f agent.yaml &
+          echo $! > up.pid
+          sleep 5
+
+      - name: Produce a test message
+        run: |
+          set -euo pipefail
+          printf '{"id":"smoke-1","payload":"hello"}\n' | \
+            docker exec -i declaragent-kafka-redpanda rpk topic produce smoke.input
+
+      - name: Assert the event landed in the store
+        working-directory: ${{ steps.stage.outputs.scratch }}
+        run: |
+          set -euo pipefail
+          # Poll up to 30s for the event to appear. No LLM creds ⇒
+          # outcome stays `pending`, which is exactly what we assert:
+          # the event reached the store via the normalizer.
+          for i in $(seq 1 30); do
+            output="$(bun node_modules/@declaragent/cli/dist/index.js events list 2>/dev/null || true)"
+            if echo "${output}" | grep -q 'smoke.event'; then
+              echo "✓ event surfaced:"
+              echo "${output}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "✗ event never surfaced" >&2
+          bun node_modules/@declaragent/cli/dist/index.js events list >&2 || true
+          exit 1
+
+      - name: Tear down
+        if: always()
+        working-directory: ${{ steps.stage.outputs.scratch }}
+        run: |
+          set +e
+          [ -f up.pid ] && kill "$(cat up.pid)" 2>/dev/null
+          docker compose -f "${GITHUB_WORKSPACE}/packages/source-kafka/test/fixtures/docker-compose.yml" down -v

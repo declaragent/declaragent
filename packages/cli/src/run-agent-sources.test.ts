@@ -280,6 +280,83 @@ describe('startAgentSources — external adapter discovery', () => {
     await res.stop();
   });
 
+  test('passes a MessageNormalizer through SourceDependencies.normalizer', async () => {
+    // Regression for 0.5.1: SourceDependencies was built without a
+    // `normalizer`, so BaseSourceInstance.handleMessage() logged
+    // `base-source.no-normalizer` and silently ack'd+dropped every
+    // message. The fixture adapter captures the deps it was handed so
+    // we can assert `normalizer` is defined.
+    const capturedDeps: Array<Record<string, unknown>> = [];
+    (
+      globalThis as { __declaragent_capture_deps__?: typeof capturedDeps }
+    ).__declaragent_capture_deps__ = capturedDeps;
+
+    const pkgDir = join(agentDir, 'node_modules', '@declaragent', 'source-capture');
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({
+        name: '@declaragent/source-capture',
+        version: '0.0.1',
+        main: './index.js',
+        declaragent: {
+          kind: 'event-source-adapter',
+          type: 'capture',
+          agent_compat: '>=0.0.1',
+        },
+      }),
+    );
+    writeFileSync(
+      join(pkgDir, 'index.js'),
+      `export default {
+  type: 'capture',
+  validateConfig(config) {
+    if (!config || typeof config !== 'object') throw new Error('config required');
+    if (typeof config.id !== 'string') throw new Error('id required');
+    if (!config.target || typeof config.target !== 'object') throw new Error('target required');
+  },
+  async create(config, deps) {
+    globalThis.__declaragent_capture_deps__?.push(deps);
+    return {
+      id: config.id,
+      type: 'capture',
+      async start() {},
+      async stop() {},
+      async pause() {},
+      async resume() {},
+      async health() { return { status: 'healthy' }; },
+      metrics() { return { eventsPublished: 0, errors: 0, lastEventAt: null, lastStatus: null }; },
+    };
+  },
+};
+`,
+    );
+
+    writeFileSync(
+      sourcesPath,
+      `- type: capture
+  config:
+    id: cap
+    target:
+      type: skill
+      name: s
+`,
+    );
+
+    const res = await startAgentSources({ configPath: sourcesPath, agentDir, storePath });
+    expect(res.started).toHaveLength(1);
+    expect(capturedDeps).toHaveLength(1);
+    const deps = capturedDeps[0];
+    expect(deps).toBeDefined();
+    expect(deps?.normalizer).toBeDefined();
+    // Shape-check: `createMessageNormalizer()` returns `{ normalize(raw, routing, ctx) }`.
+    expect(typeof (deps?.normalizer as { normalize?: unknown })?.normalize).toBe('function');
+    await res.stop();
+
+    (globalThis as { __declaragent_capture_deps__?: unknown }).__declaragent_capture_deps__ =
+      undefined;
+  });
+
   test('two packages claiming the same type throw (strict duplicate handling)', async () => {
     // Both packages claim type=dup. The core discovery's duplicate
     // check fires and throws an AdapterDiscoveryError — user-visible.
