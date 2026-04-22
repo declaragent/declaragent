@@ -80,6 +80,30 @@ export interface QuotaExceededAuditRecord {
 }
 
 /**
+ * RPC auth verify outcome. One record per inbound envelope — whether
+ * accepted or rejected — so operators can audit authentication decisions
+ * on the hash chain.
+ *
+ * @since 1.2.0
+ */
+export interface AuthCheckAuditRecord {
+  kind: 'auth_check';
+  ts: number;
+  tenantId: string;
+  /** Logical peer address (`agent://...`) of the sender. */
+  peerId: string;
+  /** Auth provider that made the decision. `none` when envelope lacked an auth block. */
+  provider: 'oidc' | 'oauth2-client' | 'hmac' | 'internal' | 'none';
+  decision: 'accept' | 'reject';
+  /** Typed rejection reason; absent on `accept`. */
+  reason?: string;
+  /** RPC correlation id of the originating envelope, for cross-referencing. */
+  correlationId?: string;
+  /** Resolved principal subject when the decision is `accept` and a JWT was parsed. */
+  subject?: string;
+}
+
+/**
  * Erasure tombstone — surfaced by queries in place of records that
  * `TenantAuditSink.erase()` has scrubbed. Keeps the hash-chain verifier
  * able to confirm continuity even after right-to-erasure requests.
@@ -113,6 +137,7 @@ export type TenantAuditRecord =
   | SecretAccessAuditRecord
   | TenantBoundaryAuditRecord
   | QuotaExceededAuditRecord
+  | AuthCheckAuditRecord
   | ErasedAuditRecord;
 
 /** @since 1.0.0 */

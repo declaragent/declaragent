@@ -45,11 +45,13 @@ export {
   PeersConfigError,
   loadPeersConfig,
   parsePeersConfig,
+  peerAuthSchema,
   peersConfigSchema,
   resolvePeerTransport,
 } from './peers-loader.js';
 export type {
   LoadedPeers,
+  PeerAuthConfig,
   PeerEntry,
   PeerTransport,
   PeersConfig,

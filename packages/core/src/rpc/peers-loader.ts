@@ -100,10 +100,55 @@ const peerTransportSchema = z.discriminatedUnion('kind', [
   memoryPeerTransport,
 ]);
 
+/**
+ * Per-peer authentication config. Optional — absent = legacy
+ * `internal`/`hmac` envelope auth. When present, incoming envelopes
+ * from this peer MUST carry a matching {@link RpcAuth.kind} and pass
+ * provider-side verify. See `@declaragent/plugin-agent-rpc/auth/*`
+ * for the provider implementations.
+ *
+ * @since 1.2.0
+ */
+const oidcPeerAuthSchema = z
+  .object({
+    provider: z.literal('oidc'),
+    issuer: z.string().min(1),
+    audience: z.string().min(1),
+    jwksUri: z.string().min(1).optional(),
+    scopes: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+const oauth2ClientPeerAuthSchema = z
+  .object({
+    provider: z.literal('oauth2-client'),
+    tokenEndpoint: z.string().min(1),
+    clientId: z.string().min(1),
+    /**
+     * Resolver reference (e.g. `secret://platform/client-secret`). The
+     * secret is pulled through the Phase-6 secret-resolver pipeline at
+     * runtime, never inlined into the config.
+     */
+    clientSecretRef: z.string().min(1),
+    jwksUri: z.string().min(1).optional(),
+    issuer: z.string().min(1).optional(),
+    audience: z.string().min(1).optional(),
+    scopes: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+export const peerAuthSchema = z.discriminatedUnion('provider', [
+  oidcPeerAuthSchema,
+  oauth2ClientPeerAuthSchema,
+]);
+
+export type PeerAuthConfig = z.infer<typeof peerAuthSchema>;
+
 const peerEntrySchema = z
   .object({
     agent: z.string().regex(/^agent:\/\/.+/, 'agent must be `agent://<id>`'),
     transports: z.array(peerTransportSchema).min(1),
+    auth: peerAuthSchema.optional(),
   })
   .strict();
 

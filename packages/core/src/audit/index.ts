@@ -1,4 +1,5 @@
 export type {
+  AuthCheckAuditRecord,
   EraseOptions,
   ErasedAuditRecord,
   QuotaExceededAuditRecord,
