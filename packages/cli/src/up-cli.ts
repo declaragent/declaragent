@@ -63,6 +63,7 @@ import {
   eventsRoute,
   loadAgent,
   loadFleet,
+  logsRoute,
   metricsRoute,
   skillExtension,
   startControlPlaneServer,
@@ -70,6 +71,7 @@ import {
   statusRoute,
   withProviderRateLimit,
 } from '@declaragent/core';
+import type { ResolveLogPaths } from '@declaragent/core';
 import { resolveCredentials } from './auth.js';
 import { buildRuntimeTools } from './builtin-tools.js';
 import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
@@ -95,6 +97,7 @@ import {
   openAgentLog,
   readUpState,
   reapStaleState,
+  upLogPath,
   upStartupLogPath,
   waitForUpState,
   writeUpState,
@@ -422,9 +425,10 @@ async function runForeground(
   //
   // Slice 1 serves `/metrics` + `/status`. The Slice 1 *tail* extends
   // the router with `/events`, `/dlq`, and `/audit` when the backing
-  // stores are available. `/logs` SSE tail is a separate slice.
+  // stores are available. Slice 1c adds `/logs` SSE tail.
   // @since 0.6.0-slice.1 (listener), 0.7.0-slice.1 (router + /status),
-  //        0.7.0-slice.1-tail (/events + /dlq + /audit)
+  //        0.7.0-slice.1-tail (/events + /dlq + /audit),
+  //        0.7.0-slice.1c (/logs SSE)
   const metricsPort = resolveMetricsPort(_args.__detached === true);
   let controlPlaneHandle: ControlPlaneServerHandle | null = null;
   let controlPlaneAuditSink: TenantAuditSink | null = null;
@@ -456,6 +460,38 @@ async function runForeground(
         `⚠ audit sink at ${auditDbPath()} failed to open — ${err instanceof Error ? err.message : String(err)}. /audit disabled.\n`,
       );
     }
+
+    // `/logs` SSE tail (Slice 1c of CONTROL_PLANE_PLAN.md §9 PR 1.2).
+    // Maps `?agent=<id>` (or no-param for the multiplex) to the
+    // concrete `~/.declaragent/logs/<id>.log` files the `up` daemon
+    // already appends to via {@link openAgentLog}.
+    //
+    // Unknown agent → 400 (resolver returns null). When no running
+    // agents match (e.g. skill-only fleet with zero bound agents),
+    // returns an empty paths array; the route emits its `stream-open`
+    // frame immediately but never produces a log line. This matches
+    // the behavior operators hit when `declaragent logs` is invoked
+    // against an idle agent — no output is better than a 404.
+    const resolveLogPaths: ResolveLogPaths = (query) => {
+      const knownIds = new Set(running.map((r) => r.summary.id));
+      if (query.agent !== undefined && query.agent !== '') {
+        if (!knownIds.has(query.agent)) return null;
+        return {
+          paths: [{ path: upLogPath(query.agent), agentId: query.agent }],
+          // When `?since=` is set, we replay from byte 0 and let
+          // the caller filter by timestamp on the wire.
+          fromStart: query.since !== undefined && query.since !== '',
+        };
+      }
+      return {
+        paths: running.map((r) => ({
+          path: upLogPath(r.summary.id),
+          agentId: r.summary.id,
+        })),
+        fromStart: query.since !== undefined && query.since !== '',
+      };
+    };
+    routes.push(logsRoute({ resolvePaths: resolveLogPaths }));
     try {
       controlPlaneHandle = await startControlPlaneServer({
         routes,
@@ -471,6 +507,7 @@ async function runForeground(
       if (controlPlaneAuditSink) {
         io.out(`  audit:   http://127.0.0.1:${controlPlaneHandle.port}/audit\n`);
       }
+      io.out(`  logs:    http://127.0.0.1:${controlPlaneHandle.port}/logs\n`);
     } catch (err) {
       io.err(
         `⚠ control-plane exporter failed to bind on :${metricsPort} — ${err instanceof Error ? err.message : String(err)}. Continuing without HTTP endpoints.\n`,

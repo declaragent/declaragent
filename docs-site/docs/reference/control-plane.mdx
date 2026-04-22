@@ -1,0 +1,126 @@
+---
+id: control-plane
+title: Control-plane HTTP endpoints
+slug: /reference/control-plane
+sidebar_label: Control plane
+sidebar_position: 9
+---
+
+# Control-plane HTTP endpoints
+
+`declaragent up [-d]` exposes a read-only HTTP listener on `127.0.0.1:9464`
+by default (override with `DECLARAGENT_METRICS_PORT`, set to `0` to
+disable). The listener multiplexes five endpoints used by
+`declaragent fleet <verb>` and external observability tooling.
+
+| Path      | Shape              | Purpose                                                                 |
+| --------- | ------------------ | ----------------------------------------------------------------------- |
+| `/metrics`| Prometheus text    | Scrape endpoint — re-use of the 0.6.0 exporter.                         |
+| `/status` | JSON               | Snapshot of the `up` process's bound agents + source summaries.         |
+| `/events` | JSON, paginated    | Read-only view of `EventStore.list()`.                                  |
+| `/dlq`    | JSON, paginated    | Read-only view of `EventStore.listRejections()` (dispatch DLQ).         |
+| `/audit`  | JSON, paginated    | Read-only view of the hash-chained audit sink; optional `?verify=1`.    |
+| `/logs`   | `text/event-stream`| Live SSE tail of per-agent `~/.declaragent/logs/<agent>.log` files.     |
+
+Bind is localhost-only by default. Remote bind (Slice 2 of the control-plane
+plan) is gated on an explicit opt-in that isn't wired into the CLI yet.
+
+## `/logs` — live log tail (SSE)
+
+```
+GET /logs[?agent=<id>][&since=<iso|ms>]
+Accept: text/event-stream
+```
+
+### Query params
+
+| Param   | Type              | Default                            | Notes |
+| ------- | ----------------- | ---------------------------------- | ----- |
+| `agent` | string            | all running agents (multiplexed)   | Unknown agent id returns `400 {"error": "unknown agent \"X\""}`. |
+| `since` | ISO-8601 \| ms    | tail-from-end                      | When set, the tailer replays from byte 0 and the caller filters on the wire. |
+
+### Framing
+
+Each newline-terminated log record becomes one SSE frame:
+
+```
+event: log
+data: {"agentId":"my-agent","ts":"2026-04-22T18:30:00.000Z","level":"info","event":"dispatcher.outcome", ...}
+
+```
+
+System messages (back-pressure drops, tailer errors) use `event: system`
+so clients can filter. Heartbeats are comment frames (`: keep-alive`)
+emitted every 15s so idle connections survive aggressive HTTP proxies.
+
+### Back-pressure
+
+When the client stalls (or the consumer can't drain the socket faster
+than the tailer produces), the route buffers up to 1024 pending
+frames. When that cap is hit the whole buffer is dropped and replaced
+with one notice:
+
+```
+event: system
+data: {"system":"dropped","count":1024}
+```
+
+Clients should treat this as "fall back to `/events` for the missing
+window" — the SSE stream is strictly best-effort.
+
+### Disconnect
+
+Dropping the socket (client cancel, `AbortController.abort()`, TCP
+RST) tears down the per-request tailer, closes the heartbeat timer,
+and releases the file handle. No server-side garbage accumulates.
+
+### Response headers
+
+```
+Content-Type: text/event-stream; charset=utf-8
+Cache-Control: no-cache, no-transform
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+`X-Accel-Buffering: no` tells nginx + certain cloud load-balancers to
+stop batching small responses — critical for a live tail.
+
+### curl example
+
+```bash
+# Tail a single agent, follow from EOF.
+curl -N http://127.0.0.1:9464/logs?agent=my-agent
+
+# Replay the whole file then follow.
+curl -N "http://127.0.0.1:9464/logs?agent=my-agent&since=2026-04-22T00:00:00Z"
+
+# Multiplex all running agents.
+curl -N http://127.0.0.1:9464/logs
+```
+
+Pair the `-N` (no buffering) flag with the endpoint's `X-Accel-Buffering`
+hint so nothing on the path stands between the server and your
+terminal.
+
+### Python `sseclient-py` example
+
+```python
+import sseclient
+import requests
+
+r = requests.get("http://127.0.0.1:9464/logs?agent=my-agent", stream=True)
+for evt in sseclient.SSEClient(r).events():
+    if evt.event == "log":
+        record = json.loads(evt.data)
+        print(record["agent"], record.get("event"))
+    elif evt.event == "system":
+        print("!!", evt.data)
+```
+
+## Related
+
+- `declaragent logs [-f]` — file-path tail; no HTTP hop. Equivalent for a local
+  operator; `/logs` is for remote fleet aggregation.
+- [`declaragent fleet logs`](/reference/fleet) _(planned)_ — multiplexes `/logs`
+  across every host in a fleet manifest.

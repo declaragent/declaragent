@@ -176,6 +176,12 @@ const defaultListen: NonNullable<ControlPlaneServerOptions['listen']> = async ({
   const server = bun.serve({
     port,
     hostname,
+    // SSE responses (`/logs`) can legitimately stay open for
+    // minutes at a time while the client tails a quiet agent's
+    // log. Bun's default 10s `idleTimeout` aborts long-lived
+    // streams server-side — disable it so the client controls
+    // lifetime via cancel / AbortController.
+    idleTimeout: 0,
     fetch: (req: Request) => fetch(req),
   });
   return {
