@@ -38,6 +38,7 @@ import {
   createEventBus,
   createEventStore,
   createFileWatchAdapter,
+  createMessageNormalizer,
   createWebhookAdapter,
   discoverAdapters,
   validateEventSourcesConfig,
@@ -265,6 +266,15 @@ export async function startAgentSources(
   const instances: EventSourceInstance[] = [];
   const started: Array<{ type: string; id: string; summary: string }> = [];
 
+  // Shared across every adapter. External broker adapters (kafka, nats,
+  // sqs, …) route raw broker payloads through `BaseSourceInstance`,
+  // which requires `deps.normalizer` to convert bytes → `AgentEvent`.
+  // Without one, `base-source.no-normalizer` fires and the message is
+  // ack'd and dropped — the exact bug that slipped through 0.5.1.
+  // Built-in webhook/cron/file-watch adapters don't read this field;
+  // they construct `AgentEvent`s themselves.
+  const normalizer = createMessageNormalizer({ logger });
+
   for (const src of report.sources) {
     const adapter = adapters[src.type];
     if (adapter === undefined) {
@@ -280,6 +290,7 @@ export async function startAgentSources(
         bus,
         logger,
         configDir: configDir(),
+        normalizer,
       });
       await inst.start();
       instances.push(inst);
