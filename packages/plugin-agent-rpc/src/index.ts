@@ -50,3 +50,11 @@ export type {
   KafkaJSModule,
   KafkaProducerLike,
 } from './kafka-transport.js';
+export { createNatsTransport } from './nats-transport.js';
+export type {
+  CreateNatsTransportOptions,
+  NatsConnectionLike,
+  NatsMessageLike,
+  NatsModule,
+  NatsSubscriptionLike,
+} from './nats-transport.js';

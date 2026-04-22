@@ -23,7 +23,13 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@declaragent/core": "^0.4.0"
+    "@declaragent/core": "^0.4.0",
+    "nats": "^2.28.0"
+  },
+  "peerDependenciesMeta": {
+    "nats": {
+      "optional": true
+    }
   },
   "declaragent": {
     "kind": "event-source-adapter",
