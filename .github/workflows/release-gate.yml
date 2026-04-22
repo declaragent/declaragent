@@ -37,11 +37,14 @@ jobs:
           bun-version: latest
       - name: Install deps
         run: bun install --frozen-lockfile
-      - name: Diagnose workspace link state
-        run: |
-          ls -la packages/testkit/node_modules/@declaragent/ 2>&1 || echo "no @declaragent symlink in testkit"
-          bun --version
-      - name: Run chaos:quick (via filter, so Bun's workspace-aware runner picks up deps)
+      # @declaragent/core's package.json "exports" points at ./dist/index.js
+      # (published-package semantics), so sibling workspaces that import
+      # `from '@declaragent/core'` need dist/ to exist. `bun install` doesn't
+      # build workspace packages — we have to run the build explicitly
+      # before running the smoke script that reaches into core.
+      - name: Build workspaces (needed for cross-workspace imports)
+        run: bun run --filter '@declaragent/core' build
+      - name: Run chaos:quick
         run: bun run --filter '@declaragent/testkit' chaos:quick
       - name: Upload chaos report
         if: always()
