@@ -18,8 +18,7 @@ coverage
 .declaragent/
 # macOS noise
 .DS_Store
-# Internal planning docs — kept local, not shipped (repo-root only;
-# `docs-site/docs/` is the public Docusaurus surface)
-/docs/
+# `/docs/` is now checked in (planning docs are visible in-repo + used
+# by CI). The public Docusaurus surface remains at `docs-site/docs/`.
 # Compiled standalone binary (built by `bun build --compile`; 62 MB)
 packages/cli/bin/declaragent-binary/
