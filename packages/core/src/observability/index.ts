@@ -16,6 +16,19 @@ export type {
   UpStatusProvider,
   UpStatusSnapshot,
 } from './control-plane-server.js';
+export { auditRoute, dlqRoute, eventsRoute } from './control-plane-routes.js';
+export type {
+  AuditResponse,
+  AuditResponseEntry,
+  AuditRouteOptions,
+  AuditVerifySummary,
+  DlqResponse,
+  DlqResponseEntry,
+  DlqRouteOptions,
+  EventsResponse,
+  EventsResponseEntry,
+  EventsRouteOptions,
+} from './control-plane-routes.js';
 export {
   createPrometheusRegistry,
   startPrometheusExporter,

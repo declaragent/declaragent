@@ -1,0 +1,448 @@
+import { Database } from 'bun:sqlite';
+import { describe, expect, it } from 'bun:test';
+import { createSqliteAuditSink } from '../audit/sqlite-sink.js';
+import type { TenantAuditRecord } from '../audit/types.js';
+import { createEventStore } from '../events/store.js';
+import type { AgentEvent, DispatchOutcome } from '../events/types.js';
+import {
+  type AuditResponse,
+  type DlqResponse,
+  type EventsResponse,
+  auditRoute,
+  dlqRoute,
+  eventsRoute,
+} from './control-plane-routes.js';
+import {
+  type ControlPlaneServerInstance,
+  type ControlPlaneServerListenOptions,
+  startControlPlaneServer,
+} from './control-plane-server.js';
+
+// ── Harness ────────────────────────────────────────────────────────────────
+
+interface FakeServer extends ControlPlaneServerInstance {
+  readonly fetch: ControlPlaneServerListenOptions['fetch'];
+}
+
+async function startFake(routes: Parameters<typeof startControlPlaneServer>[0]['routes']): Promise<{
+  handle: Awaited<ReturnType<typeof startControlPlaneServer>>;
+  server: FakeServer;
+}> {
+  let captured: FakeServer | null = null;
+  const listen: NonNullable<Parameters<typeof startControlPlaneServer>[0]['listen']> = async ({
+    port,
+    hostname,
+    fetch,
+  }) => {
+    const server: FakeServer = {
+      port,
+      hostname,
+      fetch,
+      stop() {},
+    };
+    captured = server;
+    return server;
+  };
+  const handle = await startControlPlaneServer({ routes, listen });
+  if (!captured) throw new Error('listen stub did not run');
+  return { handle, server: captured };
+}
+
+const LOCAL_HEADERS = { host: '127.0.0.1:9464' } as const;
+
+function memDb(): Database {
+  return new Database(':memory:', { create: true });
+}
+
+function makeEvent(overrides: Partial<AgentEvent> & { id: string; timestamp: number }): AgentEvent {
+  return {
+    kind: 'webhook.received',
+    source: { type: 'webhook', triggerId: 't', remoteAddr: '10.0.0.1' },
+    target: { type: 'session', sessionId: 'sess-x', mode: 'inject' },
+    payload: {},
+    auth: { kind: 'internal' },
+    ...overrides,
+  };
+}
+
+// ── /events tests ──────────────────────────────────────────────────────────
+
+describe('eventsRoute', () => {
+  it('returns a page of events with nextCursor=null when no more data', async () => {
+    const store = createEventStore({ db: memDb() });
+    for (let i = 0; i < 3; i += 1) {
+      await store.record(makeEvent({ id: `e${i}`, timestamp: 1_000 + i }));
+    }
+    const { server, handle } = await startFake([eventsRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/events?limit=10', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as EventsResponse;
+    expect(body.events).toHaveLength(3);
+    // DESC by ts: e2, e1, e0
+    expect(body.events.map((e) => e.id)).toEqual(['e2', 'e1', 'e0']);
+    expect(body.nextCursor).toBeNull();
+    await handle.close();
+  });
+
+  it('paginates with an opaque cursor across two pages', async () => {
+    const store = createEventStore({ db: memDb() });
+    for (let i = 0; i < 5; i += 1) {
+      await store.record(makeEvent({ id: `e${i}`, timestamp: 1_000 + i }));
+    }
+    const { server, handle } = await startFake([eventsRoute(store)]);
+
+    const page1 = (await (
+      await server.fetch(new Request('http://127.0.0.1/events?limit=2', { headers: LOCAL_HEADERS }))
+    ).json()) as EventsResponse;
+    expect(page1.events.map((e) => e.id)).toEqual(['e4', 'e3']);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = (await (
+      await server.fetch(
+        new Request(
+          `http://127.0.0.1/events?limit=2&cursor=${encodeURIComponent(page1.nextCursor as string)}`,
+          { headers: LOCAL_HEADERS },
+        ),
+      )
+    ).json()) as EventsResponse;
+    expect(page2.events.map((e) => e.id)).toEqual(['e2', 'e1']);
+    expect(page2.nextCursor).not.toBeNull();
+
+    const page3 = (await (
+      await server.fetch(
+        new Request(
+          `http://127.0.0.1/events?limit=2&cursor=${encodeURIComponent(page2.nextCursor as string)}`,
+          { headers: LOCAL_HEADERS },
+        ),
+      )
+    ).json()) as EventsResponse;
+    expect(page3.events.map((e) => e.id)).toEqual(['e0']);
+    expect(page3.nextCursor).toBeNull();
+
+    await handle.close();
+  });
+
+  it('applies the state=circuit-open filter', async () => {
+    const store = createEventStore({ db: memDb() });
+    for (let i = 0; i < 3; i += 1) {
+      await store.record(makeEvent({ id: `ok-${i}`, timestamp: 1_000 + i }));
+      await store.markOutcome(`ok-${i}`, {
+        kind: 'dispatched',
+        sessionId: 's',
+      } satisfies DispatchOutcome);
+    }
+    await store.record(makeEvent({ id: 'broken', timestamp: 2_000 }));
+    await store.markOutcome('broken', {
+      kind: 'rejected',
+      reason: 'circuit-open',
+    } satisfies DispatchOutcome);
+
+    const { server, handle } = await startFake([eventsRoute(store)]);
+    const body = (await (
+      await server.fetch(
+        new Request('http://127.0.0.1/events?state=circuit-open&limit=10', {
+          headers: LOCAL_HEADERS,
+        }),
+      )
+    ).json()) as EventsResponse;
+    expect(body.events.map((e) => e.id)).toEqual(['broken']);
+    await handle.close();
+  });
+
+  it('returns 400 on an unknown state value', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([eventsRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/events?state=nope', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/state/);
+    await handle.close();
+  });
+
+  it('returns 400 on a malformed cursor', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([eventsRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/events?cursor=not-base64!!', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/cursor/);
+    await handle.close();
+  });
+
+  it('returns 400 on a non-numeric limit', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([eventsRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/events?limit=abc', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+
+  it('returns 400 when limit exceeds maxLimit', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([eventsRoute(store, { maxLimit: 5 })]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/events?limit=100', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+
+  it('returns 405 on non-GET/HEAD', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([eventsRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/events', {
+        method: 'POST',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(405);
+    await handle.close();
+  });
+});
+
+// ── /dlq tests ─────────────────────────────────────────────────────────────
+
+describe('dlqRoute', () => {
+  it('returns rejections newest-first with nextCursor=null', async () => {
+    const store = createEventStore({ db: memDb() });
+    await store.upsertRejection('a', 'circuit-open', 'boom', 1_000);
+    await store.upsertRejection('b', 'rate-limit', undefined, 2_000);
+
+    const { server, handle } = await startFake([dlqRoute(store)]);
+    const body = (await (
+      await server.fetch(new Request('http://127.0.0.1/dlq?limit=10', { headers: LOCAL_HEADERS }))
+    ).json()) as DlqResponse;
+    expect(body.rejections.map((r) => r.eventId)).toEqual(['b', 'a']);
+    expect(body.nextCursor).toBeNull();
+    await handle.close();
+  });
+
+  it('paginates across two pages', async () => {
+    const store = createEventStore({ db: memDb() });
+    for (let i = 0; i < 5; i += 1) {
+      await store.upsertRejection(`r${i}`, 'circuit-open', undefined, 1_000 + i);
+    }
+    const { server, handle } = await startFake([dlqRoute(store)]);
+    const page1 = (await (
+      await server.fetch(new Request('http://127.0.0.1/dlq?limit=2', { headers: LOCAL_HEADERS }))
+    ).json()) as DlqResponse;
+    expect(page1.rejections.map((r) => r.eventId)).toEqual(['r4', 'r3']);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = (await (
+      await server.fetch(
+        new Request(
+          `http://127.0.0.1/dlq?limit=2&cursor=${encodeURIComponent(page1.nextCursor as string)}`,
+          { headers: LOCAL_HEADERS },
+        ),
+      )
+    ).json()) as DlqResponse;
+    expect(page2.rejections.map((r) => r.eventId)).toEqual(['r2', 'r1']);
+    await handle.close();
+  });
+
+  it('filters by minAttempts', async () => {
+    const store = createEventStore({ db: memDb() });
+    await store.upsertRejection('once', 'circuit-open', undefined, 1_000);
+    await store.upsertRejection('twice', 'circuit-open', undefined, 2_000);
+    await store.upsertRejection('twice', 'circuit-open', undefined, 3_000);
+
+    const { server, handle } = await startFake([dlqRoute(store)]);
+    const body = (await (
+      await server.fetch(
+        new Request('http://127.0.0.1/dlq?minAttempts=2&limit=10', {
+          headers: LOCAL_HEADERS,
+        }),
+      )
+    ).json()) as DlqResponse;
+    expect(body.rejections.map((r) => r.eventId)).toEqual(['twice']);
+    await handle.close();
+  });
+
+  it('returns 400 on unsupported kind', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([dlqRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq?kind=mcp', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+
+  it('returns 400 on malformed cursor', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([dlqRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq?cursor=!!!', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+
+  it('returns 400 on non-positive minAttempts', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([dlqRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq?minAttempts=0', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+});
+
+// ── /audit tests ───────────────────────────────────────────────────────────
+
+describe('auditRoute', () => {
+  async function seedAudit(
+    entries: number,
+  ): Promise<Awaited<ReturnType<typeof createSqliteAuditSink>>> {
+    const sink = await createSqliteAuditSink({ path: ':memory:' });
+    for (let i = 0; i < entries; i += 1) {
+      const rec: TenantAuditRecord = {
+        kind: 'tool_call',
+        ts: 1_000 + i,
+        tenantId: 'tenant-a',
+        sessionId: `sess-${i}`,
+        tool: 'bash',
+        permissionKey: 'bash(*)',
+        outcome: 'allow',
+      };
+      await sink.record(rec);
+    }
+    return sink;
+  }
+
+  it('returns entries in ASC seq order with nextCursor=null when done', async () => {
+    const sink = await seedAudit(3);
+    const { server, handle } = await startFake([auditRoute(sink)]);
+    const body = (await (
+      await server.fetch(new Request('http://127.0.0.1/audit?limit=10', { headers: LOCAL_HEADERS }))
+    ).json()) as AuditResponse;
+    expect(body.entries.map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(body.nextCursor).toBeNull();
+    expect(body.verify).toBeUndefined();
+    await handle.close();
+  });
+
+  it('paginates across two pages', async () => {
+    const sink = await seedAudit(5);
+    const { server, handle } = await startFake([auditRoute(sink)]);
+    const page1 = (await (
+      await server.fetch(new Request('http://127.0.0.1/audit?limit=2', { headers: LOCAL_HEADERS }))
+    ).json()) as AuditResponse;
+    expect(page1.entries.map((e) => e.seq)).toEqual([1, 2]);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = (await (
+      await server.fetch(
+        new Request(
+          `http://127.0.0.1/audit?limit=2&cursor=${encodeURIComponent(page1.nextCursor as string)}`,
+          { headers: LOCAL_HEADERS },
+        ),
+      )
+    ).json()) as AuditResponse;
+    expect(page2.entries.map((e) => e.seq)).toEqual([3, 4]);
+    expect(page2.nextCursor).not.toBeNull();
+
+    const page3 = (await (
+      await server.fetch(
+        new Request(
+          `http://127.0.0.1/audit?limit=2&cursor=${encodeURIComponent(page2.nextCursor as string)}`,
+          { headers: LOCAL_HEADERS },
+        ),
+      )
+    ).json()) as AuditResponse;
+    expect(page3.entries.map((e) => e.seq)).toEqual([5]);
+    expect(page3.nextCursor).toBeNull();
+    await handle.close();
+  });
+
+  it('attaches verify summary when ?verify=1', async () => {
+    const sink = await seedAudit(3);
+    const { server, handle } = await startFake([auditRoute(sink)]);
+    const body = (await (
+      await server.fetch(
+        new Request('http://127.0.0.1/audit?verify=1&limit=10', { headers: LOCAL_HEADERS }),
+      )
+    ).json()) as AuditResponse;
+    expect(body.verify).toBeDefined();
+    expect(body.verify?.ok).toBe(true);
+    expect(body.verify?.totalEntries).toBe(3);
+    expect(body.verify?.verifiedEntries).toBe(3);
+    expect(body.verify?.violationCount).toBe(0);
+    await handle.close();
+  });
+
+  it('returns 400 on malformed cursor', async () => {
+    const sink = await seedAudit(1);
+    const { server, handle } = await startFake([auditRoute(sink)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/audit?cursor=garbage!!!', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+
+  it('returns 400 on bad since', async () => {
+    const sink = await seedAudit(1);
+    const { server, handle } = await startFake([auditRoute(sink)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/audit?since=not-a-date', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+
+  it('returns 405 on non-GET/HEAD', async () => {
+    const sink = await seedAudit(1);
+    const { server, handle } = await startFake([auditRoute(sink)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/audit', {
+        method: 'DELETE',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(405);
+    await handle.close();
+  });
+
+  it('filters by tenant', async () => {
+    const sink = await createSqliteAuditSink({ path: ':memory:' });
+    await sink.record({
+      kind: 'tool_call',
+      ts: 1,
+      tenantId: 'a',
+      sessionId: 's',
+      tool: 'bash',
+      permissionKey: 'bash(*)',
+      outcome: 'allow',
+    });
+    await sink.record({
+      kind: 'tool_call',
+      ts: 2,
+      tenantId: 'b',
+      sessionId: 's',
+      tool: 'bash',
+      permissionKey: 'bash(*)',
+      outcome: 'allow',
+    });
+    const { server, handle } = await startFake([auditRoute(sink)]);
+    const body = (await (
+      await server.fetch(
+        new Request('http://127.0.0.1/audit?tenant=b&limit=10', { headers: LOCAL_HEADERS }),
+      )
+    ).json()) as AuditResponse;
+    expect(body.entries).toHaveLength(1);
+    expect(body.entries[0]?.tenantId).toBe('b');
+    await handle.close();
+  });
+});
