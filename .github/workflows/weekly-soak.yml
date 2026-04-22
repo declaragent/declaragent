@@ -1,0 +1,138 @@
+name: weekly — Kafka fleet soak (24h)
+
+# Enterprise Production Plan item #1 · Acceptance #2:
+#   "A new packages/testkit/src/fleet-integration/kafka-soak.test.ts
+#    runs ≥ 24h in CI weekly with zero dropped envelopes and p99 ≤ 3s
+#    RTT."
+#
+# Boots Redpanda + the two-process harness and runs the soak test at
+# 1 req/s for a full 24 hours. Any drift (dropped envelope, p99 > 2×
+# baseline, worker crash) fails the job and files a tracking issue.
+#
+# Separate from `nightly-integration.yml` because:
+#   1. The 24h window dwarfs the 20-minute nightly budget.
+#   2. The nightly is the credential signal the release gate consumes.
+#      Keeping the soak on its own track means a weekly flake doesn't
+#      silently slip into "7 green nightlies" math.
+
+on:
+  schedule:
+    # Sunday 00:00 UTC — finishes by Monday 00:00 UTC, keeps weekday
+    # runner pools free. Adjust if the runner queue is saturated on
+    # weekends.
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      duration-ms:
+        description: 'Override soak duration in milliseconds'
+        required: false
+        default: '86400000'
+      rate-hz:
+        description: 'Per-second request rate'
+        required: false
+        default: '1'
+
+concurrency:
+  group: weekly-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kafka-soak:
+    name: Kafka 24h soak
+    runs-on: ubuntu-latest
+    # 26h wall-clock: 24h soak + generous margin for broker boot,
+    # warm-up, and post-test teardown / log upload.
+    timeout-minutes: 1560
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build core + plugin-agent-rpc + testkit
+        run: |
+          bun run --filter '@declaragent/core' build
+          bun run --filter '@declaragent/plugin-agent-rpc' build
+          bun run --filter '@declaragent/testkit' build
+
+      - name: Start Redpanda broker
+        run: |
+          set -euo pipefail
+          docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml up -d
+          echo "Waiting for Redpanda to go healthy..."
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' declaragent-kafka-redpanda 2>/dev/null || echo 'missing')"
+            echo "  attempt $i: $status"
+            [ "${status}" = "healthy" ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' declaragent-kafka-redpanda | grep -q healthy
+
+      - name: Run 24h Kafka soak
+        env:
+          KAFKA_SOAK: '1'
+          KAFKA_BROKERS: localhost:19092
+          KAFKA_SOAK_DURATION_MS: ${{ github.event.inputs.duration-ms || '86400000' }}
+          KAFKA_SOAK_RATE_HZ: ${{ github.event.inputs.rate-hz || '1' }}
+          KAFKA_SOAK_BASELINE_MS: '300000'
+        run: |
+          set -euo pipefail
+          # Bun test's default per-test timeout is 5s. The soak test
+          # passes an explicit timeout at registration time; no need to
+          # override here.
+          bun test packages/testkit/src/fleet-integration/kafka-soak.test.ts
+
+      - name: Dump broker logs on failure
+        if: failure()
+        run: |
+          docker logs declaragent-kafka-redpanda --tail 500 || true
+          docker ps -a || true
+
+      - name: Upload broker logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redpanda-logs-${{ github.run_id }}
+          path: |
+            /tmp/redpanda-*.log
+          if-no-files-found: ignore
+
+      - name: Stop Redpanda
+        if: always()
+        run: |
+          docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml down --volumes || true
+
+  report-failure:
+    name: File tracking issue on failure
+    needs: kafka-soak
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `weekly Kafka soak failed on ${new Date().toISOString().slice(0, 10)}`;
+            const body = [
+              `Weekly 24h Kafka soak failed.`,
+              ``,
+              `**Workflow run:** ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+              ``,
+              `Checks: zero dropped envelopes, p99 ≤ 2× baseline, p99 ≤ 3s absolute, no worker crash.`,
+              ``,
+              `Per-run logs (broker + harness) are attached to the run as artifacts.`,
+              ``,
+              `Labeled \`weekly-soak\` for triage. Close when resolved.`,
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['weekly-soak', 'enterprise-item-1'],
+            });

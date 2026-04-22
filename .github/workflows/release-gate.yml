@@ -1,10 +1,14 @@
 name: Release gate
 
 # Phase 6 slice-8 release gate. Every PR targeting `main` must pass:
-#   - chaos:quick      (in-process fault injection; 10s window)
-#   - isolation tests  (tenant boundary + registry + quota tests)
-#   - dep scan         (osv-scanner invocation; reuses deps-scan config)
-#   - secret-leak scan (grep-based sanity + the property test suite)
+#   - chaos:quick        (in-process fault injection; 10s window)
+#   - isolation tests    (tenant boundary + registry + quota tests)
+#   - dep scan           (osv-scanner invocation; reuses deps-scan config)
+#   - secret-leak scan   (grep-based sanity + the property test suite)
+#   - nightly-sentinel   (only on `chore: version packages` release PRs:
+#                         requires the last 7 `nightly-integration.yml`
+#                         runs to be green — Enterprise Production Plan
+#                         item #1 · Acceptance #3.)
 #
 # Failures block merge. Alongside the per-concern workflows (ci,
 # deps-scan, npm-audit) this gate is the "all or nothing" signal that
@@ -19,6 +23,7 @@ on:
 permissions:
   contents: read
   security-events: write
+  actions: read
 
 jobs:
   chaos-quick:
@@ -134,10 +139,84 @@ jobs:
             --max-severity=critical \
             .
 
+  nightly-sentinel:
+    # Enterprise Production Plan item #1 · Acceptance #3:
+    #   ".github/workflows/release-gate.yml requires the last 7
+    #    nightly-integration.yml runs to be green before allowing a
+    #    minor release."
+    #
+    # We identify a "release PR" two ways:
+    #   1. PRs whose title starts with `chore: version packages`
+    #      (matches changesets' default versioning PR title).
+    #   2. Pushes to main that land a changeset-generated version bump
+    #      (detected by the presence of a matching commit subject on
+    #      `github.event.head_commit.message`).
+    #
+    # Non-release PRs / non-release pushes short-circuit this job as a
+    # no-op — the sentinel is not a per-commit speed bump, only a
+    # release-moment safety belt.
+    name: Nightly-green sentinel (release PRs only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect release context
+        id: ctx
+        run: |
+          set -euo pipefail
+          pr_title="${{ github.event.pull_request.title }}"
+          head_msg="${{ github.event.head_commit.message }}"
+          is_release="false"
+          # `startsWith` semantics without relying on the contexts
+          # dropping newlines into the expression.
+          case "${pr_title}" in
+            "chore: version packages"*) is_release="true" ;;
+          esac
+          case "${head_msg}" in
+            "chore: version packages"*) is_release="true" ;;
+          esac
+          echo "is_release=${is_release}" >> "$GITHUB_OUTPUT"
+          echo "Detected release context: ${is_release}"
+
+      - name: Check last 7 nightly-integration runs
+        if: steps.ctx.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Pull the 7 most recent completed runs of nightly-integration.yml
+          # on the default branch. GitHub sorts by created_at desc.
+          #
+          # `status=completed` excludes in-progress runs; we want the
+          # last 7 *finished* signals. If fewer than 7 completed runs
+          # exist at all (e.g. first week after the workflow was added),
+          # we treat that as "no signal yet" and fail closed — the
+          # release can retry after the 7th green nightly lands.
+          runs_json="$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/nightly-integration.yml/runs?branch=main&status=completed&per_page=7" \
+            --jq '.workflow_runs | map({id: .id, conclusion: .conclusion, url: .html_url})')"
+          count="$(echo "${runs_json}" | jq 'length')"
+          echo "nightly runs considered: ${count}"
+          echo "${runs_json}" | jq '.'
+          if [ "${count}" -lt 7 ]; then
+            echo "::error::release-gate: need 7 completed nightly runs, only found ${count}. Wait for more signal before cutting a release."
+            exit 1
+          fi
+          not_green="$(echo "${runs_json}" | jq '[.[] | select(.conclusion != "success")] | length')"
+          if [ "${not_green}" -gt 0 ]; then
+            echo "::error::release-gate: ${not_green} of the last 7 nightly-integration runs are not green. Stabilize the nightly before shipping a minor."
+            echo "${runs_json}" | jq '.[] | select(.conclusion != "success")'
+            exit 1
+          fi
+          echo "release-gate: last 7 nightly-integration runs are green."
+
+      - name: Not a release PR — skip nightly check
+        if: steps.ctx.outputs.is_release != 'true'
+        run: |
+          echo "Not a 'chore: version packages' PR/push. Sentinel is a no-op."
+
   summary:
     name: Release gate summary
     runs-on: ubuntu-latest
-    needs: [chaos-quick, isolation-tests, secret-leak-scan, dep-scan]
+    needs: [chaos-quick, isolation-tests, secret-leak-scan, dep-scan, nightly-sentinel]
     if: always()
     steps:
       - name: Gate status
@@ -146,11 +225,13 @@ jobs:
           iso="${{ needs.isolation-tests.result }}"
           leak="${{ needs.secret-leak-scan.result }}"
           dep="${{ needs.dep-scan.result }}"
+          sentinel="${{ needs.nightly-sentinel.result }}"
           echo "chaos:quick=$chaos"
           echo "isolation=$iso"
           echo "secret-leak=$leak"
           echo "dep-scan=$dep"
-          if [ "$chaos" != "success" ] || [ "$iso" != "success" ] || [ "$leak" != "success" ] || [ "$dep" != "success" ]; then
+          echo "nightly-sentinel=$sentinel"
+          if [ "$chaos" != "success" ] || [ "$iso" != "success" ] || [ "$leak" != "success" ] || [ "$dep" != "success" ] || [ "$sentinel" != "success" ]; then
             echo "::error::release gate failed"
             exit 1
           fi
