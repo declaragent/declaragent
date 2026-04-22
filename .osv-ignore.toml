@@ -18,3 +18,8 @@
 # id = "GHSA-xxxx-yyyy-zzzz"
 # reason = "https://github.com/declaragent/declaragent/issues/123 — false positive in dev-only dep"
 # expires = "2026-07-15"
+
+[[IgnoredVulns]]
+id = "GHSA-gh4j-gqv2-49f6"
+reason = "fast-xml-parser 5.5.8 via @aws-sdk/xml-builder (transitive). CVSS 6.1 Medium — fix in 5.7.0, awaiting upstream aws-sdk bump. No direct use in our code."
+expires = 2026-07-22

@@ -1,5 +1,12 @@
 node_modules
 dist
+# …but force-track test fixture `dist/` dirs. They're hand-authored
+# TS files dynamically imported at runtime by plugin loader tests —
+# they never come from a compiler, so the blanket `dist` rule above
+# was silently dropping them and every CI run had 4 failing
+# loadPlugin (fixture) tests as a result.
+!packages/core/src/plugins/__fixtures__/**/dist/
+!packages/core/src/plugins/__fixtures__/**/dist/**
 build
 coverage
 .DS_Store
