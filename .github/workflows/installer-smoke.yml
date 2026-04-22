@@ -73,6 +73,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # @declaragent/core's package.json "exports" points at ./dist/index.js
+      # (published-package semantics), so `bun build --compile` on the CLI
+      # can't resolve `from '@declaragent/core'` until dist/ exists. Build
+      # core before invoking build-binary.sh.
+      - name: Build @declaragent/core (needed by bun build --compile)
+        run: bun run --filter '@declaragent/core' build
+
       - name: Compile release tarball
         run: bash scripts/build-binary.sh ${{ matrix.target }}
 
@@ -133,6 +140,9 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Build @declaragent/core (needed by bun build --compile)
+        run: bun run --filter '@declaragent/core' build
 
       - name: Compile + corrupt checksum
         run: |
