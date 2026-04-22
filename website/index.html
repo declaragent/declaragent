@@ -76,17 +76,18 @@
       <!-- HERO ─────────────────────────────────────────────────────────── -->
       <section class="hero">
         <div class="hero__copy">
-          <p class="eyebrow">v0.5.21 on npm · v0.6.0 staged · Apache-2.0</p>
+          <p class="eyebrow">v0.6.0 on npm · Apache-2.0</p>
           <h1>
             An agent to build and manage<br />
             <span class="accent">fleets of agents for enterprise.</span>
           </h1>
           <p class="lede">
-            Declare each agent in one <code>agent.yaml</code> — identity, capabilities,
-            skills, MCP servers, plugins, channels, peers. One CLI deploys the fleet,
-            streams metrics, rolls out canaries. Prometheus, OpenTelemetry, circuit
-            breakers, rate limits, dispatch DLQ — all built-in. Declaragent itself is an
-            agent built on the same core you ship to production.
+            Talk to <code>declaragent</code>. Describe the fleet you need — it proposes
+            <code>agent.yaml</code> files, skills, event sources, channels, peer wiring;
+            you confirm; it writes them. One CLI then deploys the fleet, streams metrics,
+            and rolls out canaries. Prometheus, OpenTelemetry, circuit breakers, rate
+            limits, dispatch DLQ — all built-in. Declaragent itself is an agent, built on
+            the same core you ship to production.
           </p>
           <div class="hero__actions">
             <code class="cmd" id="install-cmd" role="button" tabindex="0"
@@ -158,6 +159,129 @@
             If your agent can do it, so can the CLI. If the CLI does it, your agent
             can inherit it.
           </p>
+        </div>
+      </section>
+
+      <!-- CONVERSATIONAL BUILDER ──────────────────────────────────────── -->
+      <section class="meta" aria-labelledby="build-title" id="build">
+        <div class="meta__inner">
+          <p class="eyebrow">Converse → fleet</p>
+          <h2 id="build-title">
+            Describe what you need. Review the plan. Apply.
+          </h2>
+          <p class="lede lede--muted">
+            Start the REPL with <code>DECLARAGENT_BUILDER=on declaragent</code>.
+            Tell it what the fleet should do. It proposes a complete change-set —
+            <code>agent.yaml</code>, skills, event sources, channel bindings, peer
+            entries. You review, <code>/yes</code> to apply or <code>/edit</code> to
+            adjust. Every apply is git-rollback-safe and recorded to the hash-chained
+            audit log. 14 builder tools, plan-confirm-execute, scope + secret guards —
+            all shipped in <code>@declaragent/cli@0.6.0</code>.
+          </p>
+          <div class="meta__flow" aria-label="Conversation to deployed fleet">
+            <div class="meta__node meta__node--agent">
+              <span class="meta__node-tag">01</span>
+              <span class="meta__node-title">Describe</span>
+              <span class="meta__node-sub">"Triage new GitHub issues, hand severe ones to a reviewer agent, notify #oncall."</span>
+            </div>
+            <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
+              <path d="M4 12 H36 M30 6 L40 12 L30 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <div class="meta__node meta__node--core">
+              <span class="meta__node-tag">02</span>
+              <span class="meta__node-title">Propose</span>
+              <span class="meta__node-sub">Two agents + peer wiring + webhook source + Slack channel — diff shown, no secrets written.</span>
+            </div>
+            <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
+              <path d="M4 12 H36 M30 6 L40 12 L30 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <div class="meta__node meta__node--agent">
+              <span class="meta__node-tag">03</span>
+              <span class="meta__node-title">Apply &amp; deploy</span>
+              <span class="meta__node-sub"><code>/yes</code> → files written · <code>declaragent fleet run</code> → online.</span>
+            </div>
+          </div>
+          <p class="meta__foot">
+            Not a wizard. Not a template gallery. A conversation with an agent that
+            understands the runtime it's authoring for — because it runs on the same
+            core.
+          </p>
+          <div class="hero__actions meta__cta">
+            <a class="btn btn--accent" href="https://docs.declaragent.dev/quickstart/conversational-tour" target="_blank" rel="noopener">
+              Take the 15-minute tour →
+            </a>
+            <a class="btn btn--ghost" href="https://docs.declaragent.dev/reference/builder" target="_blank" rel="noopener">
+              Builder reference
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- FIRST PRINCIPLES SCOREBOARD ─────────────────────────────────── -->
+      <section class="ent" aria-labelledby="principles-title" id="principles">
+        <header class="ent__header">
+          <p class="eyebrow">First principles — honest status</p>
+          <h2 id="principles-title">Five pillars. Single-machine ✅. Enterprise 🟡.</h2>
+          <p class="lede lede--muted">
+            Single-machine production is fully shipped. Enterprise — multi-host,
+            SSO-bridged, SIEM-exported, GitOps-rendered — is 10–14 engineer-weeks of
+            integration work, not a rewrite. Full evidence:
+            <a href="https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_VALIDATION.md" target="_blank" rel="noopener">FIRST_PRINCIPLES_VALIDATION.md</a>.
+          </p>
+        </header>
+        <div class="ent__grid">
+          <article class="ent-card">
+            <h3>1 · Define agents</h3>
+            <p>
+              <code>agent.yaml</code> identity + Markdown skills + tool allowlists +
+              inbound/outbound channels + typed peers. ✅ single-machine · 🟡 enterprise
+              (typed capabilities, SSO-bridged permissions pending).
+            </p>
+          </article>
+          <article class="ent-card">
+            <h3>2 · Deploy + monitor</h3>
+            <p>
+              <code>up / ps / logs / down</code>, Prometheus on :9464, OpenTelemetry
+              auto-enable, circuit breakers, rate limits, canary deploys. ✅
+              single-machine · 🟡 enterprise (no managed control plane, audit is local
+              SQLite).
+            </p>
+          </article>
+          <article class="ent-card">
+            <h3>3 · Independent agents + delegation</h3>
+            <p>
+              Memory + Kafka RPC transports, pending-registry correlation, version-skew
+              detection, fleet-e2e tests, nightly CI on Redpanda. ✅ single-machine ·
+              🟡 enterprise (Kafka soak pending, NATS/SQS/AMQP/MQTT transports missing).
+            </p>
+          </article>
+          <article class="ent-card">
+            <h3>4 · Tools + MCP</h3>
+            <p>
+              8 built-in tools (Read, Write, Edit, Bash, Glob, Grep, Agent, SendMessage)
+              + MCP stdio/HTTP/SSE/streamable-HTTP + OAuth 2.1 PKCE. ✅ single-machine ·
+              🟡 enterprise (no per-tool rate limit, no MCP auto-recovery).
+            </p>
+          </article>
+          <article class="ent-card">
+            <h3>5 · Conversational builder</h3>
+            <p>
+              14 builder tools, 300-line authoring system prompt, plan-confirm-execute,
+              git-backed rollback, scope + secret guards, fleet-e2e test. ✅
+              single-machine · 🟡 enterprise (no live-LLM regression fixture, manual
+              env/deploy hand-off by design).
+            </p>
+          </article>
+          <article class="ent-card">
+            <h3>Honesty clause</h3>
+            <p>
+              We publish <a href="https://github.com/declaragent/declaragent/blob/main/AGENTS.md" target="_blank" rel="noopener">AGENTS.md</a>
+              and
+              <a href="https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_AUDIT.md" target="_blank" rel="noopener">FIRST_PRINCIPLES_AUDIT.md</a>
+              with file:line evidence for every ✅ and 🟡. If it says it works, it has
+              tests. If it says 🟡, the gap is named.
+            </p>
+          </article>
         </div>
       </section>
 
@@ -373,14 +497,15 @@ $ declaragent fleet run</code></pre>
           <div class="stage">
             <div class="stage__num">01</div>
             <h3>Build</h3>
-            <pre class="stage__code"><code>declaragent init \
-  --template concierge \
-  --provider anthropic
+            <pre class="stage__code"><code>declaragent init --fleet acme
+cd acme
 
-declaragent init --fleet acme
-declaragent fleet add \
-  --template rpc-server</code></pre>
-            <p>Pick a template, scaffold an agent or a fleet of agents.</p>
+DECLARAGENT_BUILDER=on declaragent
+&gt; build a fleet that triages GH
+&gt;   issues and hands severe ones
+&gt;   to a reviewer agent
+/yes</code></pre>
+            <p>Scaffold a fleet, then converse to shape it. Templates still work.</p>
           </div>
 
           <div class="stage">
@@ -541,10 +666,16 @@ declaragent fleet deploy --rollback</code></pre>
           <pre class="install__block" id="install-brew" data-install-panel="brew" hidden><code>brew tap declaragent/tap
 brew install declaragent</code></pre>
 
-          <p class="install__then">Then:</p>
-          <pre class="install__block install__block--sub"><code>declaragent init --template concierge --provider anthropic
-cd concierge
-declaragent</code></pre>
+          <p class="install__then">Then — converse your fleet into existence:</p>
+          <pre class="install__block install__block--sub"><code>declaragent init --fleet acme
+cd acme
+DECLARAGENT_BUILDER=on declaragent</code></pre>
+          <p class="install__then">
+            New to Declaragent?
+            <a href="https://docs.declaragent.dev/quickstart/conversational-tour" target="_blank" rel="noopener">
+              Take the 15-minute conversational tour →
+            </a>
+          </p>
 
           <div class="install__links">
             <a

@@ -1,0 +1,317 @@
+---
+id: conversational-tour
+title: Onboarding tour — converse your fleet into existence
+sidebar_label: Conversational tour
+sidebar_position: 4
+---
+
+# Onboarding tour: build a fleet by talking to Declaragent
+
+**Time to finish:** 15 minutes · **You'll end with:** a two-agent fleet, git-rollback-safe, ready for `declaragent fleet run`.
+
+Declaragent's headline capability is that the CLI itself is an agent. You don't author `agent.yaml` by hand — you describe what you want and the REPL proposes a change-set you review and apply. This tour walks through that loop end to end.
+
+If you prefer the dry reference, see [Builder reference](/reference/builder). If you want the transcript-style deep dive on a single agent, see [Build an agent through conversation](/cookbook/build-an-agent). **This page is the recommended starting point** — it's the tour we wish every new user read before writing anything.
+
+:::tip What you'll learn
+- How the builder's **plan-confirm-execute** loop keeps you in control.
+- Which slash commands matter (`/yes`, `/no`, `/edit`, `/diff`, `/undo`, `/scope`).
+- Why the builder never writes secrets and why that's a feature, not a limitation.
+- How to verify what the builder did using `/diff`, `/history`, and `git log`.
+- How to go from "conversation is over" to "fleet is running."
+:::
+
+## 0 · Prerequisites
+
+```bash
+# Node 18+, git, and an Anthropic or OpenRouter key
+node -v            # ≥ 18
+git --version      # any modern git
+echo $ANTHROPIC_API_KEY   # or $OPENROUTER_API_KEY — set at least one
+```
+
+Install the CLI if you don't have it:
+
+```bash
+npm i -g @declaragent/cli
+declaragent --version     # should print 0.6.0 or newer
+```
+
+:::note Why the builder needs git
+Every apply captures `git rev-parse HEAD` **before** writing files, so `/undo` reverts cleanly and nothing surprises your working tree. If the directory isn't a repo yet, the builder offers to `git init -b main` on the first write.
+:::
+
+## 1 · Scaffold the fleet shell
+
+Builder tools that touch fleet-level files (`fleet.yaml`, `rpc-peers.yaml`) refuse to run without a fleet scaffold in place. So start with one command:
+
+```bash
+mkdir acme-fleet && cd acme-fleet
+git init -b main
+declaragent init --fleet acme
+```
+
+This lays down:
+
+```
+acme-fleet/
+├── fleet.yaml              # fleet identity + deploy targets
+├── rpc-peers.yaml          # empty peer table
+├── .env.example            # populated by the builder as it reserves secrets
+└── agents/                 # empty — the builder fills this
+```
+
+Commit the scaffold:
+
+```bash
+git add . && git commit -m "scaffold acme fleet"
+```
+
+Committing now means `/undo` later has a clean baseline to roll back to.
+
+## 2 · Open the conversational REPL
+
+```bash
+DECLARAGENT_BUILDER=on declaragent
+```
+
+Two things to notice:
+
+- **`DECLARAGENT_BUILDER=on` is case-sensitive.** `ON` or `1` silently leaves the builder off — the REPL will load but the authoring tools won't. Run `/scope` once inside; you should see the current fleet directory, which confirms the builder is live.
+- **Production agents never need this flag.** Your shipped agents load `@declaragent/core` — they don't carry the authoring surface. The builder is an *authoring* tool, not a *runtime* tool.
+
+```
+you> /scope
+system> scope root: /Users/you/acme-fleet
+```
+
+## 3 · Describe the fleet
+
+Describe the outcome, not the files. The model translates your goal into a structured proposal.
+
+```
+you> /plan build a fleet that triages new GitHub issues. A front-line agent
+     labels + summarises them, and escalates anything tagged "severity:critical"
+     to a reviewer agent that posts to #oncall in Slack.
+```
+
+`/plan <description>` tells the model to draft a proposal **without executing**. Under the hood the model will call `DeclaraProposeChange` — which *blocks* the REPL waiting for your decision. Nothing touches disk yet.
+
+The model will usually ask 1–2 clarifying questions first. Typical exchange:
+
+```
+agent> Two clarifications before I draft the plan:
+  1. Which repo do these webhooks come from? I'll put the org/repo in the
+     source config.
+  2. Which Slack workspace + channel should the reviewer post to? I'll
+     reserve placeholders; you won't share secrets with me.
+
+you> acme-corp/web for the repo, #oncall in the acme-corp workspace
+```
+
+## 4 · Read the proposal
+
+The model emits the plan as a numbered list:
+
+```
+system> Proposal 8e4c6e8b-… — GitHub issue triage fleet
+Steps:
+  1. [addAgent]   scaffold triager from template
+        template: concierge, id: triager
+  2. [addSkill]   skills/label-and-summarise.md on triager
+        inputs:  { issue_url: string, title: string, body: string }
+  3. [addSkill]   skills/delegate-critical.md on triager
+        uses:    RequestAgent → reviewer.review-critical
+  4. [addAgent]   scaffold reviewer from template
+        template: pr-review, id: reviewer
+  5. [addSkill]   skills/review-critical.md on reviewer
+        outputs: { slack_sent: boolean }
+  6. [addPeer]    rpc-peers.yaml — reviewer exposes review-critical to triager
+  7. [addSource]  triager/event-sources.yaml — webhook "gh-issues"
+        path: /webhooks/github, secret: ${env:GITHUB_WEBHOOK_SECRET}
+  8. [addChannel] register slack channel "oncall"
+        workspace: acme-corp, channel: #oncall
+  9. [addSecret]  reserve GITHUB_WEBHOOK_SECRET in .env.example
+10. [addSecret]  reserve SLACK_BOT_TOKEN in .env.example (usedBy: reviewer.slack)
+11. [addSecret]  reserve ANTHROPIC_API_KEY in .env.example
+
+Type /yes to apply · /no to cancel · /edit <n> <replacement> to revise step n.
+```
+
+Three things worth pausing on:
+
+- **Nothing is written yet.** The proposal is plan data held in a session-scoped registry. Its TTL is 15 minutes; if you walk away for a meeting, come back and `/yes` still works.
+- **Secrets are reserved, never accepted.** Step 9–11 reserve *slots*: the builder never takes the literal value. You'll populate them in `.env` yourself once the files land.
+- **Fleet wiring happens through `addPeer`.** Step 6 is the "these two agents can talk" declaration. Under the hood this mutates `rpc-peers.yaml`, preserving existing comments.
+
+## 5 · Revise if the plan's off
+
+If step 5 undersells what "review" should mean, fix it in place:
+
+```
+you> /edit 5 review critical issues — root-cause analysis + paste verbatim
+         traceback into Slack thread
+```
+
+`/edit` revises the **human-facing description** of a step. It does not reshape the underlying `payload` — if the structured args are wrong (wrong template, wrong peer, wrong skill name), say so in the chat and ask the model to re-propose. The registry will invalidate the old proposal and draft a new one.
+
+Common revision patterns:
+
+| Your intent | Say this |
+| --- | --- |
+| Add a step | "also scaffold a daily digest agent that reports summary to Slack once a day" |
+| Remove a step | "drop the Slack channel — we'll wire it later" |
+| Swap template | "use the oncall-escalator template for the reviewer instead" |
+| Tighten a skill's inputs | "label-and-summarise should take the full GitHub issue payload, not just title/body" |
+
+## 6 · Apply
+
+When the plan reads right:
+
+```
+you> /yes
+system> proposal 8e4c6e8b-… confirmed.
+tool>   DeclaraApplyChange started
+tool>   Declara:addAgent   ok   (10 ms)
+tool>   Declara:addSkill   ok   (38 ms)
+tool>   Declara:addSkill   ok   (36 ms)
+tool>   Declara:addAgent   ok   (9 ms)
+tool>   Declara:addSkill   ok   (41 ms)
+tool>   Declara:addPeer    ok   (7 ms)
+tool>   Declara:addSource  ok   (12 ms)
+tool>   Declara:addChannel ok   (6 ms)
+tool>   Declara:addSecret  ok   (3 ms)
+tool>   Declara:addSecret  ok   (3 ms)
+tool>   Declara:addSecret  ok   (3 ms)
+tool>   DeclaraApplyChange ok   (187 ms)
+system> proposal 8e4c6e8b-… applied.
+```
+
+What just happened:
+
+1. `DeclaraApplyChange` captured `git rev-parse HEAD`.
+2. Each step dispatched to its runner — file writes are `yaml.parseDocument` round-trips that preserve comments + surgical edits on `agent.yaml` that preserve ordering.
+3. Every runner emitted one `tool_call` audit record, plus a summary record for the apply. `/history` surfaces them.
+4. On any step failure the whole apply halts + a scoped `git checkout` restores *only* the paths the apply touched. Your unrelated working-tree changes are never stomped.
+
+## 7 · Verify what landed
+
+Two complementary checks, no leaving the REPL.
+
+### `/diff` — see the change-set
+
+```
+you> /diff
+```
+
+Runs `git diff` scoped to the builder's scope root. You'll see the new `agents/triager/`, `agents/reviewer/`, the mutated `rpc-peers.yaml`, and the appended `.env.example` entries. If anything looks wrong, `/undo` is one command away.
+
+### `/history` — audit trail
+
+```
+you> /history
+system> builder actions (12, newest first):
+  2026-04-22T14:12:03.887Z [allow] DeclaraApplyChange  (apply:8e4c6e8b-…) — 187 ms
+  2026-04-22T14:12:03.867Z [allow] Declara:addSecret   (apply-step:addSecret) — 3 ms
+  2026-04-22T14:12:03.861Z [allow] Declara:addSecret   (apply-step:addSecret) — 3 ms
+  …
+```
+
+Every line is a hash-chained audit record. `DeclaraAuditVerify({})` (or `declaragent audit verify` outside the REPL) walks the chain and reports tampering — the builder can't hide its tracks.
+
+### The ground truth — `git log`
+
+Your repo is the source of truth:
+
+```bash
+# in a second terminal:
+git status
+git log --oneline -5
+```
+
+One commit (the scaffold from step 1) plus an unstaged change-set covering everything the apply just wrote. Nothing the builder did is invisible.
+
+## 8 · Iterate — `/undo` and re-propose
+
+Second-guessing is cheap:
+
+```
+you> /undo
+system> reverted 14 path(s) to 7b0a1c9 (proposal 8e4c6e8b-…).
+```
+
+`/undo` reads the last applied proposal's `gitHeadBefore` + `writes` list and runs `git checkout <HEAD> -- <paths>` restricted to those paths. Unrelated edits in your working tree are untouched. In 0.6 only the most-recent apply is undoable; stacked undo lands in 0.7.
+
+Common iteration patterns:
+
+```
+you> /plan same triage fleet, but drop the reviewer — just label + summarise
+you> /plan add a third agent that posts a daily digest to #digest every 9am UTC
+you> /plan the triager should also respond inline to /label commands in the issue
+```
+
+## 9 · The four safety floors (why you can trust the loop)
+
+These aren't UX polish — they're the reason you can hand the builder a plan and walk away.
+
+1. **Pre-turn secret redaction.** Every message you type flows through `redactSecrets()` *before* the model, transcript, or session store see it. Anthropic / OpenAI / GitHub / npm / Slack / AWS / JWT patterns are caught and replaced with `<redacted:label>`. If you accidentally paste a token, it's already gone.
+2. **Scope confinement.** Every file-writing tool asserts its target path lives at or below the session's scope root. Escaping scope requires explicit `confirmOutsideScope: true` which re-routes through `requiresExplicitYes` confirmation. No silent cross-repo writes.
+3. **`DeclaraAddSecret` never accepts a value.** It takes a `ref` + `provider` and returns a placeholder env-var name. The value enters the system only when you paste it into `.env` yourself — outside the transcript.
+4. **Deploys are deny-by-default.** `Bash:declaragent deploy*` and `Bash:declaragent fleet deploy*` are floor-level deny rules. A rogue model can't ship to production on its own.
+
+See [Builder reference → Safety model](/reference/builder#safety-model) for the full surface.
+
+## 10 · Hand off to the runtime
+
+The builder scaffolded and wired your fleet. It did **not** deploy — that's by design. To bring it online:
+
+```bash
+# 1. Fill in the real secret values in .env (copy from .env.example):
+cp .env.example .env
+$EDITOR .env       # paste the real GITHUB_WEBHOOK_SECRET, SLACK_BOT_TOKEN, ANTHROPIC_API_KEY
+
+# 2. Validate:
+declaragent fleet validate
+
+# 3. Run locally (foreground):
+declaragent fleet run
+
+# 4. Or run each agent as a daemon:
+declaragent up -d           # inside agents/triager
+declaragent up -d           # inside agents/reviewer
+
+# 5. Watch events stream:
+declaragent events list --last 20 --follow
+
+# 6. When ready, promote to production:
+declaragent fleet deploy --target cloud-run --canary --canary-wait-ms 60000
+```
+
+## 11 · Commit the fleet
+
+```bash
+git add .
+git commit -m "acme triage fleet — triager + reviewer + oncall slack"
+```
+
+From here the fleet is a normal git-versioned project. Every declarative config is reviewable as a diff. Your next tour of duty's changes will land the same way: converse, propose, apply, commit.
+
+## What's next
+
+- **Deploy it:** [Deploy to Cloud Run](/cookbook/deploy-cloud-run).
+- **Monitor it:** [Grafana + OTel setup](/cookbook/grafana-tracing).
+- **Go deeper on the builder:** [Builder reference](/reference/builder) covers all 15 tools + every slash command.
+- **Single-agent version of this flow:** [Build an agent through conversation](/cookbook/build-an-agent).
+- **See the honest status of every pillar:** [FIRST_PRINCIPLES_VALIDATION.md](https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_VALIDATION.md).
+
+## Troubleshooting
+
+**`DECLARAGENT_BUILDER=on` but no builder tools load.** The variable is strictly `on` (lowercase). `ON` / `1` / `true` don't work. `echo $DECLARAGENT_BUILDER` to confirm; inside the REPL, `/scope` will print the scope root only when the builder is live.
+
+**`DeclaraFleetAdd` errors with "no fleet.yaml in scope."** Run `declaragent init --fleet <name>` first — fleet-level tools refuse to operate without a scaffold.
+
+**`/undo` fails with "no git HEAD captured."** Your directory wasn't a git repo when the apply ran. The builder asks to `git init` on first write; decline that and `/undo` can't work. Fix: `git init -b main` then re-apply.
+
+**Proposal expired.** TTL is 15 minutes. Ask the model to re-propose; it will usually regenerate from the chat context without re-asking clarifications.
+
+**"Redacted" appeared in my message but I didn't paste a secret.** Some patterns (e.g. JWT-shaped strings, AWS-like key IDs) match structurally. The model is instructed never to echo the `<redacted:…>` marker back. If a legitimate token is false-positived, regenerate the message without the triggering substring — the session store never saw the original.

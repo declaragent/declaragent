@@ -7,7 +7,7 @@ Project memory for Declaragent. Read this first when starting work here.
 - **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest published `@declaragent/cli@0.6.0` (2026-04-22; `npm view @declaragent/cli dist-tags` → `latest: 0.6.0`). Companion bumps: `core@0.4.0`, `plugin-agent-rpc@3.0.0`, `testkit@3.0.0`, all channel-* + source-* packages at `3.0.0` (peer-dep cascade from core's semver-major-in-0.x).
 - **GitHub org:** `declaragent`.
 - **Theme:** *an agent for enterprises to build and manage fleets of agents.* Declaragent itself is an agent — same core, same tools, same audit — that helps operators author + run everyone else's agents.
-- **Honest capability status:** see **[AGENTS.md](./AGENTS.md)** for the feature-level ledger. For the intent→code audit ("does the first-principles vision actually work at production scale?") see **[docs/FIRST_PRINCIPLES_AUDIT.md](./docs/FIRST_PRINCIPLES_AUDIT.md)**. This file is a project-orientation guide, not a status dashboard.
+- **Honest capability status:** see **[AGENTS.md](./AGENTS.md)** for the feature-level ledger. For the intent→code audit ("does the first-principles vision actually work at production scale?") see **[docs/FIRST_PRINCIPLES_AUDIT.md](./docs/FIRST_PRINCIPLES_AUDIT.md)** (exhaustive capability matrix) and **[docs/FIRST_PRINCIPLES_VALIDATION.md](./docs/FIRST_PRINCIPLES_VALIDATION.md)** (pillar-by-pillar yes/no verdict with ranked enterprise gap list). This file is a project-orientation guide, not a status dashboard.
 
 ## What this project is
 
@@ -23,24 +23,27 @@ When the plan and a background doc disagree, `SPEC_AND_PLAN.md` wins.
 
 ## First-principles scoreboard
 
-A fleet of agents has four pillars. Current state (see `docs/FIRST_PRINCIPLES_AUDIT.md` for evidence + per-row detail):
+The enterprise pitch — "an agent to build and manage fleets of agents" — decomposes into **five** pillars, not four. The builder-as-agent is the differentiator and has its own row. Current state (see `docs/FIRST_PRINCIPLES_VALIDATION.md` for evidence + ranked gap list):
 
 | Pillar | Single-machine | Enterprise (multi-host, soak-proven, SSO/SIEM/GitOps) |
 | --- | --- | --- |
 | 1 · Define agents (capabilities, skills, inbound/outbound channels, peers) | ✅ | 🟡 — typed capabilities + SSO-bridged channel permissions pending |
 | 2 · Deploy + monitor fleet (up/down/ps/logs + Prometheus + OTel + canary) | ✅ | 🟡 — no managed control plane, no traffic-splitting canary, audit is local SQLite |
 | 3 · Independent agents with optional delegation (memory + Kafka RPC) | ✅ | 🟡 — Kafka transport shipped 0.6.0, soak pending; NATS/SQS/AMQP/MQTT factories missing |
-| 4 · Tools + MCP (7 built-ins + MCP stdio/HTTP/SSE/OAuth PKCE + plugins) | ✅ | 🟡 — no per-tool rate limit, no approval-workflow integration, no auto-recovery for crashed MCP |
+| 4 · Tools + MCP (8 built-ins + MCP stdio/HTTP/SSE/OAuth PKCE + plugins) | ✅ | 🟡 — no per-tool rate limit, no approval-workflow integration, no auto-recovery for crashed MCP |
+| 5 · **Conversational builder → deployable fleet** (`DECLARAGENT_BUILDER=on`) | ✅ | 🟡 — 14 builder tools + plan-confirm-execute + git rollback + fleet-e2e test ship; no live-LLM regression fixture, manual `.env` + `up` hand-off |
 
-**Single-machine production: ✅** ready with 0.6.0 staged — a single host running `declaragent up -d`, webhook/cron in, Claude + MCP tools + Slack/Telegram/Discord/WhatsApp in/out, `/metrics` + OTel + circuit breakers + rate limits + dispatch DLQ all on by default.
+**Single-machine production: ✅** ready — `@declaragent/cli@0.6.0` on npm. A single host runs `declaragent up -d`, webhook/cron in, Claude + MCP tools + Slack/Telegram/Discord/WhatsApp in/out, `/metrics` + OTel + circuit breakers + rate limits + dispatch DLQ all on by default. Conversational builder (`DECLARAGENT_BUILDER=on`) produces deployable single-agent and multi-agent fleets end-to-end.
 
-**Enterprise production: 🟡** roughly 10–12 focused engineer-weeks of *integration* work (not new architecture):
+**Enterprise production: 🟡** roughly 10–14 focused engineer-weeks of *integration* work (not new architecture). See **[docs/ENTERPRISE_PRODUCTION_PLAN.md](./docs/ENTERPRISE_PRODUCTION_PLAN.md)** for the tracked 12-item plan with per-item specs, sequencing, and a status board. Top-line slices:
 1. Finish Kafka soak (Slice 7 tail) + NATS factory — unblocks cross-host + non-Kafka customers.
 2. OIDC/OAuth2 on RPC envelopes (`RpcAuth` shape exists, provider implementations don't).
-3. Managed control plane — aggregator over N `up` processes. **Needs its own plan doc.**
+3. Managed control plane — aggregator over N `up` processes. See `docs/CONTROL_PLANE_PLAN.md`.
 4. GitOps `fleet render` + SIEM audit export.
+5. Runtime hardening — control socket on `up`, dispatch-DLQ requeue, per-tool rate limit, MCP auto-recovery.
+6. Quality — recorded-conversation builder regression tests + v1.1 typed capabilities.
 
-See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" for the full ranked list.
+See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" for the evidence ledger.
 
 ---
 
