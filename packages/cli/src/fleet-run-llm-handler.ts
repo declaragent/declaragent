@@ -115,15 +115,44 @@ export function createLLMHandlerFactory(
     // gets a `RequestAgent` tool that can call its declared peers.
     // The tool uses the shared transport map + a fresh pending-registry
     // per handler (correlation IDs don't cross agents).
+    //
+    // 0.5.3 fix: subscribe to this agent's own responses topic and
+    // plumb a `replyTo` so `mode: sync` RPCs can correlate their
+    // response envelopes. Without this, responses had nowhere to go
+    // and every sync RequestAgent call timed out — the scaffold
+    // pattern that didn't use an `agent-inbox` source never worked.
     if (rpcContext.peers !== undefined) {
-      extraTools.push(
-        createRequestAgentTool({
-          selfAgent: rpcContext.selfAddress,
-          peers: rpcContext.peers,
-          transports: rpcContext.transports,
-          pending: createPendingRegistry(),
-        }) as Tool,
-      );
+      const memoryTransport = rpcContext.transports.get('memory');
+      if (memoryTransport !== undefined) {
+        const agentId = rpcContext.selfAddress.replace(/^agent:\/\//, '');
+        const responsesTopic = `agents.${agentId}.responses`;
+        const replyTo = `memory://${responsesTopic}` as const;
+        const pending = createPendingRegistry();
+        // Subscribe so responses settle the pending registry. This
+        // subscription lives for the handler's lifetime; transport.close()
+        // at daemon shutdown tears it down.
+        memoryTransport.subscribe(responsesTopic, async (envelope) => {
+          if (envelope.kind !== 'response') return;
+          const payload = envelope.payload as
+            | { ok: true; data: unknown }
+            | { ok: false; error: { code: string; message: string } };
+          pending.settle(
+            envelope.correlationId,
+            payload.ok
+              ? { status: 'ok', data: payload.data }
+              : { status: 'error', error: payload.error },
+          );
+        });
+        extraTools.push(
+          createRequestAgentTool({
+            selfAgent: rpcContext.selfAddress,
+            peers: rpcContext.peers,
+            transports: rpcContext.transports,
+            pending,
+            replyTo,
+          }) as Tool,
+        );
+      }
     }
     const engine = createEngine({
       provider: options.provider,

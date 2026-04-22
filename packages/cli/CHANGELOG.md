@@ -1,5 +1,19 @@
 # @declaragent/cli
 
+## 0.5.21
+
+### Patch Changes
+
+- Fleet-run RPC reply plumbing (Bug 4 from the 0.5.x integration series).
+
+  `createLLMHandlerFactory` built every agent's `RequestAgent` tool without a `replyTo` and without subscribing to its own responses topic. Any `mode: sync` RPC would therefore block forever: the peer's `createRespondHook` saw `envelope.replyTo === undefined` and skipped publishing the response, and even if it had published, no-one was listening on `agents.<self>.responses` to settle the caller's pending-registry. The `agent-inbox` source path used by the `fleet-starter` template happened to dodge this (it owns the subscription + pending wiring itself), but the scaffold-plus-`fleet run` pattern never worked end-to-end. A 3-agent orchestrator → classifier → reporter triage test timed out at 150s per hop until this fix.
+
+  `fleet-run-llm-handler.ts` now computes `responsesTopic = agents.<agentId>.responses`, subscribes the shared memory transport to that topic with a handler that settles a per-agent pending-registry, and passes `replyTo: memory://<responsesTopic>` to `createRequestAgentTool`. Subscriptions live for the handler's lifetime and get torn down when the transport closes at daemon shutdown.
+
+  Validated by `/tmp/test-0.5.2-triage-fleet.sh` — an in-process 3-agent fleet where the orchestrator reads feedback, delegates classification to a Haiku agent, delegates Markdown-report writing to a Sonnet agent, and returns in 29s (was: 150s timeout, no report produced).
+
+  Version jumps directly from 0.5.2 → 0.5.21 at operator request.
+
 ## 0.5.2
 
 ### Patch Changes
