@@ -33,6 +33,7 @@ import {
   type AgentSpec,
   CircuitBreaker,
   type CircuitBreakerTransitionEvent,
+  type ControlPlaneRoute,
   type ControlPlaneServerHandle,
   type ControlSocketContext,
   type ControlSocketServer,
@@ -43,8 +44,10 @@ import {
   type LoadedAgent,
   type Logger,
   type PrometheusRegistry,
+  type TenantAuditSink,
   type Tracer,
   type UpStatusSnapshot,
+  auditRoute,
   createEngine,
   createEventDispatcher,
   createExtensionRegistry,
@@ -53,8 +56,11 @@ import {
   createPermissionGate,
   createPrometheusRegistry,
   createSendMessageTool,
+  createSqliteAuditSink,
   createSqliteSessionStore,
   defaultRateForProvider,
+  dlqRoute,
+  eventsRoute,
   loadAgent,
   loadFleet,
   metricsRoute,
@@ -73,7 +79,7 @@ import {
   loadScopedMCPServers,
   startMCPServers,
 } from './mcp-runtime.js';
-import { sessionsDbPath } from './paths.js';
+import { auditDbPath, sessionsDbPath } from './paths.js';
 import { type PluginRuntime, startPluginRuntime } from './plugins-runtime.js';
 import { createProviderFromCreds } from './provider-factory.js';
 import { type StartAgentSourcesResult, startAgentSources } from './run-agent-sources.js';
@@ -414,24 +420,57 @@ async function runForeground(
   // unless `DECLARAGENT_METRICS_PORT` is set. Set
   // `DECLARAGENT_METRICS_PORT=0` to disable in detached mode too.
   //
-  // Slice 1 (this file) serves `/metrics` + `/status`. `/events`,
-  // `/dlq`, `/audit`, and `/logs` land in subsequent CONTROL_PLANE_PLAN
-  // slices on the same listener.
-  // @since 0.6.0-slice.1 (listener), 0.7.0-slice.1 (router + /status)
+  // Slice 1 serves `/metrics` + `/status`. The Slice 1 *tail* extends
+  // the router with `/events`, `/dlq`, and `/audit` when the backing
+  // stores are available. `/logs` SSE tail is a separate slice.
+  // @since 0.6.0-slice.1 (listener), 0.7.0-slice.1 (router + /status),
+  //        0.7.0-slice.1-tail (/events + /dlq + /audit)
   const metricsPort = resolveMetricsPort(_args.__detached === true);
   let controlPlaneHandle: ControlPlaneServerHandle | null = null;
+  let controlPlaneAuditSink: TenantAuditSink | null = null;
   if (metricsPort > 0) {
+    const routes: ControlPlaneRoute[] = [
+      metricsRoute(runtime.metrics),
+      statusRoute(() => buildUpStatusSnapshot(state, running)),
+    ];
+    // Wire `/events` + `/dlq` to the first agent that owns a store.
+    // Multi-agent fleets run one SQLite per agent; surfacing the first
+    // matches `declaragent events list` / `dlq list` CLI behavior today
+    // (single-process view, not cross-agent aggregation). A fleet-wide
+    // aggregator lives in the CLI fan-out layer (Slice 3 of
+    // CONTROL_PLANE_PLAN.md) and calls this endpoint per host.
+    const agentWithStore = running.find((r) => r.sources.eventStore !== undefined);
+    const eventStoreForRoutes = agentWithStore?.sources.eventStore;
+    if (eventStoreForRoutes) {
+      routes.push(eventsRoute(eventStoreForRoutes));
+      routes.push(dlqRoute(eventStoreForRoutes));
+    }
+    // Open the audit sink for `/audit` reads. Best-effort — a missing
+    // sqlite file is fine (sink creates it on open). Failure is
+    // non-fatal: we just skip the route.
+    try {
+      controlPlaneAuditSink = await createSqliteAuditSink({ path: auditDbPath() });
+      routes.push(auditRoute(controlPlaneAuditSink));
+    } catch (err) {
+      io.err(
+        `⚠ audit sink at ${auditDbPath()} failed to open — ${err instanceof Error ? err.message : String(err)}. /audit disabled.\n`,
+      );
+    }
     try {
       controlPlaneHandle = await startControlPlaneServer({
-        routes: [
-          metricsRoute(runtime.metrics),
-          statusRoute(() => buildUpStatusSnapshot(state, running)),
-        ],
+        routes,
         port: metricsPort,
         hostname: '127.0.0.1',
       });
       io.out(`  metrics: http://127.0.0.1:${controlPlaneHandle.port}/metrics\n`);
       io.out(`  status:  http://127.0.0.1:${controlPlaneHandle.port}/status\n`);
+      if (eventStoreForRoutes) {
+        io.out(`  events:  http://127.0.0.1:${controlPlaneHandle.port}/events\n`);
+        io.out(`  dlq:     http://127.0.0.1:${controlPlaneHandle.port}/dlq\n`);
+      }
+      if (controlPlaneAuditSink) {
+        io.out(`  audit:   http://127.0.0.1:${controlPlaneHandle.port}/audit\n`);
+      }
     } catch (err) {
       io.err(
         `⚠ control-plane exporter failed to bind on :${metricsPort} — ${err instanceof Error ? err.message : String(err)}. Continuing without HTTP endpoints.\n`,
@@ -454,6 +493,13 @@ async function runForeground(
           await controlPlaneHandle.close();
         } catch {
           // best-effort — never block shutdown on a stuck listener
+        }
+      }
+      if (controlPlaneAuditSink) {
+        try {
+          await controlPlaneAuditSink.close();
+        } catch {
+          // best-effort — audit sink close is idempotent
         }
       }
       await stopAll(running);
