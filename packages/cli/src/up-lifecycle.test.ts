@@ -181,10 +181,16 @@ describe('openAgentLog', () => {
     expect(path.endsWith('ACME_Weird_Id.log')).toBe(true);
   });
 
-  test('write after close is a silent no-op', () => {
+  test('write after close is a silent no-op', async () => {
     const logger = openAgentLog('x', dir);
     logger.close();
     // Should not throw.
     logger.write({ kind: 'late' });
+    // `createWriteStream` opens the file asynchronously. Without this
+    // tick, the `afterEach` rmSync can race the open and emit ENOENT
+    // as an unhandled error on the stream — see CI failure on
+    // f648e96 for the manifestation. Same 20ms pattern the "writes
+    // newline-delimited JSON" test above uses.
+    await new Promise((r) => setTimeout(r, 20));
   });
 });
