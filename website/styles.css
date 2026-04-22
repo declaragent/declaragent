@@ -442,6 +442,9 @@ kbd {
   border-top: 1px solid var(--border);
   padding-top: 22px;
 }
+.meta__cta {
+  margin-top: 22px;
+}
 
 /* ───────────────────────── capabilities grid ───────────────────────── */
 .caps {

@@ -1,9 +1,11 @@
-name: nightly — fleet RPC over Kafka
+name: nightly — fleet RPC over Kafka + NATS
 
-# Slice 7 of RELEASE_0_6_0_PLAN. Exercises the Kafka RPC transport
-# end-to-end through a live Redpanda. Gated behind FLEET_INTEGRATION=1
-# so it only runs on this workflow's schedule, not on every PR (the
-# broker startup costs ~15s and flake risk isn't worth paying per-PR).
+# Slice 7 of RELEASE_0_6_0_PLAN + Item #2 of ENTERPRISE_PRODUCTION_PLAN.
+# Exercises the Kafka and NATS RPC transports end-to-end through live
+# brokers (Redpanda + nats-server). Gated behind FLEET_INTEGRATION=1 /
+# NATS_INTEGRATION=1 so it only runs on this workflow's schedule, not
+# on every PR (the broker startup costs ~15s per broker and flake risk
+# isn't worth paying per-PR).
 #
 # Exit criterion for 0.6.0 promotion beta → rc: 7 consecutive green
 # nightlies. Failures file a GitHub issue so oncall sees the regression;
@@ -89,12 +91,74 @@ jobs:
         run: |
           docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml down --volumes || true
 
+  fleet-rpc-nats:
+    name: fleet RPC round-trip (NATS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build core + plugin-agent-rpc
+        run: |
+          bun run --filter '@declaragent/core' build
+          bun run --filter '@declaragent/plugin-agent-rpc' build
+
+      - name: Start NATS broker
+        run: |
+          set -euo pipefail
+          docker compose -f packages/source-nats/test/fixtures/docker-compose.yml up -d
+          echo "Waiting for NATS to go healthy..."
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' declaragent-nats-server 2>/dev/null || echo 'missing')"
+            echo "  attempt $i: $status"
+            [ "${status}" = "healthy" ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' declaragent-nats-server | grep -q healthy
+
+      - name: Run fleet RPC NATS integration tests
+        env:
+          NATS_INTEGRATION: '1'
+          NATS_SERVERS: nats://localhost:4222
+        run: |
+          set -euo pipefail
+          RETRIES="${{ github.event.inputs.retries || '3' }}"
+          attempt=1
+          while [ "${attempt}" -le "${RETRIES}" ]; do
+            echo "=== attempt ${attempt}/${RETRIES} ==="
+            if bun test packages/testkit/src/fleet-integration/nats-rpc.test.ts; then
+              echo "integration test passed on attempt ${attempt}"
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+          done
+          echo "integration test failed after ${RETRIES} attempts"
+          exit 1
+
+      - name: Dump broker logs on failure
+        if: failure()
+        run: |
+          docker logs declaragent-nats-server --tail 200 || true
+          docker ps -a || true
+
+      - name: Stop NATS
+        if: always()
+        run: |
+          docker compose -f packages/source-nats/test/fixtures/docker-compose.yml down --volumes || true
+
   # File a tracking issue on failure. PRs don't block — nightly flakes
   # should be investigated through the issue tracker, not by gating
   # feature work on an infra test that may be transient.
   report-failure:
     name: File tracking issue on failure
-    needs: fleet-rpc-kafka
+    needs: [fleet-rpc-kafka, fleet-rpc-nats]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:

@@ -90,6 +90,42 @@ agents.<agent-id>.<tenantId>.responses
 Per-transport quirks (Kafka partition keys, SQS FIFO, NATS JetStream,
 etc.) are documented in each transport plugin's README.
 
+## Transports
+
+| Kind | Factory | Peer dep | Notes |
+| --- | --- | --- | --- |
+| `memory` | `createMemoryTransport` | — | In-process only. Used by the rpc-agents template + unit tests. |
+| `kafka` | `createKafkaTransport` | `kafkajs@^2` | One consumer per topic; `groupId` narrowed per topic so parallel subscriptions don't share rebalance coordination. |
+| `nats` | `createNatsTransport` | `nats@^2` | Core-NATS pub/sub (not JetStream). `queueGroup` opts subscriptions into shared delivery (Kafka-`groupId` equivalent). |
+
+### NATS transport
+
+```ts
+import { createNatsTransport } from '@declaragent/plugin-agent-rpc';
+
+const transport = await createNatsTransport({
+  servers: ['nats://nats.internal:4222'],
+  clientName: 'declaragent-pr-reviewer',
+  // queueGroup: 'pr-reviewer-workers',   // opt-in load-balanced delivery across replicas
+  // subjectPrefix: 'tenant1',            // namespace every publish/subscribe
+});
+```
+
+- **Dynamic peer dep.** `nats` is loaded via `import('nats')` at
+  construction time. If it isn't installed, the factory throws a
+  typed error pointing the operator at `npm install nats`.
+- **Subject naming.** The `topic` argument is used verbatim as a NATS
+  subject — so the `agents.<id>.requests` convention carries over. Dots
+  are NATS-hierarchy separators; callers supplying Kafka-style topics
+  with slashes or colons will get a subject NATS accepts but can't be
+  matched with wildcards.
+- **Queue groups.** When `queueGroup` is set, every subscription joins
+  that queue — replicas load-balance the same way Kafka consumer
+  groups do. Omit it for full fan-out.
+- **No JetStream.** Durable streams + consumer state belong to
+  `@declaragent/source-nats` (the ingress adapter). The RPC transport
+  is deliberately core-NATS for low latency.
+
 ## `RequestAgent` tool
 
 ```yaml

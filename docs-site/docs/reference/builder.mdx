@@ -7,16 +7,19 @@ sidebar_position: 8
 
 # Agent-builder toolkit
 
-The REPL's agent-builder surface — 11 tools, 6 slash commands, and
+The REPL's agent-builder surface — **15 tools, 10 slash commands**, and
 the safety floors that keep it honest. Introduced in
-[@declaragent/cli@0.2.0](https://www.npmjs.com/package/@declaragent/cli).
+[@declaragent/cli@0.2.0](https://www.npmjs.com/package/@declaragent/cli);
+fleet + monitoring tools rounded it out through 0.6.0.
 
 Builder tools load **only** when the host process opts in with
 `DECLARAGENT_BUILDER=on`. Production agents shipped as dependencies
 never see them.
 
-For a walk-through of the flow, see
-[Build an agent through conversation](/cookbook/build-an-agent).
+For a walk-through of the flow, see:
+
+- **[Conversational tour](/quickstart/conversational-tour)** — recommended starting point, full two-agent fleet in ~15 minutes.
+- [Build an agent through conversation](/cookbook/build-an-agent) — single-agent transcript-style deep dive.
 
 ## Tool catalog
 
