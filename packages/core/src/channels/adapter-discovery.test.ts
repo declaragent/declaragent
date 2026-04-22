@@ -284,6 +284,45 @@ describe('discoverChannelAdapters', () => {
     }
   });
 
+  test('default-exported factory function is invoked + resolved (0.5.1 regression)', async () => {
+    // Mirrors the event-source-discovery fix: published @declaragent/channel-*
+    // packages at 2.0.0 default-export the factory, not the adapter.
+    const { path, cleanup } = tmpRoot();
+    try {
+      installFakePackage({
+        root: path,
+        name: 'factory-default',
+        moduleSource: `
+const adapter = {
+  type: 'factory-default',
+  capabilities: ${MINIMAL_CAPABILITIES},
+  validateConfig(c) { if (!c || typeof c !== 'object') throw new Error('x'); },
+  async create(config) {
+    return {
+      id: config.id, type: 'factory-default',
+      capabilities: ${MINIMAL_CAPABILITIES},
+      async start() {}, async stop() {}, async pause() {}, async resume() {},
+      async health() { return { status: 'healthy' }; },
+      metrics() { return { eventsPublished: 0, lastEventAt: null }; },
+      async send() { return { id: 'x', conversation: { channelId: config.id, conversationId: 'c' } }; },
+    };
+  },
+};
+export default function createFactoryDefault(_opts) { return adapter; }
+`,
+      });
+      const out = await discoverChannelAdapters({
+        searchPaths: [path],
+        coreVersion: '0.9.0',
+        logger: NOOP_LOGGER,
+      });
+      expect(out).toHaveLength(1);
+      expect(out[0]?.type).toBe('factory-default');
+    } finally {
+      cleanup();
+    }
+  });
+
   test('scans multiple search paths and merges results', async () => {
     const a = tmpRoot();
     const b = tmpRoot();

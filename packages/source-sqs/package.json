@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/source-sqs",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "AWS SQS event source adapter for Declaragent (Phase 4).",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,7 +27,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@declaragent/core": "^0.3.0"
+    "@declaragent/core": "^0.3.1"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.645.0"

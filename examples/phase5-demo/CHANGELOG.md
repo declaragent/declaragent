@@ -1,5 +1,12 @@
 # @declaragent-examples/phase5-demo
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies
+  - @declaragent/core@0.3.1
+
 ## 0.0.4
 
 ### Patch Changes

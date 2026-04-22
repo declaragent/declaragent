@@ -114,6 +114,63 @@ function isEventSourceAdapter(value: unknown): value is EventSourceAdapter<unkno
   );
 }
 
+/**
+ * Try to locate an `EventSourceAdapter` anywhere in a module's exports.
+ *
+ * Published adapter packages disagree on the convention — some default-
+ * export the adapter instance, others default-export a factory
+ * function, others export only named bindings. This resolver is
+ * permissive so all three shapes work:
+ *
+ *   1. `mod.default` is already an adapter → use it.
+ *   2. `mod.default` is a zero-arg factory → call it (catch throws).
+ *   3. Any named export is an adapter → use the first match on
+ *      `declaredType`, falling back to the first adapter found.
+ *   4. Any named export is a zero-arg factory whose return value is
+ *      an adapter → use it (same match rule).
+ *
+ * The declared type hint is used only to break ties when multiple
+ * adapter-shaped exports exist in one module (unusual but possible).
+ *
+ * @since 0.5.1
+ */
+function resolveAdapterExport(
+  mod: Record<string, unknown>,
+  declaredType: string,
+): EventSourceAdapter<unknown> | undefined {
+  const candidates: EventSourceAdapter<unknown>[] = [];
+  const seen = new Set<unknown>();
+  const tryValue = (value: unknown): void => {
+    if (value === undefined || value === null || seen.has(value)) return;
+    seen.add(value);
+    if (isEventSourceAdapter(value)) {
+      candidates.push(value);
+      return;
+    }
+    if (typeof value === 'function') {
+      try {
+        const invoked = (value as () => unknown)();
+        if (isEventSourceAdapter(invoked)) candidates.push(invoked);
+      } catch {
+        // Factory needs args or threw — skip this candidate.
+      }
+    }
+  };
+
+  // Default export first — honors the historic convention.
+  tryValue(mod.default);
+  // Then every named export.
+  for (const [key, value] of Object.entries(mod)) {
+    if (key === 'default') continue;
+    tryValue(value);
+  }
+
+  if (candidates.length === 0) return undefined;
+  // Prefer the candidate whose `.type` matches the manifest's declared
+  // type; fall back to the first match otherwise.
+  return candidates.find((c) => c.type === declaredType) ?? candidates[0];
+}
+
 async function loadOnePackage(
   pkgDir: string,
   coreVersion: string,
@@ -163,10 +220,10 @@ async function loadOnePackage(
     );
   }
 
-  const exported = mod.default ?? mod;
-  if (!isEventSourceAdapter(exported)) {
+  const exported = resolveAdapterExport(mod, meta.type);
+  if (exported === undefined) {
     throw new AdapterDiscoveryError(
-      `adapter package "${pkg.name ?? pkgDir}" did not export an EventSourceAdapter (missing \`type\`, \`validateConfig\`, or \`create\`)`,
+      `adapter package "${pkg.name ?? pkgDir}" did not export an EventSourceAdapter (no default, named, or factory export with \`type\`, \`validateConfig\`, and \`create\`)`,
     );
   }
 

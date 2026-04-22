@@ -48,4 +48,4 @@ export type {
 export { parseSlackEvent } from './update-parser.js';
 export type { ParsedUpdate, ParseSlackOptions } from './update-parser.js';
 
-export { createSlackAdapter as default } from './adapter.js';
+export { slackAdapter as default } from './adapter.js';

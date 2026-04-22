@@ -276,6 +276,77 @@ describe('discoverAdapters', () => {
     }
   });
 
+  test('default-exported factory function is invoked + resolved to the adapter (0.5.1 regression)', async () => {
+    // Reproduces the 0.5.0 bug where `@declaragent/source-kafka` and
+    // siblings default-export `createXxxAdapter` (a function) instead
+    // of the adapter instance. Slice 1's loader treated `mod.default`
+    // as the adapter verbatim and rejected with "missing type". The
+    // 0.5.1 fix tries invoking the function; this test pins that path.
+    const { path, cleanup } = tmpRoot();
+    try {
+      installFakePackage({
+        root: path,
+        name: 'factory-default',
+        moduleSource: `
+const adapter = {
+  type: 'factory-default',
+  validateConfig(c) { if (!c || typeof c !== 'object') throw new Error('x'); },
+  async create(config) {
+    return {
+      id: config.id,
+      type: 'factory-default',
+      async start() {}, async stop() {},
+      async pause() {}, async resume() {},
+      async health() { return { status: 'healthy' }; },
+      metrics() { return { eventsPublished: 0, lastEventAt: null }; },
+    };
+  },
+};
+export default function createFactoryDefault(_opts) { return adapter; }
+`,
+      });
+      const out = await discoverAdapters({ searchPaths: [path], coreVersion: '0.7.0' });
+      expect(out).toHaveLength(1);
+      expect(out[0]?.type).toBe('factory-default');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('finds an adapter-shaped named export when default is unrelated', async () => {
+    // Another shape we want to tolerate: a package that re-exports
+    // something unrelated as `default` but still has a named
+    // `xAdapter` export matching the manifest's declared type.
+    const { path, cleanup } = tmpRoot();
+    try {
+      installFakePackage({
+        root: path,
+        name: 'named-only',
+        moduleSource: `
+export const namedOnlyAdapter = {
+  type: 'named-only',
+  validateConfig(c) { if (!c || typeof c !== 'object') throw new Error('x'); },
+  async create(config) {
+    return {
+      id: config.id, type: 'named-only',
+      async start() {}, async stop() {},
+      async pause() {}, async resume() {},
+      async health() { return { status: 'healthy' }; },
+      metrics() { return { eventsPublished: 0, lastEventAt: null }; },
+    };
+  },
+};
+export default { unrelated: 'metadata' };
+`,
+      });
+      const out = await discoverAdapters({ searchPaths: [path], coreVersion: '0.7.0' });
+      expect(out).toHaveLength(1);
+      expect(out[0]?.type).toBe('named-only');
+    } finally {
+      cleanup();
+    }
+  });
+
   test('onPackageError soft-fails a bad package + keeps healthy siblings', async () => {
     const { path, cleanup } = tmpRoot();
     try {

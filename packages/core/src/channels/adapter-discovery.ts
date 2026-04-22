@@ -115,6 +115,46 @@ function isChannelAdapter(value: unknown): value is ChannelAdapter<unknown> {
   );
 }
 
+/**
+ * Permissive adapter-export resolver — matches the semantics of the
+ * event-source version so channel packages that default-export a
+ * factory function (the shape `@declaragent/channel-*@2.0.0` ships)
+ * are discovered correctly alongside packages that default-export the
+ * adapter instance directly.
+ *
+ * @since 0.5.1
+ */
+function resolveChannelAdapterExport(
+  mod: Record<string, unknown>,
+  declaredType: string,
+): ChannelAdapter<unknown> | undefined {
+  const candidates: ChannelAdapter<unknown>[] = [];
+  const seen = new Set<unknown>();
+  const tryValue = (value: unknown): void => {
+    if (value === undefined || value === null || seen.has(value)) return;
+    seen.add(value);
+    if (isChannelAdapter(value)) {
+      candidates.push(value);
+      return;
+    }
+    if (typeof value === 'function') {
+      try {
+        const invoked = (value as () => unknown)();
+        if (isChannelAdapter(invoked)) candidates.push(invoked);
+      } catch {
+        // Factory threw — skip this candidate.
+      }
+    }
+  };
+  tryValue(mod.default);
+  for (const [key, value] of Object.entries(mod)) {
+    if (key === 'default') continue;
+    tryValue(value);
+  }
+  if (candidates.length === 0) return undefined;
+  return candidates.find((c) => c.type === declaredType) ?? candidates[0];
+}
+
 async function loadOnePackage(
   pkgDir: string,
   coreVersion: string,
@@ -164,10 +204,10 @@ async function loadOnePackage(
     );
   }
 
-  const exported = mod.default ?? mod;
-  if (!isChannelAdapter(exported)) {
+  const exported = resolveChannelAdapterExport(mod, meta.type);
+  if (exported === undefined) {
     throw new ChannelAdapterDiscoveryError(
-      `channel adapter package "${pkg.name ?? pkgDir}" did not export a ChannelAdapter (missing \`type\`, \`capabilities\`, \`validateConfig\`, or \`create\`)`,
+      `channel adapter package "${pkg.name ?? pkgDir}" did not export a ChannelAdapter (no default, named, or factory export with \`type\`, \`capabilities\`, \`validateConfig\`, and \`create\`)`,
     );
   }
 

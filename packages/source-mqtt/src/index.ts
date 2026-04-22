@@ -13,4 +13,4 @@ export {
   type MqttSubscription,
 } from './client.js';
 
-export { createMqttAdapter as default } from './adapter.js';
+export { mqttAdapter as default } from './adapter.js';

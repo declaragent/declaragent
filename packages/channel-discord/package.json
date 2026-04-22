@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/channel-discord",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Discord channel adapter for Declaragent (Phase 5).",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,7 +27,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@declaragent/core": "^0.3.0"
+    "@declaragent/core": "^0.3.1"
   },
   "devDependencies": {
     "@declaragent/testkit": "^2.0.0"

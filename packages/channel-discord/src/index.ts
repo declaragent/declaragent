@@ -64,4 +64,4 @@ export type { DiscordChannelInstanceOptions } from './instance.js';
 export { parseDiscordEvent } from './update-parser.js';
 export type { DiscordInboundEvent, ParsedUpdate, ParseOptions } from './update-parser.js';
 
-export { createDiscordAdapter as default } from './adapter.js';
+export { discordAdapter as default } from './adapter.js';

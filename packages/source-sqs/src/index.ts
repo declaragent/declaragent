@@ -15,4 +15,4 @@ export {
   type SqsIncomingMessage,
 } from './client.js';
 
-export { createSqsAdapter as default } from './adapter.js';
+export { sqsAdapter as default } from './adapter.js';

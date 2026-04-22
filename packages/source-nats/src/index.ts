@@ -12,4 +12,4 @@ export {
   type NatsTlsConfig,
 } from './client.js';
 
-export { createNatsAdapter as default } from './adapter.js';
+export { natsAdapter as default } from './adapter.js';

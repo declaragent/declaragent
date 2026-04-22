@@ -13,4 +13,4 @@ export {
   type AmqpQueueOptions,
 } from './client.js';
 
-export { createAmqpAdapter as default } from './adapter.js';
+export { amqpAdapter as default } from './adapter.js';

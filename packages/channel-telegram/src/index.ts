@@ -45,4 +45,4 @@ export type {
 export { parseUpdate } from './update-parser.js';
 export type { ParsedUpdate, ParseUpdateOptions } from './update-parser.js';
 
-export { createTelegramAdapter as default } from './adapter.js';
+export { telegramAdapter as default } from './adapter.js';

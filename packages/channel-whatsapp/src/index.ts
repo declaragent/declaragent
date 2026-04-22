@@ -67,4 +67,4 @@ export type {
   WhatsAppWebhookValue,
 } from './whatsapp-api.js';
 
-export { createWhatsAppAdapter as default } from './adapter.js';
+export { whatsappAdapter as default } from './adapter.js';

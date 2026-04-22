@@ -21,11 +21,7 @@
       "import": "./dist/channels/index.js"
     }
   },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",

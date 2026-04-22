@@ -15,4 +15,8 @@ export {
   type SaslMechanism,
 } from './client.js';
 
-export { createKafkaAdapter as default } from './adapter.js';
+// Default-export the adapter instance so the scope + discovery loaders
+// in `@declaragent/cli` pick it up without needing to invoke a factory.
+// `createKafkaAdapter` (the factory) remains available as a named
+// export for callers who need to override adapter options.
+export { kafkaAdapter as default } from './adapter.js';
