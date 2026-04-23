@@ -78,6 +78,67 @@ describe('helm-renderer determinism', () => {
   });
 });
 
+describe('helm-renderer config-split (#32)', () => {
+  const SPLIT_SNAP = join(__dirname, '__snapshots__', 'fleet-starter-helm-config-split');
+
+  async function readSplitSnapshot(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    async function walk(d: string): Promise<void> {
+      const entries = await readdir(d, { withFileTypes: true });
+      for (const e of entries) {
+        const full = join(d, e.name);
+        if (e.isDirectory()) await walk(full);
+        else if (e.isFile()) {
+          const rel = relative(SPLIT_SNAP, full);
+          out.set(rel.replace(/\\/g, '/'), await readFile(full, 'utf-8'));
+        }
+      }
+    }
+    await walk(SPLIT_SNAP);
+    return out;
+  }
+
+  test('default-off — values.yaml keeps configSplit.enabled=false', async () => {
+    const fleet = await loadStarter();
+    const files = await renderHelm(fleet);
+    const values = files.find((f) => f.path === 'values.yaml');
+    const doc = parseYaml(values?.contents ?? '') as {
+      configSplit: { enabled: boolean };
+    };
+    expect(doc.configSplit.enabled).toBe(false);
+  });
+
+  test('configSplit=true — fleet-starter matches dedicated snapshot', async () => {
+    const fleet = await loadStarter();
+    const files = await renderHelm(fleet, { configSplit: true });
+    const snapshot = await readSplitSnapshot();
+    const rendered = new Map(files.map((f) => [f.path, f.contents]));
+    for (const [path, contents] of rendered) {
+      const expected = snapshot.get(path);
+      expect(expected, `missing split snapshot for ${path}`).toBeDefined();
+      expect(contents).toBe(expected as string);
+    }
+    for (const path of snapshot.keys()) {
+      expect(rendered.has(path), `split snapshot ${path} has no rendered counterpart`).toBe(true);
+    }
+  });
+
+  test('configSplit=true — per-agent template gates split ConfigMap on .Values.configSplit.enabled', async () => {
+    const fleet = await loadStarter();
+    const files = await renderHelm(fleet, { configSplit: true });
+    for (const agent of fleet.agents) {
+      const f = files.find((x) => x.path === `templates/agents/${agent.id}.yaml`);
+      const body = f?.contents ?? '';
+      // Conditional block guarding the ConfigMap emission.
+      expect(body).toContain('{{- if .Values.configSplit.enabled }}');
+      // Values.configSplit.enabled also gates the envFrom block.
+      expect(body).toContain('{{- else if gt (len .Values.secrets) 0 }}');
+      // Sources ConfigMap name appears since fleet-starter declares event-sources.
+      expect(body).toContain(`${agent.id}-sources-config`);
+    }
+  });
+});
+
 describe('helm-renderer structure', () => {
   test('chart emits Chart.yaml, values.yaml, and per-agent templates', async () => {
     const fleet = await loadStarter();

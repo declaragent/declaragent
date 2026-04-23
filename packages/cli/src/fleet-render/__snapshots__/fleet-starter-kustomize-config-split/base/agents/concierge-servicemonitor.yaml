@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: concierge
+  namespace: fleet-starter
+  labels:
+    app.kubernetes.io/name: concierge
+    app.kubernetes.io/part-of: fleet-starter
+    app.kubernetes.io/managed-by: declaragent
+    declaragent.io/agent-id: concierge
+    prometheus: kube-prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: concierge
+      app.kubernetes.io/part-of: fleet-starter
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s

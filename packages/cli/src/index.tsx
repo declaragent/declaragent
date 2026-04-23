@@ -174,7 +174,7 @@ Usage:
   declaragent fleet run [--agent <id>...]
   declaragent fleet deploy [--target <name>] [--agent <id>...] [--strategy <rolling|all-or-nothing|per-agent>]
   declaragent fleet deploy --dry-run | --rollback | --target-config <path>
-  declaragent fleet render --target <k8s|helm> [--out <dir>] [--image <ref>] [--replicas <n>] [--namespace <ns>] [--with-servicemonitor|--no-servicemonitor]
+  declaragent fleet render --target <k8s|helm> [--format <helm|kustomize>] [--out <dir>] [--image <ref>] [--replicas <n>] [--namespace <ns>] [--with-servicemonitor|--no-servicemonitor] [--config-split]
   declaragent fleet graph [--format <mermaid|dot|json>]
   declaragent fleet peers [--verify] [--json]
   declaragent fleet status [--history] [--limit <n>] [--json]
@@ -981,6 +981,7 @@ async function runFleetSubcommand(
   }
   if (action === 'render') {
     const target = flagValue(rest, '--target');
+    const format = flagValue(rest, '--format');
     const out = flagValue(rest, '--out', '-o');
     const image = flagValue(rest, '--image');
     const namespace = flagValue(rest, '--namespace');
@@ -994,13 +995,19 @@ async function runFleetSubcommand(
     const withServiceMonitor = flagSet(rest, '--with-servicemonitor', '--with-service-monitor');
     const noServiceMonitor =
       flagSet(rest, '--no-servicemonitor', '--no-service-monitor') && !withServiceMonitor;
+    // Config-split opts INTO the split-ConfigMap rendering (#32, 0.7.5).
+    // Default-off preserves today's monolithic ConfigMap; a future
+    // minor may flip the default once the ecosystem absorbs it.
+    const configSplit = flagSet(rest, '--config-split');
     return fleetRender({
       ...(target !== undefined && { target }),
+      ...(format !== undefined && { format }),
       ...(out !== undefined && { out }),
       ...(image !== undefined && { image }),
       ...(namespace !== undefined && { namespace }),
       ...(replicas !== undefined && Number.isFinite(replicas) && replicas > 0 && { replicas }),
       ...(noServiceMonitor && { noServiceMonitor: true }),
+      ...(configSplit && { configSplit: true }),
       ...(json && { json: true }),
     });
   }

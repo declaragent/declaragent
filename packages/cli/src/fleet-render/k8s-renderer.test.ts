@@ -183,6 +183,131 @@ describe('k8s-renderer YAML validity', () => {
   });
 });
 
+describe('k8s-renderer config-split (#32)', () => {
+  const SPLIT_SNAP = join(__dirname, '__snapshots__', 'fleet-starter-k8s-config-split');
+
+  async function readSplitSnapshot(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    async function walk(d: string): Promise<void> {
+      const entries = await readdir(d, { withFileTypes: true });
+      for (const e of entries) {
+        const full = join(d, e.name);
+        if (e.isDirectory()) await walk(full);
+        else if (e.isFile()) {
+          const rel = relative(SPLIT_SNAP, full);
+          out.set(rel.replace(/\\/g, '/'), await readFile(full, 'utf-8'));
+        }
+      }
+    }
+    await walk(SPLIT_SNAP);
+    return out;
+  }
+
+  test('default-off — no split ConfigMaps in the agent workload file', async () => {
+    const fleet = await loadStarter();
+    const files = await renderK8s(fleet);
+    for (const agent of fleet.agents) {
+      const body = files.find((f) => f.path === `agents/${agent.id}.yaml`)?.contents ?? '';
+      expect(body).not.toContain('channels-config');
+      expect(body).not.toContain('sources-config');
+      expect(body).not.toContain('plugins-config');
+    }
+  });
+
+  test('configSplit=true — fleet-starter matches dedicated snapshot', async () => {
+    const fleet = await loadStarter();
+    const files = await renderK8s(fleet, { configSplit: true });
+    const snapshot = await readSplitSnapshot();
+    const rendered = new Map(files.map((f) => [f.path, f.contents]));
+    for (const [path, contents] of rendered) {
+      const expected = snapshot.get(path);
+      expect(expected, `missing split snapshot for ${path}`).toBeDefined();
+      expect(contents).toBe(expected as string);
+    }
+    for (const path of snapshot.keys()) {
+      expect(rendered.has(path), `split snapshot ${path} has no rendered counterpart`).toBe(true);
+    }
+  });
+
+  test('configSplit=true — Deployment envFrom lists every emitted split ConfigMap', async () => {
+    const fleet = await loadStarter();
+    const files = await renderK8s(fleet, { configSplit: true });
+    // fleet-starter agents declare `event-sources`, not `channels` or
+    // `plugins`, so we expect exactly `<agent>-sources-config` per agent.
+    for (const agent of fleet.agents) {
+      const body = files.find((f) => f.path === `agents/${agent.id}.yaml`)?.contents ?? '';
+      expect(body).toContain(`name: ${agent.id}-sources-config`);
+      // Deployment envFrom references that ConfigMap. YAML keeps the
+      // configMapRef mapping on the following line, so the envFrom
+      // block spans multiple lines — parse the Deployment doc instead
+      // of regexing.
+      const depDoc = body.split(/^---\n/m).find((s) => s.includes('kind: Deployment'));
+      const dep = parseYaml(depDoc ?? '') as {
+        spec: {
+          template: {
+            spec: { containers: Array<{ envFrom?: Array<Record<string, unknown>> }> };
+          };
+        };
+      };
+      const envFrom = dep.spec.template.spec.containers[0]?.envFrom ?? [];
+      const cmNames = envFrom.map(
+        (e) => (e as { configMapRef?: { name: string } }).configMapRef?.name,
+      );
+      expect(cmNames).toContain(`${agent.id}-sources-config`);
+    }
+  });
+
+  test('configSplit=true — emits channels + plugins ConfigMaps when present', () => {
+    const fakeFleet = {
+      manifest: { name: 'split-demo', version: 1, agents: [] },
+      root: '/tmp/fake',
+      manifestPath: '/tmp/fake/fleet.yaml',
+      agents: [
+        {
+          id: 'widget',
+          path: '/tmp/fake/agents/widget',
+          agentYamlPath: '/tmp/fake/agents/widget/agent.yaml',
+          name: 'widget',
+          entry: { id: 'widget', path: './agents/widget' },
+          env: 'default',
+        },
+      ],
+      agentsById: new Map(),
+      environments: new Map(),
+    } as unknown as Parameters<typeof import('./k8s-renderer.js').renderK8sFromSources>[0];
+    const sources = [
+      {
+        agent: fakeFleet.agents[0] as never,
+        agentYaml: [
+          'name: widget',
+          'model: claude-haiku-4-5',
+          'channels:',
+          '  slack:',
+          '    token: ${secret:slack/bot_token}',
+          'event-sources:',
+          '  - webhook: { port: 8080 }',
+          'plugins:',
+          '  - "@declaragent/plugin-agent-rpc"',
+        ].join('\n'),
+      },
+    ];
+    const { renderK8sFromSources } = require('./k8s-renderer.js');
+    const files: RenderedFile[] = renderK8sFromSources(fakeFleet, sources, { configSplit: true });
+    const workload = files.find((f) => f.path === 'agents/widget.yaml')?.contents ?? '';
+    // All three section ConfigMaps emitted + referenced via envFrom.
+    expect(workload).toContain('widget-channels-config');
+    expect(workload).toContain('widget-sources-config');
+    expect(workload).toContain('widget-plugins-config');
+    expect(workload).toContain('- configMapRef:');
+    // Secret envFrom still present and is LAST (secret overrides config keys).
+    expect(workload).toContain('- secretRef:');
+    const envFromIdx = workload.indexOf('envFrom:');
+    const secretRefIdx = workload.indexOf('- secretRef:', envFromIdx);
+    const pluginsRefIdx = workload.indexOf('widget-plugins-config', envFromIdx);
+    expect(secretRefIdx).toBeGreaterThan(pluginsRefIdx);
+  });
+});
+
 describe('k8s-renderer secret handling', () => {
   test('Secret emits only keys when agent.yaml uses ${secret:…}', () => {
     // Build a synthetic fleet with a single agent that has a secret

@@ -14,7 +14,7 @@ serviceMonitor:
   additionalLabels:
     prometheus: kube-prometheus
 configSplit:
-  enabled: false
+  enabled: true
 secrets: {}
 resources:
   requests:

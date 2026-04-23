@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pr-reviewer-config
+  namespace: fleet-starter
+  labels:
+    app.kubernetes.io/name: pr-reviewer
+    app.kubernetes.io/part-of: fleet-starter
+    app.kubernetes.io/managed-by: declaragent
+    declaragent.io/agent-id: pr-reviewer
+data:
+  agent.yaml: |
+    name: pr-reviewer
+    model: claude-sonnet-4-6
+    temperature: 0.2
+    maxTokens: 4096
+    subagentDepthCap: 1
+    systemPrompt: |
+      You review GitHub pull requests on demand. Every inbound turn is
+      triggered by an `agent-rpc` request to your `review-pr` capability.
+      The request payload is `{ prUrl: string, severity: "low"|"med"|"high" }` —
+      the runtime validates it against `capabilities.yaml` before it reaches
+      you, so you can trust the shape.
+
+      Your job, per request:
+
+      1. Fetch the PR diff from `prUrl`. (A future `@declaragent/plugin-github`
+         release will provide `GitHubFetchDiff`; until then, treat the
+         request as a dry run and return a stub response.)
+
+      2. Skim the diff for:
+         - Obvious bugs (null deref, off-by-one, swapped args).
+         - Missing error handling.
+         - New behavior without tests.
+         - Public API changes without doc updates.
+
+      3. Return a structured response:
+           { verdict: "approve" | "request-changes" | "comment",
+             findings: [{ file, line, severity, message }],
+             summary: string }
+
+      The runtime's default `ctx.respond` hook publishes whatever your
+      assistant.final content is as `{ ok: true, data: <content> }`. If you
+      want to return a structured object instead of text, call `ctx.respond`
+      explicitly near the end of your turn.
+
+      Hard rules:
+      - Never APPROVE on your own. The caller decides — you only recommend.
+      - Keep `findings` ≤ 8 entries; aggregate extras into `summary`.
+      - Timeout: the request envelope's `deadline` is enforced by the
+        requestor. If you can't respond in time, the pending-RPC registry
+        times out — your response will be discarded as stale.
+    skills:
+      - skills/review-pr.md
+    event-sources:
+      - ./event-sources.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pr-reviewer
+  namespace: fleet-starter
+  labels:
+    app.kubernetes.io/name: pr-reviewer
+    app.kubernetes.io/part-of: fleet-starter
+    app.kubernetes.io/managed-by: declaragent
+    declaragent.io/agent-id: pr-reviewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pr-reviewer
+      app.kubernetes.io/part-of: fleet-starter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pr-reviewer
+        app.kubernetes.io/part-of: fleet-starter
+        app.kubernetes.io/managed-by: declaragent
+        declaragent.io/agent-id: pr-reviewer
+    spec:
+      containers:
+        - name: declaragent
+          image: declaragent/agent:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - up
+            - -d
+            - -f
+            - /etc/declaragent/agent.yaml
+          ports:
+            - name: metrics
+              containerPort: 9464
+              protocol: TCP
+          env:
+            - name: DECLARAGENT_AGENT_ID
+              value: pr-reviewer
+            - name: DECLARAGENT_FLEET_NAME
+              value: fleet-starter
+          volumeMounts:
+            - name: agent-config
+              mountPath: /etc/declaragent
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: agent-config
+          configMap:
+            name: pr-reviewer-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pr-reviewer
+  namespace: fleet-starter
+  labels:
+    app.kubernetes.io/name: pr-reviewer
+    app.kubernetes.io/part-of: fleet-starter
+    app.kubernetes.io/managed-by: declaragent
+    declaragent.io/agent-id: pr-reviewer
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pr-reviewer
+    app.kubernetes.io/part-of: fleet-starter
+  ports:
+    - name: metrics
+      port: 9464
+      targetPort: metrics
+      protocol: TCP
