@@ -59,6 +59,10 @@ Usage:
   declaragent dlq list --source <id> [--since <ms>] [--limit <n>]
   declaragent dlq show --source <id> <entryId>
   declaragent dlq redrive --source <id> <entryId>
+  declaragent dlq list --kind dispatch [--reason <r>] [--min-attempts <n>] [--since <ms>] [--limit <n>]
+  declaragent dlq show --kind dispatch <eventId>
+  declaragent dlq drop --kind dispatch <eventId>
+  declaragent dlq requeue --kind dispatch <eventId> [--agent <id>]
 
   declaragent events-config validate [path]
 
