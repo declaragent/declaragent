@@ -61,6 +61,17 @@ export interface LogsQuery {
   readonly agent: string | undefined;
   /** Literal `?since=` param. ms-epoch or ISO-8601. Callers decide how to seek. */
   readonly since: string | undefined;
+  /**
+   * Literal `?all=1` marker. When true, the caller explicitly opted into
+   * the fan-out variant and the route enforces `fanOutLimit` + scope
+   * gating. When false, the route falls back to the single-agent path
+   * (`?agent=<id>`) or, for back-compat, the legacy no-param multiplex
+   * — which is ALSO bounded by `fanOutLimit` so a 50-agent `up`
+   * process doesn't open 50 watchers by accident.
+   *
+   * @since 0.7.3 — POST_ENTERPRISE_BACKLOG.md #20
+   */
+  readonly all: boolean;
   /** URL of the request, for callers that want to parse additional params. */
   readonly url: URL;
 }
@@ -92,6 +103,37 @@ export interface LogsRouteOptions {
    */
   maxBufferedFrames?: number;
   /**
+   * Soft cap on how many log files one fan-out request may tail. Mirrors
+   * the `logs.fanOutLimit` knob in `agent.yaml` / `fleet.yaml`. When the
+   * resolver returns more paths than this, the route answers 413
+   * `Payload Too Large` with a JSON body naming the cap — operators
+   * either narrow to `?agent=<id>` or bump the cap.
+   *
+   * Default 50. Chosen as a conservative floor: each tailer holds one
+   * file descriptor + one `fs.watch`; 50 is well under the typical
+   * `ulimit -n` ceiling (1024+) even on constrained hosts. Raise this
+   * only after confirming the host's FD budget can absorb the spike.
+   *
+   * @since 0.7.3 — POST_ENTERPRISE_BACKLOG.md #20
+   */
+  fanOutLimit?: number;
+  /**
+   * Minimum gap in ms between two `event: log` frames for the SAME
+   * agent. Keeps a single chatty agent from saturating the SSE socket
+   * during a `?all=1` fan-out — lines arriving inside the window are
+   * coalesced into the tail buffer and flushed on the next tick. Set
+   * to 0 to disable (default). Applied only on `?all=1`; single-agent
+   * tails skip coalescing because the natural file-watch cadence is
+   * already the rate-limit in that case.
+   *
+   * Rate-limited coalescing never drops a line — it only queues it
+   * behind the back-pressure buffer. If the buffer overflows during
+   * coalescing, the existing `system: dropped` notice fires.
+   *
+   * @since 0.7.3 — POST_ENTERPRISE_BACKLOG.md #20
+   */
+  coalescePerAgentMs?: number;
+  /**
    * Testing seam — override the tailer factory so unit tests can
    * drive lines deterministically instead of touching the disk.
    */
@@ -120,10 +162,19 @@ export interface LogsRouteOptions {
  *     an unknown agent. Error body: `{ "error": "..." }`.
  *   - `405` for non-GET.
  */
+/**
+ * Default soft cap on fan-out watchers. N=50 is documented in
+ * {@link LogsRouteOptions.fanOutLimit}. Operators flip this via the
+ * `logs.fanOutLimit` knob that the CLI passes through from `agent.yaml`.
+ */
+const DEFAULT_FAN_OUT_LIMIT = 50;
+
 export function logsRoute(opts: LogsRouteOptions): ControlPlaneRoute {
   const path = opts.path ?? '/logs';
   const heartbeatMs = opts.heartbeatMs ?? 15_000;
   const maxBuffered = opts.maxBufferedFrames ?? 1024;
+  const fanOutLimit = opts.fanOutLimit ?? DEFAULT_FAN_OUT_LIMIT;
+  const coalesceMs = Math.max(0, opts.coalescePerAgentMs ?? 0);
   const makeTailer =
     opts.tailerFactory ?? (({ paths, fromStart }) => createLogTailer({ paths, fromStart }));
 
@@ -138,9 +189,21 @@ export function logsRoute(opts: LogsRouteOptions): ControlPlaneRoute {
       }
 
       const url = new URL(req.url);
+      const all = url.searchParams.get('all') === '1';
+      const agentParam = url.searchParams.get('agent') ?? undefined;
+
+      // Mutual-exclusion: `?agent=` picks one; `?all=1` picks every
+      // hosted agent. Mixing them is ambiguous → 400. (The server-side
+      // scope gate fires before this branch, so a caller that reaches
+      // here with `?all=1` is already scope-authorised.)
+      if (all && agentParam !== undefined && agentParam !== '') {
+        return jsonError(400, '?all=1 and ?agent= are mutually exclusive');
+      }
+
       const query: LogsQuery = {
-        agent: url.searchParams.get('agent') ?? undefined,
+        agent: agentParam,
         since: url.searchParams.get('since') ?? undefined,
+        all,
         url,
       };
 
@@ -154,6 +217,28 @@ export function logsRoute(opts: LogsRouteOptions): ControlPlaneRoute {
         return jsonError(400, `unknown agent "${query.agent ?? ''}"`);
       }
 
+      // Enforce the fan-out cap BEFORE we open any watcher. Applies to
+      // both `?all=1` and the legacy no-param multiplex so a naive
+      // operator tailing a 200-agent `up` doesn't blow through the FD
+      // budget. Single-agent `?agent=<id>` is always one path → never
+      // hits the cap.
+      if (resolved.paths.length > fanOutLimit) {
+        return new Response(
+          JSON.stringify({
+            error: `log fan-out exceeds cap (${resolved.paths.length} > ${fanOutLimit}). Narrow with ?agent=<id> or raise logs.fanOutLimit.`,
+            limit: fanOutLimit,
+            requested: resolved.paths.length,
+          }),
+          {
+            status: 413,
+            headers: {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            },
+          },
+        );
+      }
+
       const tailer = makeTailer({
         paths: resolved.paths,
         fromStart: Boolean(resolved.fromStart),
@@ -164,6 +249,18 @@ export function logsRoute(opts: LogsRouteOptions): ControlPlaneRoute {
       let pending: Uint8Array[] = [];
       let heartbeat: ReturnType<typeof setInterval> | null = null;
       let closed = false;
+      // Per-agent coalescing state — only populated when `?all=1` +
+      // `coalesceMs > 0`. Maps agentId → { last flush ts, scheduled
+      // timer, queued lines }.  See `enqueueLogLine` below.
+      const coalesceActive = all && coalesceMs > 0;
+      const coalesceState = new Map<
+        string,
+        {
+          nextAllowedAt: number;
+          timer: ReturnType<typeof setTimeout> | null;
+          queued: string[];
+        }
+      >();
 
       const canFlush = (): boolean => {
         if (!controller || closed) return false;
@@ -207,7 +304,7 @@ export function logsRoute(opts: LogsRouteOptions): ControlPlaneRoute {
         flush();
       };
 
-      const enqueueLogLine = (agentId: string, line: string): void => {
+      const emitLogFrame = (agentId: string, line: string): void => {
         if (closed) return;
         // The log writer emits well-formed JSON per line; re-emit
         // as-is, adding the `agentId` field if the line doesn't
@@ -224,6 +321,49 @@ export function logsRoute(opts: LogsRouteOptions): ControlPlaneRoute {
           payload = JSON.stringify({ agentId, raw: line });
         }
         enqueueRaw(encoder.encode(`event: log\ndata: ${payload}\n\n`));
+      };
+
+      const flushCoalesced = (agentId: string): void => {
+        const slot = coalesceState.get(agentId);
+        if (!slot) return;
+        const lines = slot.queued;
+        slot.queued = [];
+        slot.timer = null;
+        slot.nextAllowedAt = Date.now() + coalesceMs;
+        for (const line of lines) emitLogFrame(agentId, line);
+      };
+
+      const enqueueLogLine = (agentId: string, line: string): void => {
+        if (closed) return;
+        // Fast path — no coalescing or single-agent stream: emit the
+        // frame immediately, exactly like the pre-0.7.3 behaviour.
+        if (!coalesceActive) {
+          emitLogFrame(agentId, line);
+          return;
+        }
+
+        // Rate-limited fan-out: per-agent coalescing. We flush a line
+        // straight away when the last flush for this agent happened
+        // `coalesceMs` ago or longer. Otherwise we queue and arm a
+        // one-shot timer for the remainder of the window. Lines are
+        // NEVER dropped here — the back-pressure path below is the
+        // only drop site.
+        const now = Date.now();
+        let slot = coalesceState.get(agentId);
+        if (!slot) {
+          slot = { nextAllowedAt: 0, timer: null, queued: [] };
+          coalesceState.set(agentId, slot);
+        }
+        if (now >= slot.nextAllowedAt && slot.queued.length === 0) {
+          slot.nextAllowedAt = now + coalesceMs;
+          emitLogFrame(agentId, line);
+          return;
+        }
+        slot.queued.push(line);
+        if (!slot.timer) {
+          const delay = Math.max(1, slot.nextAllowedAt - now);
+          slot.timer = setTimeout(() => flushCoalesced(agentId), delay);
+        }
       };
 
       const stream = new ReadableStream<Uint8Array>({
@@ -290,6 +430,16 @@ export function logsRoute(opts: LogsRouteOptions): ControlPlaneRoute {
           clearInterval(heartbeat);
           heartbeat = null;
         }
+        // Drop any pending coalesce timers — the client is gone, no
+        // reason to wake up the event loop to flush into a closed stream.
+        for (const slot of coalesceState.values()) {
+          if (slot.timer) {
+            clearTimeout(slot.timer);
+            slot.timer = null;
+          }
+          slot.queued.length = 0;
+        }
+        coalesceState.clear();
         void tailer.destroy();
         pending = [];
         try {

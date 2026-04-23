@@ -536,17 +536,45 @@ async function runForeground(
       metricsRoute(runtime.metrics),
       statusRoute(() => buildUpStatusSnapshot(state, running)),
     ];
-    // Wire `/events` + `/dlq` to the first agent that owns a store.
-    // Multi-agent fleets run one SQLite per agent; surfacing the first
-    // matches `declaragent events list` / `dlq list` CLI behavior today
-    // (single-process view, not cross-agent aggregation). A fleet-wide
-    // aggregator lives in the CLI fan-out layer (Slice 3 of
-    // CONTROL_PLANE_PLAN.md) and calls this endpoint per host.
+    // Wire `/events` + `/dlq` to the first agent that owns a store
+    // (the single-agent default for back-compat), plus a `fanOut`
+    // callback that enumerates EVERY agent's store for the `?all=1`
+    // variant. The scope gate for the fan-out lives in
+    // `controlPlane.auth.routeScopes` (convention: `"/events?all=1":
+    // ["control:fan-out"]` etc.) — the server's auth middleware
+    // surfaces `?all=1` as a synthetic route path so nothing hard-codes
+    // the scope token.
+    //
+    // Single-process view today matches `declaragent events list` /
+    // `dlq list` CLI behavior (SQLite-per-agent, one process per `up`).
+    // A fleet-wide aggregator lives in the CLI fan-out layer (Slice 3
+    // of CONTROL_PLANE_PLAN.md) and calls this endpoint per host.
+    //
+    // See POST_ENTERPRISE_BACKLOG.md #19.
     const agentWithStore = running.find((r) => r.sources.eventStore !== undefined);
     const eventStoreForRoutes = agentWithStore?.sources.eventStore;
     if (eventStoreForRoutes) {
-      routes.push(eventsRoute(eventStoreForRoutes));
-      routes.push(dlqRoute(eventStoreForRoutes));
+      // The callback is re-evaluated on every `?all=1` hit so a future
+      // dynamic-add/remove of agents (not a feature today — `up` binds
+      // once at boot) surfaces without touching the route.
+      const allEventStoresProvider = () =>
+        running
+          .filter(
+            (r): r is RunningAgent & { sources: { eventStore: EventStore } } =>
+              r.sources.eventStore !== undefined,
+          )
+          .map((r) => ({ agentId: r.summary.id, store: r.sources.eventStore }));
+
+      routes.push(
+        eventsRoute(eventStoreForRoutes, {
+          fanOut: allEventStoresProvider,
+        }),
+      );
+      routes.push(
+        dlqRoute(eventStoreForRoutes, {
+          fanOut: allEventStoresProvider,
+        }),
+      );
     }
     // `/audit` reuses the shared sink opened at boot (see §3 Item #7
     // follow-up — single handle per up-process, not one per consumer).
@@ -576,6 +604,12 @@ async function runForeground(
           fromStart: query.since !== undefined && query.since !== '',
         };
       }
+      // No `?agent=<id>` → fan out. Triggered either by explicit
+      // `?all=1` (scope-gated path) OR the legacy no-param multiplex
+      // (pre-0.7.3 callers). The route enforces `fanOutLimit` on the
+      // returned paths regardless of which trigger fired, so a 200-
+      // agent `up` host can't blow the FD budget by accident.
+      // See POST_ENTERPRISE_BACKLOG.md #20.
       return {
         paths: running.map((r) => ({
           path: upLogPath(r.summary.id),
@@ -584,7 +618,15 @@ async function runForeground(
         fromStart: query.since !== undefined && query.since !== '',
       };
     };
-    routes.push(logsRoute({ resolvePaths: resolveLogPaths }));
+    routes.push(
+      logsRoute({
+        resolvePaths: resolveLogPaths,
+        // Cross-agent coalescing at 25ms smooths a chatty agent's spike
+        // during `?all=1` without noticeably delaying interactive tails.
+        // Single-agent tails skip the path (see logs-sse-route.ts).
+        coalescePerAgentMs: 25,
+      }),
+    );
 
     // Control-plane auth middleware (§3 Item #5 Slice 2 —
     // CONTROL_PLANE_PLAN.md §9 PR 2). The listener is process-wide, so

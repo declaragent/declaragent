@@ -208,6 +208,14 @@ export interface EventsResponseEntry {
   readonly outcomeAt: number | undefined;
   /** Full event body — the client doesn't need to re-query by id for details. */
   readonly event: unknown;
+  /**
+   * Agent that owns this event's store. Populated only on `?all=1`
+   * fan-out responses so operators can tell which agent produced the
+   * row; absent on single-agent responses (back-compat).
+   *
+   * @since 0.7.3 — POST_ENTERPRISE_BACKLOG.md #19
+   */
+  readonly agentId?: string;
 }
 
 export interface EventsRouteOptions {
@@ -219,6 +227,22 @@ export interface EventsRouteOptions {
   maxLimit?: number;
   /** Default page size when `?limit=` is absent. */
   defaultLimit?: number;
+  /**
+   * Multi-agent fan-out provider. When set, the route accepts `?all=1`
+   * and fans the query across every returned `{ agentId, store }`
+   * entry. Rows are merged + sorted DESC by `(timestamp, id)`. Absent
+   * → `?all=1` returns 400.
+   *
+   * Auth gate: by convention operators configure
+   * `controlPlane.auth.routeScopes: { "/events?all=1": ["control:fan-out"] }`
+   * so the fan-out variant requires an explicit scope. The server
+   * surfaces `?all=1` as a synthetic `routePath` to
+   * {@link applyControlPlaneAuth} — see
+   * {@link ./control-plane-server.ts} for the wiring.
+   *
+   * @since 0.7.3 — POST_ENTERPRISE_BACKLOG.md #19
+   */
+  fanOut?: () => readonly { readonly agentId: string; readonly store: Pick<EventStore, 'list'> }[];
 }
 
 /**
@@ -305,17 +329,68 @@ export function eventsRoute(
       const overFetch = cursor ? Math.max(limit * 2 + 1, 256) : limit + 1;
       filter.limit = overFetch;
 
-      let rows: Awaited<ReturnType<EventStore['list']>>;
-      try {
-        rows = await store.list(filter);
-      } catch (err) {
-        return jsonError(500, `event-store list failed: ${errMsg(err)}`);
+      // Multi-agent fan-out (#19). When `?all=1` is set AND `fanOut`
+      // is wired, every hosted agent's store is queried; otherwise the
+      // route stays on the single-store path. A `?all=1` request with
+      // no `fanOut` callback is a 400 — the scope gate (`control:fan-out`)
+      // gets enforced by the server's auth middleware before we get
+      // here, so reaching this branch means the operator intended it.
+      const allMode = q.get('all') === '1';
+      let targets: readonly {
+        readonly agentId: string | undefined;
+        readonly store: Pick<EventStore, 'list'>;
+      }[];
+      if (allMode) {
+        if (!opts.fanOut) {
+          return jsonError(400, '?all=1 not supported: fan-out provider not configured');
+        }
+        const fanned = opts.fanOut();
+        if (fanned.length === 0) {
+          // No hosted agents with stores — return an empty page rather
+          // than 404 so `fleet ps` / CLI callers can just aggregate
+          // without branching.
+          const body: EventsResponse = { events: [], nextCursor: null };
+          return jsonResponse(200, body, req.method);
+        }
+        targets = fanned.map((f) => ({ agentId: f.agentId, store: f.store }));
+      } else {
+        targets = [{ agentId: undefined, store }];
+      }
+
+      // Fetch one page per target, then merge + post-filter.
+      let raw: Array<{
+        row: Awaited<ReturnType<EventStore['list']>>[number];
+        agentId: string | undefined;
+      }> = [];
+      for (const target of targets) {
+        let rows: Awaited<ReturnType<EventStore['list']>>;
+        try {
+          rows = await target.store.list(filter);
+        } catch (err) {
+          return jsonError(500, `event-store list failed: ${errMsg(err)}`);
+        }
+        for (const r of rows) raw.push({ row: r, agentId: target.agentId });
+      }
+      // Fan-out merges multiple DESC streams; sort by (ts, id) DESC so
+      // the cursor encoding stays monotonic across the merged stream.
+      if (allMode) {
+        raw.sort((a, b) => {
+          const ta = a.row.event.timestamp;
+          const tb = b.row.event.timestamp;
+          if (ta !== tb) return tb - ta;
+          return a.row.event.id < b.row.event.id ? 1 : a.row.event.id > b.row.event.id ? -1 : 0;
+        });
+        // Bound the in-memory working set to the over-fetch ceiling
+        // multiplied by target count — operators with 50 agents don't
+        // want the merge to hoard 50×256 rows just to drop 49/50.
+        const mergedCap = overFetch;
+        if (raw.length > mergedCap) raw = raw.slice(0, mergedCap);
       }
 
       // Post-filter: cursor (keep rows strictly "older" than the cursor),
       // and for state=circuit-open keep only rejected w/ reason match.
       const filtered: EventsResponseEntry[] = [];
-      for (const row of rows) {
+      for (const { row, agentId } of raw) {
         if (cursor) {
           const { event } = row;
           const ts = event.timestamp;
@@ -331,7 +406,7 @@ export function eventsRoute(
             continue;
           }
         }
-        filtered.push(toEventsEntry(row));
+        filtered.push(toEventsEntry(row, agentId));
         if (filtered.length >= limit + 1) break;
       }
 
@@ -360,9 +435,12 @@ function isAllowedOutcome(v: string): boolean {
   return (ALLOWED_OUTCOME_KINDS as readonly string[]).includes(v);
 }
 
-function toEventsEntry(row: Awaited<ReturnType<EventStore['list']>>[number]): EventsResponseEntry {
+function toEventsEntry(
+  row: Awaited<ReturnType<EventStore['list']>>[number],
+  agentId?: string,
+): EventsResponseEntry {
   const { event } = row;
-  return {
+  const base: EventsResponseEntry = {
     id: event.id,
     kind: event.kind,
     ts: event.timestamp,
@@ -374,6 +452,10 @@ function toEventsEntry(row: Awaited<ReturnType<EventStore['list']>>[number]): Ev
     outcomeAt: row.outcomeAt,
     event,
   };
+  // agentId is only populated on `?all=1` fan-out responses (#19).
+  // Omitting the key on single-agent responses preserves the pre-0.7.3
+  // wire shape exactly.
+  return agentId !== undefined ? { ...base, agentId } : base;
 }
 
 // ── /dlq ───────────────────────────────────────────────────────────────────
@@ -395,12 +477,29 @@ export interface DlqResponseEntry {
   readonly attemptCount: number;
   readonly firstSeenMs: number;
   readonly lastSeenMs: number;
+  /**
+   * Agent that owns this DLQ entry. Populated only on `?all=1` fan-out
+   * responses; absent on single-agent responses.
+   *
+   * @since 0.7.3 — POST_ENTERPRISE_BACKLOG.md #19
+   */
+  readonly agentId?: string;
 }
 
 export interface DlqRouteOptions {
   path?: string;
   maxLimit?: number;
   defaultLimit?: number;
+  /**
+   * Multi-agent fan-out provider for `?all=1`. See
+   * {@link EventsRouteOptions.fanOut}.
+   *
+   * @since 0.7.3 — POST_ENTERPRISE_BACKLOG.md #19
+   */
+  fanOut?: () => readonly {
+    readonly agentId: string;
+    readonly store: Pick<EventStore, 'listRejections'>;
+  }[];
 }
 
 /**
@@ -473,15 +572,53 @@ export function dlqRoute(
       const overFetch = cursor ? Math.max(limit * 2 + 1, 256) : limit + 1;
       filter.limit = overFetch;
 
-      let rows: Awaited<ReturnType<EventStore['listRejections']>>;
-      try {
-        rows = await store.listRejections(filter);
-      } catch (err) {
-        return jsonError(500, `event-store listRejections failed: ${errMsg(err)}`);
+      // Multi-agent fan-out (#19) — see eventsRoute for rationale.
+      const allMode = q.get('all') === '1';
+      let targets: readonly {
+        readonly agentId: string | undefined;
+        readonly store: Pick<EventStore, 'listRejections'>;
+      }[];
+      if (allMode) {
+        if (!opts.fanOut) {
+          return jsonError(400, '?all=1 not supported: fan-out provider not configured');
+        }
+        const fanned = opts.fanOut();
+        if (fanned.length === 0) {
+          const body: DlqResponse = { rejections: [], nextCursor: null };
+          return jsonResponse(200, body, req.method);
+        }
+        targets = fanned.map((f) => ({ agentId: f.agentId, store: f.store }));
+      } else {
+        targets = [{ agentId: undefined, store }];
+      }
+
+      let raw: Array<{
+        row: Awaited<ReturnType<EventStore['listRejections']>>[number];
+        agentId: string | undefined;
+      }> = [];
+      for (const target of targets) {
+        let rows: Awaited<ReturnType<EventStore['listRejections']>>;
+        try {
+          rows = await target.store.listRejections(filter);
+        } catch (err) {
+          return jsonError(500, `event-store listRejections failed: ${errMsg(err)}`);
+        }
+        for (const r of rows) raw.push({ row: r, agentId: target.agentId });
+      }
+      if (allMode) {
+        // Sort merged stream DESC by `(lastSeenMs, eventId)` for
+        // cursor-monotonic pagination.
+        raw.sort((a, b) => {
+          const ta = a.row.lastSeenMs;
+          const tb = b.row.lastSeenMs;
+          if (ta !== tb) return tb - ta;
+          return a.row.eventId < b.row.eventId ? 1 : a.row.eventId > b.row.eventId ? -1 : 0;
+        });
+        if (raw.length > overFetch) raw = raw.slice(0, overFetch);
       }
 
       const filtered: DlqResponseEntry[] = [];
-      for (const row of rows) {
+      for (const { row, agentId } of raw) {
         if (cursor) {
           if (
             row.lastSeenMs > cursor.beforeTs ||
@@ -490,14 +627,15 @@ export function dlqRoute(
             continue;
           }
         }
-        filtered.push({
+        const entry: DlqResponseEntry = {
           eventId: row.eventId,
           reason: row.rejectionReason,
           details: row.details,
           attemptCount: row.attemptCount,
           firstSeenMs: row.firstSeenMs,
           lastSeenMs: row.lastSeenMs,
-        });
+        };
+        filtered.push(agentId !== undefined ? { ...entry, agentId } : entry);
         if (filtered.length >= limit + 1) break;
       }
 

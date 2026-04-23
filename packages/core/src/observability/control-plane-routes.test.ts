@@ -446,3 +446,122 @@ describe('auditRoute', () => {
     await handle.close();
   });
 });
+
+// ── Multi-agent fan-out (#19) ──────────────────────────────────────────────
+
+describe('eventsRoute ?all=1 fan-out', () => {
+  it('merges events across agents DESC by timestamp when ?all=1', async () => {
+    const storeA = createEventStore({ db: memDb() });
+    const storeB = createEventStore({ db: memDb() });
+    await storeA.record(makeEvent({ id: 'a1', timestamp: 100 }));
+    await storeA.record(makeEvent({ id: 'a2', timestamp: 300 }));
+    await storeB.record(makeEvent({ id: 'b1', timestamp: 200 }));
+    await storeB.record(makeEvent({ id: 'b2', timestamp: 400 }));
+
+    const route = eventsRoute(storeA, {
+      fanOut: () => [
+        { agentId: 'agent-a', store: storeA },
+        { agentId: 'agent-b', store: storeB },
+      ],
+    });
+    const { server, handle } = await startFake([route]);
+    const body = (await (
+      await server.fetch(
+        new Request('http://127.0.0.1/events?all=1&limit=10', { headers: LOCAL_HEADERS }),
+      )
+    ).json()) as EventsResponse;
+    expect(body.events.map((e) => e.id)).toEqual(['b2', 'a2', 'b1', 'a1']);
+    // agentId tag is surfaced on every row under `?all=1`.
+    const byId = new Map(body.events.map((e) => [e.id, e.agentId]));
+    expect(byId.get('a1')).toBe('agent-a');
+    expect(byId.get('b1')).toBe('agent-b');
+    await handle.close();
+  });
+
+  it('single-agent response does NOT populate agentId (back-compat)', async () => {
+    const store = createEventStore({ db: memDb() });
+    await store.record(makeEvent({ id: 'x', timestamp: 1 }));
+    const { server, handle } = await startFake([eventsRoute(store)]);
+    const body = (await (
+      await server.fetch(
+        new Request('http://127.0.0.1/events?limit=10', { headers: LOCAL_HEADERS }),
+      )
+    ).json()) as EventsResponse;
+    expect(body.events[0]?.agentId).toBeUndefined();
+    await handle.close();
+  });
+
+  it('returns 400 on ?all=1 when no fanOut provider is configured', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([eventsRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/events?all=1', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/all=1/);
+    await handle.close();
+  });
+
+  it('returns an empty page when fanOut yields zero agents', async () => {
+    const store = createEventStore({ db: memDb() });
+    const route = eventsRoute(store, { fanOut: () => [] });
+    const { server, handle } = await startFake([route]);
+    const body = (await (
+      await server.fetch(
+        new Request('http://127.0.0.1/events?all=1&limit=10', { headers: LOCAL_HEADERS }),
+      )
+    ).json()) as EventsResponse;
+    expect(body.events).toEqual([]);
+    expect(body.nextCursor).toBeNull();
+    await handle.close();
+  });
+});
+
+describe('dlqRoute ?all=1 fan-out', () => {
+  it('merges rejections across agents DESC by lastSeenMs when ?all=1', async () => {
+    const storeA = createEventStore({ db: memDb() });
+    const storeB = createEventStore({ db: memDb() });
+    await storeA.upsertRejection('a-only', 'circuit-open', undefined, 1_000);
+    await storeB.upsertRejection('b-only', 'rate-limit', undefined, 2_000);
+
+    const route = dlqRoute(storeA, {
+      fanOut: () => [
+        { agentId: 'agent-a', store: storeA },
+        { agentId: 'agent-b', store: storeB },
+      ],
+    });
+    const { server, handle } = await startFake([route]);
+    const body = (await (
+      await server.fetch(
+        new Request('http://127.0.0.1/dlq?all=1&limit=10', { headers: LOCAL_HEADERS }),
+      )
+    ).json()) as DlqResponse;
+    expect(body.rejections.map((r) => r.eventId)).toEqual(['b-only', 'a-only']);
+    const byId = new Map(body.rejections.map((r) => [r.eventId, r.agentId]));
+    expect(byId.get('a-only')).toBe('agent-a');
+    expect(byId.get('b-only')).toBe('agent-b');
+    await handle.close();
+  });
+
+  it('returns 400 on ?all=1 when no fanOut provider is configured', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([dlqRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq?all=1', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+
+  it('single-agent response does NOT populate agentId (back-compat)', async () => {
+    const store = createEventStore({ db: memDb() });
+    await store.upsertRejection('x', 'circuit-open', undefined, 1_000);
+    const { server, handle } = await startFake([dlqRoute(store)]);
+    const body = (await (
+      await server.fetch(new Request('http://127.0.0.1/dlq?limit=10', { headers: LOCAL_HEADERS }))
+    ).json()) as DlqResponse;
+    expect(body.rejections[0]?.agentId).toBeUndefined();
+    await handle.close();
+  });
+});
