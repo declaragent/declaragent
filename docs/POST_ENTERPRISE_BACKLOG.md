@@ -9,7 +9,7 @@ This doc is the honest 0.7.x+ backlog. Every entry was flagged by a shipped PR's
 ## 0 · Summary banner
 
 ```
-Status:               27 open follow-ups from the enterprise push (25 shipped across 0.7.1 + 0.7.2 + 0.7.3)
+Status:               24 open follow-ups from the enterprise push (28 shipped across 0.7.1 + 0.7.2 + 0.7.3)
 Shipping-gate count:  4 (must land before 0.7.0 cut)
 Security count:       6 (address within 0.7.x)
 Robustness count:     7 (enterprise-nice-to-have)
