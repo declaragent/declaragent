@@ -9,9 +9,9 @@ This is the **tracking doc**. Keep the status board (§1) accurate. Detailed spe
 ## 0 · Summary banner
 
 ```
-Enterprise pillars status:  ▓▓▓▓▓▓▓▓▓  ( 9 / 12 items complete; #5 slice 1 fully landed; 2 items remain )
-Latest release:             @declaragent/cli@0.6.0 (items #1/#2/#3/#4/#6/#7/#8/#9/#10 + #5-slice-1 all merged 2026-04-23; unreleased)
-Next milestone:             Final round — #11 v1.1 Agent Graph typed capabilities · #12 Recorded-conversation builder regression tests · #5 Slice 2 control-plane auth
+Enterprise pillars status:  ▓▓▓▓▓▓▓▓▓▓▓  ( 11 / 12 items complete — only #5 Slice 2 control-plane auth remains )
+Latest release:             @declaragent/cli@0.6.0 (items #1–#12 minus slice-2 all merged 2026-04-23; deferred CLI integrations for #4/#7/#8 also live in `up`; unreleased)
+Next milestone:             #5 Slice 2 — control-plane auth + `#11` validator wiring into `up` boot + `#4` agent-inbox adapter hand-off in fleet-run
 Active blocker:             none
 ```
 
@@ -35,8 +35,8 @@ Tick checkboxes as work lands. One line per item. If the scope changes, **edit t
 | 8 | [x] Auto-recovery for crashed MCP servers | M5 | 4 d | Shipped | Eng-B | [PR #21](https://github.com/declaragent/declaragent/pull/21) · `1a120f8` — follow-up: wire supervisor into `packages/cli/src/mcp-runtime.ts` + product decision on default-supervised vs opt-in |
 | 9 | [x] GitOps `fleet render` — k8s manifests + Helm | M3 | 1 wk | Shipped | Eng-A | [PR #20](https://github.com/declaragent/declaragent/pull/20) · `98c120a` — `--no-servicemonitor` for non-Prometheus-Operator clusters; follow-up: optional ServiceMonitor file split + channel/source/plugin ConfigMap fan-out |
 | 10 | [x] SIEM audit export — Splunk / Elastic / Datadog adapter | M3 | 1 wk | Shipped | Eng-C | [PR #22](https://github.com/declaragent/declaragent/pull/22) · `b8f6f94` — cursor-held across restarts; follow-up: back-pressure policy, adaptive batch interval, shared audit sink |
-| 11 | [ ] v1.1 Agent Graph typed capabilities | M6 | 2 wk | Not started | — | — |
-| 12 | [ ] Recorded-conversation regression tests for the builder | M6 | 3 d | Not started | — | — |
+| 11 | [x] v1.1 Agent Graph typed capabilities | M6 | 2 wk | Shipped | Eng-A | [PR #23](https://github.com/declaragent/declaragent/pull/23) · `4115fb1` — hand-rolled draft-07 validator + deterministic codegen + typed fleet-starter concierge→reviewer; follow-up: wire `peerCapabilities` + shared `CapabilityValidatorRegistry` into `up`/`fleet-run` |
+| 12 | [x] Recorded-conversation regression tests for the builder | M6 | 3 d | Shipped | Eng-B | [PR #24](https://github.com/declaragent/declaragent/pull/24) · `2aba945` — 5 canonical fixtures + replay harness + PR-template gate; stretch `BUILDER_RECORD=1` deferred |
 
 **Status vocabulary:** *Not started · In-progress · Review · Blocked (cite blocker) · Shipped (link PR + version)*.
 
