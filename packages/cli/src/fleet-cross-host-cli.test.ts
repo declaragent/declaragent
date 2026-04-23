@@ -9,7 +9,25 @@
 import { describe, expect, it } from 'bun:test';
 import type { DlqResponse, EventsResponse, FleetHost, UpStatusSnapshot } from '@declaragent/core';
 import type { CrossHostControlPlaneClient } from './cross-host-control-plane-client.js';
-import { fleetDlqList, fleetEventsList, fleetLogs, fleetPs } from './fleet-cross-host-cli.js';
+import {
+  fleetDlqDrop,
+  fleetDlqList,
+  fleetDlqRequeue,
+  fleetEventsList,
+  fleetLogs,
+  fleetPs,
+} from './fleet-cross-host-cli.js';
+
+/**
+ * Default mutation stubs so pre-existing mock clients remain compatible
+ * with the extended {@link CrossHostControlPlaneClient} surface (Slice 6b
+ * adds `dropDlqEntry` + `requeueDlqEntry`). Tests that exercise the
+ * mutation paths override these explicitly.
+ */
+const MUTATION_STUBS = {
+  dropDlqEntry: async () => ({ ok: true as const, op: 'drop' as const, eventId: 'stub' }),
+  requeueDlqEntry: async () => ({ ok: true as const, op: 'requeue' as const, eventId: 'stub' }),
+};
 
 function makeIO(): {
   io: { out: (s: string) => void; err: (s: string) => void };
@@ -63,6 +81,7 @@ describe('fleetPs', () => {
       getStatus: async (h) => snap(1, `agent-${h.name}`, 100),
       getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
       getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
     };
     const { io, outBuf } = makeIO();
     const code = await fleetPs({}, { io, hosts: HOSTS, client });
@@ -82,6 +101,7 @@ describe('fleetPs', () => {
       },
       getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
       getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
     };
     const { io, outBuf, errBuf } = makeIO();
     const code = await fleetPs({}, { io, hosts: HOSTS, client });
@@ -103,6 +123,7 @@ describe('fleetPs', () => {
       },
       getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
       getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
     };
     const { io } = makeIO();
     await fleetPs({ host: 'us-east' }, { io, hosts: HOSTS, client });
@@ -114,6 +135,7 @@ describe('fleetPs', () => {
       getStatus: async () => snap(1, 'x'),
       getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
       getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
     };
     const { io, errBuf } = makeIO();
     const code = await fleetPs({ host: 'jp-tokyo' }, { io, hosts: HOSTS, client });
@@ -126,6 +148,7 @@ describe('fleetPs', () => {
       getStatus: async () => snap(1, 'x'),
       getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
       getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
     };
     const { io, outBuf } = makeIO();
     const code = await fleetPs({}, { io, hosts: [], client });
@@ -141,6 +164,7 @@ describe('fleetPs', () => {
       },
       getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
       getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
     };
     const { io, outBuf } = makeIO();
     const code = await fleetPs({ json: true }, { io, hosts: HOSTS, client });
@@ -178,6 +202,7 @@ describe('fleetEventsList', () => {
         nextCursor: null,
       }),
       getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
     };
     const { io, outBuf } = makeIO();
     const code = await fleetEventsList({ json: true }, { io, hosts: HOSTS, client });
@@ -215,6 +240,7 @@ describe('fleetEventsList', () => {
         };
       },
       getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
     };
     const { io, outBuf, errBuf } = makeIO();
     const code = await fleetEventsList({}, { io, hosts: HOSTS, client });
@@ -243,6 +269,7 @@ describe('fleetDlqList', () => {
         ],
         nextCursor: null,
       }),
+      ...MUTATION_STUBS,
     };
     const { io, outBuf } = makeIO();
     const code = await fleetDlqList({ json: true }, { io, hosts: HOSTS, client });
@@ -372,3 +399,219 @@ async function waitUntil(pred: () => boolean, timeoutMs = 2000): Promise<void> {
     await new Promise((r) => setTimeout(r, 5));
   }
 }
+
+// ── fleet dlq drop / requeue (Slice 6b) ─────────────────────────────────
+
+describe('fleetDlqDrop', () => {
+  it('single host (only one declared) drops without needing --host', async () => {
+    const calls: string[] = [];
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async (h, args) => {
+        calls.push(`${h.name}/${args.id}`);
+        return { ok: true, op: 'drop', eventId: args.id, attemptsBeforeOp: 2 };
+      },
+      requeueDlqEntry: async () => ({ ok: true, op: 'requeue', eventId: 'x' }),
+    };
+    const { io, outBuf } = makeIO();
+    const code = await fleetDlqDrop(
+      { id: 'evt-1', kind: 'dispatch' },
+      { io, hosts: [HOSTS[0] as FleetHost], client, initiator: 'tester' },
+    );
+    expect(code).toBe(0);
+    expect(calls).toEqual(['us-east/evt-1']);
+    expect(outBuf.join('')).toContain('us-east');
+  });
+
+  it('errors out (exit 2) when fleet has >1 host and neither --host nor --all-hosts is set', async () => {
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async () => ({ ok: true, op: 'drop', eventId: 'x' }),
+      requeueDlqEntry: async () => ({ ok: true, op: 'requeue', eventId: 'x' }),
+    };
+    const { io, errBuf } = makeIO();
+    const code = await fleetDlqDrop({ id: 'evt' }, { io, hosts: HOSTS, client });
+    expect(code).toBe(2);
+    expect(errBuf.join('')).toMatch(/pass --host|--all-hosts/);
+  });
+
+  it('--all-hosts without --yes invokes confirm; false cancels with exit 3', async () => {
+    const calls: string[] = [];
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async (h, args) => {
+        calls.push(h.name);
+        return { ok: true, op: 'drop', eventId: args.id };
+      },
+      requeueDlqEntry: async () => ({ ok: true, op: 'requeue', eventId: 'x' }),
+    };
+    const { io, errBuf } = makeIO();
+    const code = await fleetDlqDrop(
+      { id: 'evt', allHosts: true },
+      { io, hosts: HOSTS, client, confirm: () => false },
+    );
+    expect(code).toBe(3);
+    expect(calls).toEqual([]); // no host actually hit
+    expect(errBuf.join('')).toContain('cancelled');
+  });
+
+  it('--all-hosts --yes fans out to every host', async () => {
+    const calls: string[] = [];
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async (h, args) => {
+        calls.push(h.name);
+        return { ok: true, op: 'drop', eventId: args.id, attemptsBeforeOp: 1 };
+      },
+      requeueDlqEntry: async () => ({ ok: true, op: 'requeue', eventId: 'x' }),
+    };
+    const { io, outBuf } = makeIO();
+    const code = await fleetDlqDrop(
+      { id: 'evt', allHosts: true, yes: true },
+      { io, hosts: HOSTS, client },
+    );
+    expect(code).toBe(0);
+    expect(calls.sort()).toEqual(['eu-west', 'us-east']);
+    expect(outBuf.join('')).toContain('us-east');
+    expect(outBuf.join('')).toContain('eu-west');
+  });
+
+  it('partial host failure → exit 1 with both successes and failures reported', async () => {
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async (h, args) => {
+        if (h.name === 'eu-west') {
+          // Logical miss — the row isn't on this host. Returned by the
+          // route as `{ok: false, reason: 'not-found'}`.
+          return { ok: false, op: 'drop', eventId: args.id, reason: 'not-found' };
+        }
+        return { ok: true, op: 'drop', eventId: args.id, attemptsBeforeOp: 3 };
+      },
+      requeueDlqEntry: async () => ({ ok: true, op: 'requeue', eventId: 'x' }),
+    };
+    const { io, outBuf } = makeIO();
+    const code = await fleetDlqDrop(
+      { id: 'evt-p', allHosts: true, yes: true },
+      { io, hosts: HOSTS, client },
+    );
+    expect(code).toBe(1);
+    const out = outBuf.join('');
+    expect(out).toContain('us-east');
+    expect(out).toContain('eu-west');
+    expect(out).toContain('not-found');
+  });
+
+  it('transport failure on one host surfaces with host tag', async () => {
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async (h, args) => {
+        if (h.name === 'eu-west') throw new Error('connect refused');
+        return { ok: true, op: 'drop', eventId: args.id };
+      },
+      requeueDlqEntry: async () => ({ ok: true, op: 'requeue', eventId: 'x' }),
+    };
+    const { io, outBuf } = makeIO();
+    const code = await fleetDlqDrop(
+      { id: 'x', allHosts: true, yes: true },
+      { io, hosts: HOSTS, client },
+    );
+    expect(code).toBe(1);
+    const out = outBuf.join('');
+    expect(out).toContain('eu-west');
+    expect(out).toContain('connect refused');
+  });
+
+  it('--id is required', async () => {
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async () => ({ ok: true, op: 'drop', eventId: 'x' }),
+      requeueDlqEntry: async () => ({ ok: true, op: 'requeue', eventId: 'x' }),
+    };
+    const { io, errBuf } = makeIO();
+    const code = await fleetDlqDrop({}, { io, hosts: HOSTS, client });
+    expect(code).toBe(1);
+    expect(errBuf.join('')).toContain('--id is required');
+  });
+
+  it('rejects both --host and --all-hosts', async () => {
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async () => ({ ok: true, op: 'drop', eventId: 'x' }),
+      requeueDlqEntry: async () => ({ ok: true, op: 'requeue', eventId: 'x' }),
+    };
+    const { io, errBuf } = makeIO();
+    const code = await fleetDlqDrop(
+      { id: 'x', host: 'us-east', allHosts: true },
+      { io, hosts: HOSTS, client, confirm: () => true },
+    );
+    expect(code).toBe(1);
+    expect(errBuf.join('')).toMatch(/EITHER --host .* OR --all-hosts/);
+  });
+});
+
+describe('fleetDlqRequeue', () => {
+  it('requeues on a single --host and passes initiator through', async () => {
+    let seenInitiator: string | undefined;
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async () => ({ ok: true, op: 'drop', eventId: 'x' }),
+      requeueDlqEntry: async (_h, args) => {
+        seenInitiator = args.initiator;
+        return { ok: true, op: 'requeue', eventId: args.id, attemptsBeforeOp: 2 };
+      },
+    };
+    const { io } = makeIO();
+    const code = await fleetDlqRequeue(
+      { id: 'evt-z', host: 'us-east' },
+      { io, hosts: HOSTS, client, initiator: 'operator1' },
+    );
+    expect(code).toBe(0);
+    expect(seenInitiator).toBe('operator1');
+  });
+
+  it('--json emits per-host rows', async () => {
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => snap(1, 'x'),
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      dropDlqEntry: async () => ({ ok: true, op: 'drop', eventId: 'x' }),
+      requeueDlqEntry: async (h, args) =>
+        h.name === 'eu-west'
+          ? { ok: false, op: 'requeue', eventId: args.id, reason: 'dlq-miss' }
+          : { ok: true, op: 'requeue', eventId: args.id, attemptsBeforeOp: 1 },
+    };
+    const { io, outBuf } = makeIO();
+    const code = await fleetDlqRequeue(
+      { id: 'evt-j', allHosts: true, yes: true, json: true },
+      { io, hosts: HOSTS, client },
+    );
+    expect(code).toBe(1);
+    const parsed = JSON.parse(outBuf.join('')) as {
+      op: string;
+      hosts: Array<{ host: string; ok: boolean; response?: { reason?: string } }>;
+    };
+    expect(parsed.op).toBe('requeue');
+    expect(parsed.hosts).toHaveLength(2);
+    const eu = parsed.hosts.find((h) => h.host === 'eu-west');
+    expect(eu?.ok).toBe(false);
+    expect(eu?.response?.reason).toBe('dlq-miss');
+  });
+});

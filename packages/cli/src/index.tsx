@@ -32,7 +32,14 @@ import { extensionsList } from './extensions-cli.js';
 import { fleetAdd } from './fleet-add-cli.js';
 import { fleetAuditRpc } from './fleet-audit-rpc-cli.js';
 import { fleetCapabilities, fleetList, fleetValidate } from './fleet-cli.js';
-import { fleetDlqList, fleetEventsList, fleetLogs, fleetPs } from './fleet-cross-host-cli.js';
+import {
+  fleetDlqDrop,
+  fleetDlqList,
+  fleetDlqRequeue,
+  fleetEventsList,
+  fleetLogs,
+  fleetPs,
+} from './fleet-cross-host-cli.js';
 import { fleetDeploy } from './fleet-deploy-cli.js';
 import { type GraphFormat, fleetGraph } from './fleet-graph-cli.js';
 import { fleetInit } from './fleet-init-cli.js';
@@ -185,6 +192,8 @@ Usage:
   declaragent fleet ps [--host <name>] [--json]                                # cross-host status fan-out (#50)
   declaragent fleet events [--host <name>] [--kind <k>] [--since <ms>] [--state circuit-open] [--outcome <k>] [--correlation <id>] [--limit <n>] [--all] [--json]
   declaragent fleet dlq [--host <name>] [--reason <r>] [--min-attempts <n>] [--since <ms>] [--limit <n>] [--all] [--json]
+  declaragent fleet dlq drop --id <eventId> [--kind dispatch] [--host <name> | --all-hosts --yes] [--json]
+  declaragent fleet dlq requeue --id <eventId> [--kind dispatch] [--host <name> | --all-hosts --yes] [--json]
   declaragent fleet logs [-f | --follow] [--host <name>] [--agent <id>] [--max-lines <n>] [--json]
 
   declaragent capabilities gen --peer <id> [--out <dir>]
@@ -1073,6 +1082,30 @@ async function runFleetSubcommand(
     });
   }
   if (action === 'dlq') {
+    // `fleet dlq` accepts sub-verbs `list` (default, back-compat), `drop`,
+    // and `requeue`. The first positional in `rest` that isn't a flag
+    // picks the sub-verb; absence of a sub-verb keeps the historical
+    // list-only behaviour.
+    const firstPositional = rest.find((a) => !a.startsWith('-'));
+    const subAction = firstPositional ?? 'list';
+    if (subAction === 'drop' || subAction === 'requeue') {
+      const host = flagValue(rest, '--host');
+      const id = flagValue(rest, '--id');
+      const kindRaw = flagValue(rest, '--kind');
+      const kind: 'dispatch' = kindRaw === 'dispatch' ? 'dispatch' : 'dispatch';
+      const allHosts = flagSet(rest, '--all-hosts');
+      const yes = flagSet(rest, '--yes', '-y');
+      const runner = subAction === 'drop' ? fleetDlqDrop : fleetDlqRequeue;
+      return runner({
+        kind,
+        ...(id !== undefined && { id }),
+        ...(host !== undefined && { host }),
+        ...(allHosts && { allHosts: true }),
+        ...(yes && { yes: true }),
+        ...(json && { json: true }),
+      });
+    }
+    // default `list`
     const host = flagValue(rest, '--host');
     const reason = flagValue(rest, '--reason');
     const minAttemptsRaw = flagValue(rest, '--min-attempts');

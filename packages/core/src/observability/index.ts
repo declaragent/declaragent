@@ -32,12 +32,22 @@ export type {
   UpStatusProvider,
   UpStatusSnapshot,
 } from './control-plane-server.js';
-export { auditRoute, dlqRoute, eventsRoute } from './control-plane-routes.js';
+export {
+  auditRoute,
+  dlqDropRoute,
+  dlqRequeueRoute,
+  dlqRoute,
+  eventsRoute,
+} from './control-plane-routes.js';
 export type {
   AuditResponse,
   AuditResponseEntry,
   AuditRouteOptions,
   AuditVerifySummary,
+  DlqDropRouteOptions,
+  DlqMutationAuditHook,
+  DlqMutationResponse,
+  DlqRequeueRouteOptions,
   DlqResponse,
   DlqResponseEntry,
   DlqRouteOptions,

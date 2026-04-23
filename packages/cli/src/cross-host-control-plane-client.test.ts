@@ -204,3 +204,84 @@ describe('fanOut', () => {
     expect(failures[0]?.host).toBe('b');
   });
 });
+
+// ── Mutation methods (Slice 6b) ────────────────────────────────────────
+
+describe('dropDlqEntry / requeueDlqEntry', () => {
+  it('POSTs /dlq/drop with kind + id query params and initiator header', async () => {
+    let seenUrl = '';
+    let seenMethod = '';
+    let seenHeaders: Record<string, string> = {};
+    const client = createCrossHostControlPlaneClient({
+      fetchImpl: makeFetch((url, init) => {
+        seenUrl = url;
+        seenMethod = init?.method ?? '';
+        seenHeaders = (init?.headers as Record<string, string>) ?? {};
+        return new Response(
+          JSON.stringify({ ok: true, op: 'drop', eventId: 'x-1', attemptsBeforeOp: 2 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    });
+    const res = await client.dropDlqEntry(
+      { name: 'a', url: 'http://h' },
+      { kind: 'dispatch', id: 'x-1', initiator: 'alice' },
+    );
+    expect(seenMethod).toBe('POST');
+    expect(seenUrl).toBe('http://h/dlq/drop?kind=dispatch&id=x-1');
+    expect(seenHeaders['x-declaragent-initiator']).toBe('alice');
+    expect(res.ok).toBe(true);
+    expect(res.attemptsBeforeOp).toBe(2);
+  });
+
+  it('accepts 404 as a typed miss (no throw)', async () => {
+    const client = createCrossHostControlPlaneClient({
+      fetchImpl: makeFetch(
+        () =>
+          new Response(
+            JSON.stringify({ ok: false, op: 'drop', eventId: 'x', reason: 'not-found' }),
+            { status: 404, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    });
+    const res = await client.dropDlqEntry(
+      { name: 'a', url: 'http://h' },
+      { kind: 'dispatch', id: 'x' },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('not-found');
+  });
+
+  it('throws on 5xx', async () => {
+    const client = createCrossHostControlPlaneClient({
+      fetchImpl: makeFetch(() => new Response('boom', { status: 500 })),
+    });
+    let caught: unknown;
+    try {
+      await client.requeueDlqEntry({ name: 'a', url: 'http://h' }, { kind: 'dispatch', id: 'x' });
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as Error & { status?: number }).status).toBe(500);
+  });
+
+  it('POSTs /dlq/requeue and returns ok body', async () => {
+    let seenUrl = '';
+    const client = createCrossHostControlPlaneClient({
+      fetchImpl: makeFetch((url) => {
+        seenUrl = url;
+        return new Response(
+          JSON.stringify({ ok: true, op: 'requeue', eventId: 'x', attemptsBeforeOp: 1 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    });
+    const res = await client.requeueDlqEntry(
+      { name: 'a', url: 'http://h' },
+      { kind: 'dispatch', id: 'x' },
+    );
+    expect(seenUrl).toBe('http://h/dlq/requeue?kind=dispatch&id=x');
+    expect(res.ok).toBe(true);
+    expect(res.op).toBe('requeue');
+  });
+});

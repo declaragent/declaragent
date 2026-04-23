@@ -33,7 +33,10 @@
  * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #50
  */
 
+import { readSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import type {
+  DlqMutationResponse,
   DlqResponseEntry,
   EventsResponseEntry,
   FleetHost,
@@ -46,6 +49,7 @@ import {
   type GetDlqOpts,
   type GetEventsOpts,
   type HostError,
+  type HostTaggedResult,
   createCrossHostControlPlaneClient,
   fanOut,
   partitionResults,
@@ -678,6 +682,222 @@ async function fleetLogsFollow(
   // Block until every per-host loop has exited (today only via stop()).
   await handle.done;
   return 0;
+}
+
+// ── `fleet dlq drop` + `fleet dlq requeue` — cross-host mutations ──────
+//
+// Slice 6b of POST_ENTERPRISE_BACKLOG.md #50. Snapshot + live-tail ship in
+// Slice 3 + Slice 6a. Mutations were deliberately deferred because they
+// are destructive — bulk-fan-out of a destructive op without confirmation
+// is the #19 hazard pattern (`?all=1` on reads) promoted to an existential
+// foot-gun. The design here:
+//
+//   - Default is single-host. `--host <name>` targets one FleetHost.
+//   - When `fleet.yaml` declares multiple hosts and `--host` is omitted
+//     we ERROR OUT (exit 2 — "ambiguous target"). We do NOT silently
+//     pick the first host; that conflicts with operator expectations
+//     every single time the shell aliases drift.
+//   - `--all-hosts` is an explicit opt-in for cross-host bulk. It
+//     REQUIRES a confirmation prompt unless `--yes` is supplied. The
+//     prompt reads from stdin synchronously so it works in `ssh`
+//     pipelines without extra tooling (`< /dev/tty`-style workarounds).
+//   - Per-host failures are isolated: one host 404-ing (id not present
+//     there) doesn't stop a peer host's successful mutation. The exit
+//     code surfaces partial success as non-zero so scripts can detect it.
+//   - `host:` tag is added client-side when rendering: the HTTP route
+//     response body already carries the op result, the CLI wraps it
+//     with the FleetHost name from `fleet.yaml`.
+
+export interface FleetDlqMutationArgs {
+  /** Single-host targeting. Required when the fleet has >1 host unless `allHosts` is set. */
+  host?: string;
+  /** Kind of DLQ. Only `dispatch` honored today. */
+  kind?: 'dispatch';
+  /** Event id to mutate. Required. */
+  id?: string;
+  /** Cross-host fan-out opt-in. Requires confirmation unless `yes`. */
+  allHosts?: boolean;
+  /** Suppress the confirmation prompt when `allHosts` is set. */
+  yes?: boolean;
+  /** JSON renderer for CI pipelines. */
+  json?: boolean;
+}
+
+export interface FleetDlqMutationDeps extends FleetCrossHostDeps {
+  /**
+   * Confirmation prompt hook. Default reads a single line from stdin
+   * and returns true iff the user types `y` or `yes` (case-insensitive).
+   * Tests inject a stub.
+   */
+  confirm?: (message: string) => boolean | Promise<boolean>;
+  /** Test override for the audit record of "who asked for this". */
+  initiator?: string;
+}
+
+/** Tagged per-host result returned by the mutation fan-out. */
+export interface FleetDlqMutationHostRow {
+  readonly host: string;
+  readonly ok: boolean;
+  readonly response?: DlqMutationResponse;
+  readonly error?: HostError;
+}
+
+const DEFAULT_CONFIRM = (message: string): boolean => {
+  // Synchronous stdin read. We intentionally do NOT use `readline` —
+  // it installs an `'SIGINT'` handler that conflicts with the logs
+  // follow-mode cleanup and forces async flow into what is otherwise
+  // a blocking prompt. A one-shot `readSync` keeps the prompt dead
+  // simple + testable.
+  process.stdout.write(`${message}`);
+  try {
+    const buf = Buffer.alloc(1024);
+    const n = readSync(0, buf, 0, buf.length, null);
+    const answer = buf.subarray(0, n).toString('utf-8').trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } catch {
+    // Non-TTY stdin (piped `echo n`) returns 0; treat as cancel.
+    return false;
+  }
+};
+
+function resolveInitiator(deps: FleetDlqMutationDeps): string {
+  if (deps.initiator !== undefined && deps.initiator !== '') return deps.initiator;
+  try {
+    return userInfo().username;
+  } catch {
+    return 'unknown';
+  }
+}
+
+type MutationExitCode = 0 | 1 | 2 | 3;
+
+async function runFleetDlqMutation(
+  op: 'drop' | 'requeue',
+  args: FleetDlqMutationArgs,
+  deps: FleetDlqMutationDeps,
+): Promise<MutationExitCode> {
+  const io = deps.io ?? STDIO_IO;
+  if (!args.id) {
+    io.err(`✗ --id is required for fleet dlq ${op}\n`);
+    return 1;
+  }
+  const kind: 'dispatch' = args.kind ?? 'dispatch';
+
+  const hosts = await resolveHosts(deps, io);
+  if (hosts === null) return 1;
+  if (hosts.length === 0) {
+    io.out(
+      `no \`hosts:\` block in fleet.yaml — use \`declaragent dlq ${op} --kind ${kind} ${args.id}\` for the local path.\n`,
+    );
+    return 0;
+  }
+
+  // Target selection.
+  //   --host  → exactly that host.
+  //   --all-hosts → every host (confirm required).
+  //   neither, 1 host → that host.
+  //   neither, >1 hosts → refuse (exit 2).
+  let targets: readonly FleetHost[];
+  if (args.host !== undefined) {
+    if (args.allHosts === true) {
+      io.err('✗ pass EITHER --host <name> OR --all-hosts, not both.\n');
+      return 1;
+    }
+    const filtered = filterHosts(hosts, args.host, io);
+    if (filtered === null) return 1;
+    targets = filtered;
+  } else if (args.allHosts === true) {
+    // Mutation across every host declared in fleet.yaml. This is the
+    // hazardous path — confirm unless --yes.
+    if (args.yes !== true) {
+      const confirm = deps.confirm ?? DEFAULT_CONFIRM;
+      const prompt = `About to ${op} dispatch-DLQ id "${args.id}" on ${hosts.length} host(s): ${hosts
+        .map((h) => h.name)
+        .join(', ')}.\nProceed? [y/N] `;
+      const ok = await confirm(prompt);
+      if (!ok) {
+        io.err('✗ cancelled.\n');
+        return 3;
+      }
+    }
+    targets = hosts;
+  } else if (hosts.length === 1) {
+    targets = hosts;
+  } else {
+    io.err(
+      `✗ fleet has ${hosts.length} hosts; pass --host <name> to target one, or --all-hosts --yes to mutate every host.\n`,
+    );
+    return 2;
+  }
+
+  const initiator = resolveInitiator(deps);
+  const client =
+    deps.client ??
+    createCrossHostControlPlaneClient({
+      ...(deps.clientOptions ?? {}),
+    });
+
+  const fanned: readonly HostTaggedResult<DlqMutationResponse>[] = await fanOut(
+    targets,
+    async (h) => {
+      if (op === 'drop') {
+        return await client.dropDlqEntry(h, { kind, id: args.id as string, initiator });
+      }
+      return await client.requeueDlqEntry(h, { kind, id: args.id as string, initiator });
+    },
+  );
+
+  // Every host's outcome — success or transport failure — tagged with
+  // the FleetHost name. The client promises a DlqMutationResponse even
+  // on logical failure (404 → `ok: false`) so the `err` branch here
+  // only fires on transport / 5xx / auth failures.
+  const rows: FleetDlqMutationHostRow[] = fanned.map((r) =>
+    'ok' in r.result
+      ? { host: r.host, ok: r.result.ok.ok, response: r.result.ok }
+      : { host: r.host, ok: false, error: r.result.err },
+  );
+
+  if (args.json === true) {
+    io.out(`${JSON.stringify({ op, kind, id: args.id, hosts: rows }, null, 2)}\n`);
+  } else {
+    io.out(`${op} dispatch-DLQ id "${args.id}" across ${rows.length} host(s):\n`);
+    for (const r of rows) {
+      if (r.error) {
+        const statusCol = r.error.status !== undefined ? `HTTP ${r.error.status}` : 'ERR';
+        io.out(`  ✗ ${r.host.padEnd(20)}  ${statusCol.padEnd(10)}  ${r.error.message}\n`);
+        continue;
+      }
+      const body = r.response;
+      if (!body) continue;
+      const marker = body.ok ? '✓' : '✗';
+      const reason = body.ok ? '' : `  (${body.reason ?? 'unknown'})`;
+      const attempts =
+        body.attemptsBeforeOp !== undefined ? `  attemptsBefore=${body.attemptsBeforeOp}` : '';
+      io.out(`  ${marker} ${r.host.padEnd(20)}  ${body.message ?? ''}${attempts}${reason}\n`);
+    }
+  }
+
+  // Exit-code policy:
+  //   0 — every targeted host succeeded (all `ok: true`).
+  //   1 — at least one host failed (transport OR logical miss).
+  //   This matches Sprint 4's snapshot policy: partial success still
+  //   exits non-zero so `set -e` scripts halt on any host failure.
+  const anyFailed = rows.some((r) => !r.ok);
+  return anyFailed ? 1 : 0;
+}
+
+export async function fleetDlqDrop(
+  args: FleetDlqMutationArgs = {},
+  deps: FleetDlqMutationDeps = {},
+): Promise<number> {
+  return runFleetDlqMutation('drop', args, deps);
+}
+
+export async function fleetDlqRequeue(
+  args: FleetDlqMutationArgs = {},
+  deps: FleetDlqMutationDeps = {},
+): Promise<number> {
+  return runFleetDlqMutation('requeue', args, deps);
 }
 
 // ── Helpers for tests ──────────────────────────────────────────────────
