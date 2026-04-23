@@ -1,0 +1,160 @@
+---
+id: cross-host-fleet-kafka
+title: Cross-host fleet on Kafka with unified observability
+sidebar_label: Cross-host fleet (Kafka)
+---
+
+# Run a fleet across hosts, observe it as one
+
+Production fleets don't run on one host. This recipe takes a working `fleet-starter` and splits it across three hosts talking over Kafka — then uses `fleet.yaml#hosts[]` to let one operator run `declaragent fleet ps / events / dlq / logs` **once** and see every host.
+
+Under the hood this is Slice 3 cross-host fan-out (`packages/cli/src/fleet-cross-host-cli.ts`) + the `CrossHostControlPlaneClient`. One bad host is tagged in the output; survivors still return results.
+
+## Prerequisites
+
+- A Kafka cluster (MSK / Confluent Cloud / self-hosted; SASL_SSL supported).
+- Three daemon hosts that can each reach Kafka.
+- Network: each host exposes its control plane on `:9464`. Bearer tokens must not cross the internet in cleartext — terminate TLS at an ingress or use `DECLARAGENT_CONTROL_PLANE_BIND=127.0.0.1` + a sidecar.
+- `@declaragent/cli ≥ 0.7.4` on each host.
+
+## Step 1 — Pick the broker transport
+
+In each agent's `rpc-peers.yaml`, point the peer at Kafka:
+
+```yaml
+# agents/pr-reviewer/rpc-peers.yaml
+peers:
+  - id: concierge
+    transport: kafka
+    topic: agents.concierge.inbound
+    bootstrap: kafka-prod.acme.internal:9093
+    sasl:
+      mechanism: SCRAM-SHA-512
+      username: env:KAFKA_USER
+      password: env:KAFKA_PASS
+    ssl: true
+    auth:
+      enabled: true
+      provider: hs256
+      secret: env:AGENT_RPC_SHARED_SECRET
+```
+
+NATS, JetStream, SQS, AMQP, and MQTT transports ship with the same shape — swap `transport:` and the broker-specific keys.
+
+## Step 2 — Declare hosts in `fleet.yaml`
+
+```yaml
+# fleet.yaml
+version: 1
+name: orders
+agents:
+  - { id: concierge,   path: ./agents/concierge }
+  - { id: pr-reviewer, path: ./agents/pr-reviewer }
+  - { id: triage,      path: ./agents/triage }
+
+hosts:
+  - name: prod-us-east-1
+    url: https://declaragent-use1.acme.internal:9464
+    auth: { bearer: env:DECLARA_TOKEN_USE1 }
+    timeoutMs: 5000
+    region: us-east-1
+  - name: prod-us-west-2
+    url: https://declaragent-usw2.acme.internal:9464
+    auth: { bearer: env:DECLARA_TOKEN_USW2 }
+    region: us-west-2
+  - name: prod-eu-west-1
+    url: https://declaragent-euw1.acme.internal:9464
+    auth: { bearer: env:DECLARA_TOKEN_EUW1 }
+    region: eu-west-1
+```
+
+Schema constraints (`packages/core/src/fleet/manifest-schema.ts`):
+
+- `name` must be URL-safe (no spaces) and unique.
+- `url` must be a valid http/https URL.
+- `auth.bearer` accepts `env:FOO` — resolved at invocation time, never logged.
+
+## Step 3 — Deploy per-host
+
+Each host runs the same artifact (built via [GitOps](/cookbook/gitops-argocd-flux)). No cross-host state; Kafka is the source of truth for inter-agent messages.
+
+## Step 4 — Observe the whole fleet
+
+From **any** operator workstation with a checkout of the fleet repo:
+
+```bash
+# Every running agent across all three hosts
+declaragent fleet ps
+
+# Merged audit event stream
+declaragent fleet events --json | jq '. | select(.kind == "tool_call")'
+
+# Cross-host DLQ snapshot (ingress + dispatch)
+declaragent fleet dlq list --kind dispatch
+
+# Tail logs — capped at 50 watchers total, coalesced per-agent
+declaragent fleet logs -f
+```
+
+Scope to one host with `--host <name>`:
+
+```bash
+declaragent fleet events --host prod-eu-west-1
+declaragent fleet logs   --host prod-us-east-1 -f
+```
+
+Machine-readable output for dashboards and CI checks:
+
+```bash
+declaragent fleet ps --json | jq '.hosts[] | {host: .name, up: .agents | length}'
+```
+
+## Step 5 — Cross-host DLQ mutations (0.7.5+)
+
+Requeue a stuck dispatch-DLQ row on whichever host holds it — the command locates the host automatically:
+
+```bash
+declaragent fleet dlq requeue --kind dispatch <id>
+declaragent fleet dlq drop    --kind dispatch <id> --reason "poisoned payload"
+```
+
+Both mutations are audited with `host = <name>` so your SIEM can attribute the operator action (`packages/core/src/audit/types.ts:184`).
+
+## Partial failure — one host unreachable
+
+When a host is down, cross-host verbs degrade gracefully:
+
+```bash
+$ declaragent fleet ps --json | jq '.failures'
+[
+  { "host": "prod-eu-west-1", "error": "ETIMEDOUT" }
+]
+```
+
+Survivors still return. The exit code is non-zero so CI catches the regression without losing the data from healthy hosts.
+
+## Metrics to watch
+
+Wire the [Grafana dashboard](/cookbook/grafana-dashboard-import) — row 3 ("Rate limits + dispatch") aggregates across all hosts scraped by Prometheus. Key per-host alerts:
+
+| Metric | Alert |
+| --- | --- |
+| `source_messages_dlq_total{transport="kafka"}` | Rate > 0 for 5 min |
+| `source_inflight{transport="kafka"}` | Stuck > N for 10 min = consumer stall |
+| Up probe on `:9464/health` | Down > 2m = host evacuated from `hosts[]` |
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `no hosts: block in fleet.yaml — use declaragent ps for local view` | `hosts[]` missing | Add the block; cross-host verbs are opt-in |
+| One host times out every call | `timeoutMs` too tight for a cross-region hop | Raise to 15000 for EU↔US |
+| Merged events sorted wrong | Clock skew between hosts | Enforce NTP; each event carries its own `ts` so ingest-order is deterministic |
+| `AUTH_REJECTED` on RPC at boot | Kafka peer missing an `auth:` block | See [Zero-trust RPC migration](/cookbook/zero-trust-rpc-migration) |
+
+## Related
+
+- [Reference → Fleet manifest](/reference/fleet).
+- [GitOps deploy](/cookbook/gitops-argocd-flux).
+- [Grafana dashboard import](/cookbook/grafana-dashboard-import).
+- [`kafka-pipeline` template](/cookbook/kafka-pipeline) — single-agent Kafka source.

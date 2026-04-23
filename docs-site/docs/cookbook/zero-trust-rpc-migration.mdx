@@ -1,0 +1,137 @@
+---
+id: zero-trust-rpc-migration
+title: Zero-trust RPC migration (0.7.x → 0.8.0)
+sidebar_label: Zero-trust RPC migration
+---
+
+# Prepare your fleet for the 0.8.0 zero-trust default
+
+At **0.8.0**, `rpc.auth.enabled` flips to `true` by default whenever `rpc-peers.yaml` is present. Fleets with a peer that lacks an `auth:` block will fail boot with `AUTH_REJECTED`. The full migration plan is at [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](https://github.com/declaragent/declaragent/blob/main/docs/ZERO_TRUST_DEFAULT_MIGRATION.md) — this recipe is the operational walkthrough.
+
+**Recommendation:** run `--strict` in CI for 2–3 weeks before taking 0.8.0.
+
+## The pre-flight inspector
+
+```bash
+declaragent fleet audit-rpc               # report only
+declaragent fleet audit-rpc --suggest-enable   # report + copy-pasteable YAML diffs
+declaragent fleet audit-rpc --strict           # exit 1 on any gap — wire into CI
+declaragent fleet audit-rpc --json             # machine-readable, pipe to jq
+```
+
+Shipped at 0.7.3 (`packages/cli/src/fleet-audit-rpc-cli.ts`). Safe to run in any environment — no network IO, no state mutation.
+
+## Step 1 — Baseline audit
+
+From the fleet root:
+
+```bash
+declaragent fleet audit-rpc --json | jq '.findings[]'
+```
+
+Each finding categorises a peer:
+
+- `OK` — has an `auth:` block today, no action needed.
+- `MISSING_AUTH` — peer will fail boot at 0.8.0.
+- `MISSING_PEERS_FILE` — agent declares peers but no `rpc-peers.yaml` exists.
+- `INVALID_PROVIDER` — `auth.provider` doesn't match the peer's declared provider.
+
+## Step 2 — Apply the suggested diff
+
+```bash
+declaragent fleet audit-rpc --suggest-enable
+```
+
+Example output (each gap is pre-filled with the peer's declared provider):
+
+```yaml
+# agents/concierge/rpc-peers.yaml
+peers:
+  - id: pr-reviewer
+    transport: kafka
+    topic: agents.pr-reviewer.inbound
++   auth:
++     enabled: true
++     provider: hs256                     # from peer's declared provider
++     secret: env:AGENT_RPC_SHARED_SECRET
++     audience: pr-reviewer
++     issuer: concierge
+```
+
+Paste the blocks into each `rpc-peers.yaml`. Common auth providers:
+
+| Provider | When to use | Secret ref |
+| --- | --- | --- |
+| `hs256` | Shared secret between trusted peers | `env:…` or `${secret:vault:…}` |
+| `rs256` | Peers in different trust domains | JWKS URL |
+| `oidc` | Peers mediated by your IdP | Issuer + audience |
+
+## Step 3 — Validate
+
+```bash
+declaragent fleet validate
+declaragent fleet audit-rpc --strict        # must exit 0
+```
+
+## Step 4 — Wire `--strict` into CI
+
+Add to `.github/workflows/ci.yml` (or your equivalent):
+
+```yaml
+- name: Zero-trust RPC audit (will be required at 0.8.0)
+  run: |
+    bunx @declaragent/cli fleet audit-rpc --strict
+```
+
+Run this for **at least 2–3 weeks** before upgrading to 0.8.0. It catches PRs that add a peer without auth before they land.
+
+## Step 5 — Flip the default locally (dry-run)
+
+Before 0.8.0 ships, you can opt-in early:
+
+```yaml
+# fleet.yaml
+rpc:
+  auth:
+    enabled: true                  # opt-in to the 0.8.0 default today
+```
+
+Re-run your soak tests. If a peer still boots with `AUTH_REJECTED`, the inspector missed something — please open an issue with the `--json` output.
+
+## Step 6 — Upgrade to 0.8.0
+
+Once CI has been green on `--strict` for 2+ weeks:
+
+```bash
+bun add -D @declaragent/cli@^0.8
+declaragent fleet validate
+declaragent fleet up -d
+```
+
+Fleets that skipped the pre-flight will see this at boot:
+
+```
+✗ AUTH_REJECTED: peer "pr-reviewer" on agent "concierge" has no `auth:` block.
+  Since 0.8.0, `rpc.auth.enabled` defaults to true when rpc-peers.yaml is present.
+  Remediation: run `declaragent fleet audit-rpc --suggest-enable` and paste
+  the generated auth block into agents/concierge/rpc-peers.yaml.
+```
+
+## Rollback
+
+If you need to delay the flip (e.g. mid-incident), opt back out temporarily:
+
+```yaml
+rpc:
+  auth:
+    enabled: false                 # temporary — re-enable before end of sprint
+```
+
+This is a **compatibility knob, not a supported long-term mode**. Set a reminder; `rpc.auth.enabled: false` will be removed in a future minor.
+
+## Related
+
+- [Migration plan doc](https://github.com/declaragent/declaragent/blob/main/docs/ZERO_TRUST_DEFAULT_MIGRATION.md).
+- [Reference → RPC](/reference/rpc).
+- [Per-agent `AuthVerifyRegistry`](/reference/rpc).
+- [CLI → `declaragent fleet audit-rpc`](/reference/cli).
