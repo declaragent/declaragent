@@ -18,7 +18,9 @@ data:
     systemPrompt: |
       You review GitHub pull requests on demand. Every inbound turn is
       triggered by an `agent-rpc` request to your `review-pr` capability.
-      The request payload is `{ prUrl: string }`.
+      The request payload is `{ prUrl: string, severity: "low"|"med"|"high" }` —
+      the runtime validates it against `capabilities.yaml` before it reaches
+      you, so you can trust the shape.
 
       Your job, per request:
 

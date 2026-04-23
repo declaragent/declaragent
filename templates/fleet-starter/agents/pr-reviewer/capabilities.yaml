@@ -1,7 +1,8 @@
 # Declares the capabilities this agent exposes to the rest of the
-# fleet. Producer-side `RequestAgent` callers don't need this file —
-# they use `rpc-peers.yaml` for routing — but operators use it to
-# document the API surface; `fleet capabilities` aggregates from here.
+# fleet. Producer-side `RequestAgent` callers consult this file via
+# `declaragent capabilities gen --peer pr-reviewer` to produce typed
+# `Request`/`Response` declarations + the runtime validates payloads
+# against these schemas on both sides (Enterprise Production Plan #11).
 version: 1
 agent: agent://pr-reviewer
 transports:
@@ -27,7 +28,11 @@ capabilities:
         prUrl:
           type: string
           description: GitHub PR URL.
-      required: [prUrl]
+        severity:
+          description: Reviewer's escalation floor — drop findings below this severity.
+          enum: [low, med, high]
+      required: [prUrl, severity]
+      additionalProperties: false
     outputSchema:
       type: object
       properties:
@@ -43,5 +48,6 @@ capabilities:
               severity:
                 enum: [blocker, major, minor, nit]
               message: { type: string }
+            required: [file, severity, message]
         summary: { type: string }
       required: [verdict, findings, summary]

@@ -130,6 +130,39 @@ export interface RateLimitedAuditRecord {
 }
 
 /**
+ * Emitted by {@link import('../rpc/capability-validator.js').createCapabilityValidatorRegistry}
+ * when a `RequestAgent` call violates its capability's JSON Schema on
+ * either the outbound (`request`) or inbound (`response`) side. One
+ * record per violation *event* (not per individual `violations[]` entry)
+ * — downstream consumers can drill into `violations` to enumerate which
+ * paths/messages tripped.
+ *
+ * Cardinality decision: batched per envelope. A single `/severity: critical`
+ * input rejection emits exactly one audit row even if the schema flagged
+ * three different fields, because otherwise SIEM volume explodes under
+ * bulk-bad-input scenarios.
+ *
+ * @since 1.2.0 — Enterprise Production Plan §3 Item #11
+ */
+export interface CapabilitySchemaViolationAuditRecord {
+  kind: 'capability_schema_violation';
+  ts: number;
+  tenantId: string;
+  /** Capability name (from `capabilities.yaml#capabilities[].name`). */
+  capabilityName: string;
+  /** Peer address — `agent://...` — the call was aimed at. */
+  peerId: string;
+  /** Which side failed validation. */
+  side: 'request' | 'response';
+  /** All violations detected on this envelope. */
+  violations: ReadonlyArray<{ path: string; message: string }>;
+  /** RPC correlation id of the originating envelope. */
+  correlationId: string;
+  /** Session the call originated from (when available). */
+  sessionId?: string;
+}
+
+/**
  * Erasure tombstone — surfaced by queries in place of records that
  * `TenantAuditSink.erase()` has scrubbed. Keeps the hash-chain verifier
  * able to confirm continuity even after right-to-erasure requests.
@@ -165,6 +198,7 @@ export type TenantAuditRecord =
   | QuotaExceededAuditRecord
   | AuthCheckAuditRecord
   | (RateLimitedAuditRecord & { tenantId: string })
+  | CapabilitySchemaViolationAuditRecord
   | ErasedAuditRecord;
 
 /** @since 1.0.0 */

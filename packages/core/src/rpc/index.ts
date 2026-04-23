@@ -40,7 +40,24 @@ export type {
   CapabilitiesConfig,
   CapabilityTransport,
   LoadedCapabilities,
+  ParseCapabilitiesConfigOptions,
 } from './capabilities-loader.js';
+export {
+  CapabilitySchemaCompileError,
+  CapabilitySchemaViolationError,
+  canonicalJson as canonicalizeSchema,
+  compileCapabilityValidator,
+  createCapabilityValidatorRegistry,
+  hashSchema,
+} from './capability-validator.js';
+export type {
+  CapabilitySchemaViolation,
+  CapabilitySide,
+  CapabilityValidationResult,
+  CapabilityValidator,
+  CapabilityValidatorRegistry,
+  CompileCapabilityValidatorOptions,
+} from './capability-validator.js';
 export {
   PeersConfigError,
   loadPeersConfig,

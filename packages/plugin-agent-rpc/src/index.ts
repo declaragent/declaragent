@@ -24,6 +24,7 @@ export {
   createRequestAgentTool,
 } from './request-agent.js';
 export type {
+  CapabilitySchemaViolationEmitter,
   CreateRequestAgentToolOptions,
   RequestAgentInput,
   RequestAgentMode,
