@@ -144,6 +144,18 @@ export async function startControlPlaneServer(
     // overrides can be enforced *inside* the auth middleware. Matching
     // twice (once here, once in the loop below) is cheap — `routes` is
     // a tiny array (≤ 6 entries) and the comparison is string equality.
+    //
+    // Multi-agent fan-out gating (POST_ENTERPRISE_BACKLOG.md #19 / #20):
+    // when the request carries `?all=1`, we surface a synthetic key
+    // `${pathname}?all=1` to the auth middleware so operators can
+    // require a dedicated scope (convention: `control:fan-out`) to
+    // execute the fan-out variant. The literal scope token is operator
+    // policy — the server just forwards the synthetic path; nothing
+    // here hard-codes `control:fan-out`.
+    //
+    // The synthetic path is ONLY visible to the scope lookup — route
+    // dispatch still matches `url.pathname` (the fan-out handling lives
+    // inside the route handler, it doesn't get a separate route entry).
     const url = new URL(req.url);
     let routePath: string | undefined;
     for (const route of routes) {
@@ -152,6 +164,10 @@ export async function startControlPlaneServer(
         break;
       }
     }
+    const scopeLookupPath =
+      routePath !== undefined && url.searchParams.get('all') === '1'
+        ? `${routePath}?all=1`
+        : routePath;
     // Auth fires BEFORE route dispatch. Loopback bypass (the default)
     // keeps same-host curls + `declaragent ps` working without a token;
     // a non-loopback request with a bad / missing token gets a typed
@@ -160,7 +176,7 @@ export async function startControlPlaneServer(
     if (auth) {
       const authContext: ControlPlaneAuthContext = {
         ...(ctx?.peerIp !== undefined && { peerIp: ctx.peerIp }),
-        ...(routePath !== undefined && { routePath }),
+        ...(scopeLookupPath !== undefined && { routePath: scopeLookupPath }),
       };
       const result = await applyControlPlaneAuth(auth, req, authContext);
       if (!result.ok) return result.response;
@@ -213,6 +229,28 @@ function isLocalClient(req: Request): boolean {
   );
 }
 
+/**
+ * Route paths that legitimately hold a connection open for long
+ * periods. Only paths in this set get `idleTimeout = 0` applied by the
+ * default Bun listener (POST_ENTERPRISE_BACKLOG.md #21). Adding a new
+ * streaming route (e.g. a future `/audit/stream`) means appending its
+ * path here so the listener stops aborting its connection at 30s.
+ *
+ * Exported for testing — production callers should not branch on
+ * this directly.
+ */
+export const STREAMING_ROUTE_PATHS: ReadonlySet<string> = new Set(['/logs']);
+
+/**
+ * Default server-level idle timeout in seconds. Short-lived routes
+ * (`/metrics`, `/status`, `/events`, `/dlq`, `/audit`) inherit this.
+ * Streaming routes (see {@link STREAMING_ROUTE_PATHS}) opt out
+ * per-request via `server.timeout(req, 0)`.
+ *
+ * Exported for testing.
+ */
+export const DEFAULT_IDLE_TIMEOUT_SECONDS = 30;
+
 const defaultListen: NonNullable<ControlPlaneServerOptions['listen']> = async ({
   port,
   hostname,
@@ -228,6 +266,20 @@ const defaultListen: NonNullable<ControlPlaneServerOptions['listen']> = async ({
   // `Bun.serve` passes the server as the 2nd arg to `fetch`. We use
   // `server.requestIP(req)` to resolve the immediate TCP peer — needed
   // by the auth middleware to evaluate `allowLoopback: { trustedProxies }`.
+  //
+  // Per-request idle-timeout narrowing (POST_ENTERPRISE_BACKLOG.md #21):
+  // Bun's default `idleTimeout` applies to every request, but SSE
+  // responses (`/logs`) can legitimately stay open for minutes at a
+  // time while the client tails a quiet agent's log. Previously we set
+  // `idleTimeout: 0` on the whole server — that disabled connection-
+  // abort protection for `/status`, `/events`, `/dlq`, etc. as well.
+  //
+  // Now the server uses Bun's default short idle timeout and only
+  // `/logs` calls `server.timeout(request, 0)` to opt into long-lived
+  // streaming. Short-lived JSON routes keep the default cap. We look
+  // up the "will this be a streaming route?" decision from the matched
+  // route path BEFORE calling `fetch` so the timeout extension is in
+  // place before the SSE handler starts pushing frames.
   // biome-ignore lint/suspicious/noExplicitAny: Bun's server handle is untyped here.
   const dispatch = (req: Request, server: any): Promise<Response> | Response => {
     const peer = server?.requestIP?.(req);
@@ -235,17 +287,31 @@ const defaultListen: NonNullable<ControlPlaneServerOptions['listen']> = async ({
       peer && typeof peer === 'object' && typeof peer.address === 'string'
         ? peer.address
         : undefined;
+    // Scope the "no idle timeout" relaxation to streaming routes only.
+    // Today that's just `/logs`, identified by its registered path.
+    try {
+      const url = new URL(req.url);
+      if (STREAMING_ROUTE_PATHS.has(url.pathname) && typeof server?.timeout === 'function') {
+        // 0 = disable idle timeout for this one request. Non-streaming
+        // routes inherit the server-level default (DEFAULT_IDLE_TIMEOUT_SECONDS).
+        server.timeout(req, 0);
+      }
+    } catch {
+      // `new URL` on a malformed request URL would throw; fall through
+      // to the default timeout — the route loop's 404 will handle the
+      // request shortly.
+    }
     return fetch(req, peerIp !== undefined ? { peerIp } : undefined);
   };
   const server = bun.serve({
     port,
     hostname,
-    // SSE responses (`/logs`) can legitimately stay open for
-    // minutes at a time while the client tails a quiet agent's
-    // log. Bun's default 10s `idleTimeout` aborts long-lived
-    // streams server-side — disable it so the client controls
-    // lifetime via cancel / AbortController.
-    idleTimeout: 0,
+    // Default idle timeout (seconds). 30s is enough for a slow audit
+    // verify under load but still catches a zombie connection quickly
+    // enough that a leak on `/events` paging can't accumulate file
+    // descriptors. Long-lived SSE routes extend this per-request via
+    // `server.timeout(req, 0)` in `dispatch` above.
+    idleTimeout: DEFAULT_IDLE_TIMEOUT_SECONDS,
     fetch: dispatch,
   });
   return {

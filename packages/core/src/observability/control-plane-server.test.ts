@@ -2,6 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import {
   type ControlPlaneServerInstance,
   type ControlPlaneServerListenOptions,
+  DEFAULT_IDLE_TIMEOUT_SECONDS,
+  STREAMING_ROUTE_PATHS,
   type UpStatusSnapshot,
   metricsRoute,
   startControlPlaneServer,
@@ -103,6 +105,44 @@ describe('startControlPlaneServer — router dispatch', () => {
     await expect(startFake([metricsRoute(reg), metricsRoute(reg)])).rejects.toThrow(
       /duplicate route "\/metrics"/,
     );
+  });
+
+  it('exposes a 30s default idleTimeout and a streaming-route allow-list containing /logs', () => {
+    // POST_ENTERPRISE_BACKLOG.md #21 — pre-0.7.3 the server bound
+    // `idleTimeout: 0` globally so long-lived SSE on `/logs` wouldn't
+    // get aborted. That disabled idle-abort protection for every
+    // short-lived JSON route too. Now the server-level default is 30s
+    // (DEFAULT_IDLE_TIMEOUT_SECONDS) and `/logs` opts out per-request
+    // via `server.timeout(req, 0)` inside `defaultListen`'s dispatch
+    // wrapper. This test pins both constants so a future change can't
+    // silently flip back to the 0-idle-global posture.
+    expect(DEFAULT_IDLE_TIMEOUT_SECONDS).toBe(30);
+    expect(STREAMING_ROUTE_PATHS.has('/logs')).toBe(true);
+    // Short-lived routes that should NEVER be in the streaming set.
+    expect(STREAMING_ROUTE_PATHS.has('/status')).toBe(false);
+    expect(STREAMING_ROUTE_PATHS.has('/events')).toBe(false);
+    expect(STREAMING_ROUTE_PATHS.has('/dlq')).toBe(false);
+    expect(STREAMING_ROUTE_PATHS.has('/metrics')).toBe(false);
+    expect(STREAMING_ROUTE_PATHS.has('/audit')).toBe(false);
+  });
+
+  it('dispatches /logs?all=1 to the /logs route (synthetic scope key does not leak into dispatch)', async () => {
+    // The auth middleware looks up a synthetic `${path}?all=1` key in
+    // `routeScopes` when the request carries `?all=1`. Route dispatch
+    // must STILL match the pathname only — otherwise no request would
+    // ever reach the fan-out variant. Pinning this explicitly because
+    // the scope-lookup logic sits right next to the dispatch loop.
+    const route = {
+      path: '/logs',
+      fetch: () => new Response('served', { status: 200 }),
+    };
+    const { handle, server } = await startFake([route]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1:9464/logs?all=1', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('served');
+    await handle.close();
   });
 
   it('exposes registered route paths on the handle', async () => {

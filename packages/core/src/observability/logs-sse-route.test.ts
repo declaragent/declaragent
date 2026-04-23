@@ -277,6 +277,102 @@ describe('logsRoute', () => {
     expect(fake.tailer.closed).toBe(true);
   });
 
+  // ── Fan-out cap + ?all=1 (POST_ENTERPRISE_BACKLOG.md #20) ──────────────
+
+  it('returns 413 when resolved paths exceed fanOutLimit on ?all=1', async () => {
+    const tooMany = Array.from({ length: 6 }, (_, i) => ({
+      path: `/tmp/a${i}.log`,
+      agentId: `a${i}`,
+    }));
+    const route = logsRoute({
+      resolvePaths: () => ({ paths: tooMany }),
+      tailerFactory: () => {
+        throw new Error('should not be called — cap fires first');
+      },
+      fanOutLimit: 5,
+    });
+    const res = await fetchLogs(route, new Request('http://127.0.0.1/logs?all=1'));
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { error: string; limit: number; requested: number };
+    expect(body.limit).toBe(5);
+    expect(body.requested).toBe(6);
+    expect(body.error).toContain('fan-out');
+  });
+
+  it('enforces fanOutLimit on the legacy no-param multiplex too', async () => {
+    // Pre-0.7.3 behavior: no `?agent=` → multiplex all. Without the cap
+    // a 200-agent `up` host opens 200 tailers on the first scrape. The
+    // cap now fires regardless of the trigger.
+    const tooMany = Array.from({ length: 3 }, (_, i) => ({
+      path: `/tmp/a${i}.log`,
+      agentId: `a${i}`,
+    }));
+    const route = logsRoute({
+      resolvePaths: () => ({ paths: tooMany }),
+      tailerFactory: () => {
+        throw new Error('should not be called');
+      },
+      fanOutLimit: 2,
+    });
+    const res = await fetchLogs(route, new Request('http://127.0.0.1/logs'));
+    expect(res.status).toBe(413);
+  });
+
+  it('single-agent tail never hits the cap regardless of running agent count', async () => {
+    const fake = makeFakeTailer();
+    const route = logsRoute({
+      resolvePaths: () => ({ paths: [{ path: '/tmp/a.log', agentId: 'a' }] }),
+      tailerFactory: () => fake.tailer,
+      fanOutLimit: 1,
+    });
+    const res = await fetchLogs(route, new Request('http://127.0.0.1/logs?agent=a'));
+    expect(res.status).toBe(200);
+    await fake.close();
+  });
+
+  it('rejects mixing ?all=1 and ?agent=', async () => {
+    const route = logsRoute({
+      resolvePaths: () => ({ paths: [] }),
+    });
+    const res = await fetchLogs(route, new Request('http://127.0.0.1/logs?all=1&agent=x'));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/mutually exclusive/);
+  });
+
+  it('coalesces per-agent log emissions on ?all=1 within the rate window', async () => {
+    // Emit two lines for the same agent very fast; with a 50ms
+    // coalesce window the second frame should only arrive after the
+    // window has elapsed (not immediately back-to-back).
+    const fake = makeFakeTailer();
+    const route = logsRoute({
+      resolvePaths: () => ({
+        paths: [
+          { path: '/tmp/a.log', agentId: 'a' },
+          { path: '/tmp/b.log', agentId: 'b' },
+        ],
+      }),
+      tailerFactory: () => fake.tailer,
+      heartbeatMs: 10_000,
+      coalescePerAgentMs: 50,
+      fanOutLimit: 10,
+    });
+    const res = await fetchLogs(route, new Request('http://127.0.0.1/logs?all=1'));
+    // First line for `a` — goes out immediately (slot.nextAllowedAt = 0).
+    fake.push({ agentId: 'a', path: '/tmp/a.log', line: '{"n":1}' });
+    // Second line for `a` arrives inside the 50ms window → coalesced.
+    fake.push({ agentId: 'a', path: '/tmp/a.log', line: '{"n":2}' });
+    const frames = await readFrames(res, 3, 500);
+    // frame[0] = `: stream-open`; frame[1] = first log; frame[2] = second (after window).
+    const logFrames = frames.filter((f) => f.includes('event: log'));
+    expect(logFrames.length).toBeGreaterThanOrEqual(2);
+    // Both lines eventually land — coalescing queues, never drops.
+    const payloads = logFrames.map((f) => JSON.parse(f.split('data: ')[1] ?? '{}'));
+    const ns = payloads.map((p: Record<string, unknown>) => p.n).sort() as number[];
+    expect(ns).toEqual([1, 2]);
+    await fake.close();
+  });
+
   it('destroys the tailer when request.signal fires abort', async () => {
     const fake = makeFakeTailer();
     const route = logsRoute({

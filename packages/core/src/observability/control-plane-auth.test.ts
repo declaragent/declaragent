@@ -756,3 +756,104 @@ describe('applyControlPlaneAuth — allowLoopback trustedProxies', () => {
     if (result.ok) expect(result.bypassed).toBe(true);
   });
 });
+
+// ── Fan-out (`?all=1`) scope gating (POST_ENTERPRISE_BACKLOG.md #19 + #20) ──
+//
+// The server surfaces a synthetic `${path}?all=1` routePath to the auth
+// middleware when the request carries `?all=1`. Operators configure
+// `routeScopes: { "/events?all=1": ["control:fan-out"] }` to require a
+// dedicated scope for the fan-out variant without touching the default
+// `/events` scope floor.
+
+describe('startControlPlaneServer — ?all=1 fan-out scope gate', () => {
+  const FAN_OUT_PATHS = ['/events', '/dlq', '/logs'] as const;
+
+  for (const routePath of FAN_OUT_PATHS) {
+    it(`rejects ${routePath}?all=1 with insufficient-scope when the principal lacks control:fan-out`, async () => {
+      const dummyRoute = {
+        path: routePath,
+        fetch: () => new Response('ok', { status: 200 }),
+      };
+      const stub = stubVerifier({
+        ok: true,
+        // Principal has the scalar read scope but NOT the fan-out scope.
+        principal: mkPrincipal({ scopes: ['control:read'] }),
+      });
+      const { handle, server } = await startFake([dummyRoute], {
+        auth: {
+          verifyToken: stub.verify,
+          routeScopes: { [`${routePath}?all=1`]: ['control:fan-out'] },
+        },
+        allowRemote: true,
+      });
+      const res = await server.fetch(
+        new Request(`http://fleet.internal:9464${routePath}?all=1`, {
+          headers: { host: 'fleet.internal:9464', authorization: 'Bearer t.t.t' },
+        }),
+      );
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { reason: string; error: string };
+      expect(body.reason).toBe('insufficient-scope');
+      expect(body.error).toContain('control:fan-out');
+      // The error message should reference the synthetic fan-out path
+      // so operators can diff it against their `routeScopes` config.
+      expect(body.error).toContain(`${routePath}?all=1`);
+      await handle.close();
+    });
+
+    it(`accepts ${routePath}?all=1 when the principal has control:fan-out`, async () => {
+      const dummyRoute = {
+        path: routePath,
+        fetch: () => new Response('fan-out-served', { status: 200 }),
+      };
+      const stub = stubVerifier({
+        ok: true,
+        principal: mkPrincipal({ scopes: ['control:read', 'control:fan-out'] }),
+      });
+      const { handle, server } = await startFake([dummyRoute], {
+        auth: {
+          verifyToken: stub.verify,
+          routeScopes: { [`${routePath}?all=1`]: ['control:fan-out'] },
+        },
+        allowRemote: true,
+      });
+      const res = await server.fetch(
+        new Request(`http://fleet.internal:9464${routePath}?all=1`, {
+          headers: { host: 'fleet.internal:9464', authorization: 'Bearer t.t.t' },
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('fan-out-served');
+      await handle.close();
+    });
+
+    it(`${routePath} (no ?all=1) is NOT gated by the fan-out-only scope`, async () => {
+      // A principal missing `control:fan-out` MUST still reach the
+      // single-agent variant. This proves the synthetic key isolation —
+      // only the `?all=1` request uses the fan-out scope override.
+      const dummyRoute = {
+        path: routePath,
+        fetch: () => new Response('single-served', { status: 200 }),
+      };
+      const stub = stubVerifier({
+        ok: true,
+        principal: mkPrincipal({ scopes: ['control:read'] }),
+      });
+      const { handle, server } = await startFake([dummyRoute], {
+        auth: {
+          verifyToken: stub.verify,
+          routeScopes: { [`${routePath}?all=1`]: ['control:fan-out'] },
+        },
+        allowRemote: true,
+      });
+      const res = await server.fetch(
+        new Request(`http://fleet.internal:9464${routePath}?agent=single`, {
+          headers: { host: 'fleet.internal:9464', authorization: 'Bearer t.t.t' },
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('single-served');
+      await handle.close();
+    });
+  }
+});
