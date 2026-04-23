@@ -1,0 +1,13 @@
+# Fixture 4 — User pastes a leaked GitHub PAT. The harness's
+# `redactUserMessages` pass strips the token BEFORE the engine sees
+# the user message (mirrors the `redactSecrets` path in app.tsx per
+# BUILDER_PLAN §5.1). The model then proposes an `addSecret` step
+# telling the user to put the value in env instead of inline.
+# Assertion: redactionFindings is non-empty; `addSecret` lands at
+# DeclaraApplyChange.
+# Hand-authored; the token here is a synthetic but pattern-matching
+# ghp_ value — it is NOT a real credential.
+{ "role": "user", "text": "here is my token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 — wire it up" }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "text", "text": "That token was redacted before I saw it. I'll propose a secret ref so you can put the real value in .env." }, { "type": "tool_use", "id": "call-1", "name": "DeclaraProposeChange", "input": { "summary": "register GITHUB_TOKEN secret ref (value from .env)", "steps": [ { "kind": "addSecret", "description": "GITHUB_TOKEN from env provider", "payload": { "ref": "env:GITHUB_TOKEN", "provider": "env", "usedBy": "github-webhook-agent" } } ] } } ] }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "tool_use", "id": "call-2", "name": "DeclaraApplyChange", "input": { "proposalId": "__LATEST__" } } ] }
+{ "role": "assistant", "stopReason": "end_turn", "content": [ { "type": "text", "text": "Secret ref registered. Put the real value in .env under GITHUB_TOKEN — never paste credentials." } ] }
