@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -183,14 +183,21 @@ describe('openAgentLog', () => {
 
   test('write after close is a silent no-op', async () => {
     const logger = openAgentLog('x', dir);
+    // `createWriteStream` opens the file asynchronously. Before we
+    // close + rmSync the dir, spin-wait until the fd is actually open
+    // (file exists on disk). A blind sleep was flaky on loaded CI
+    // runners — see f648e96 (first attempt: 20ms) which still flaked
+    // on PR #28's CI. Spinning to 1s covers even the slowest runner
+    // while remaining fast on healthy boxes.
+    const file = upLogPath('x', dir);
+    const deadline = Date.now() + 1000;
+    while (!existsSync(file) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
     logger.close();
     // Should not throw.
     logger.write({ kind: 'late' });
-    // `createWriteStream` opens the file asynchronously. Without this
-    // tick, the `afterEach` rmSync can race the open and emit ENOENT
-    // as an unhandled error on the stream — see CI failure on
-    // f648e96 for the manifestation. Same 20ms pattern the "writes
-    // newline-delimited JSON" test above uses.
-    await new Promise((r) => setTimeout(r, 20));
+    // Tiny tail tick so `end()` propagates before afterEach.
+    await new Promise((r) => setTimeout(r, 10));
   });
 });
