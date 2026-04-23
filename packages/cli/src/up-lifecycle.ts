@@ -164,6 +164,10 @@ export interface AgentLogger {
 export function openAgentLog(agentId: string, dir = configDir()): AgentLogger {
   const path = upLogPath(agentId, dir);
   const stream: WriteStream = createWriteStream(path, { flags: 'a' });
+  // Swallow async stream errors — fd-open races during shutdown (tmpdir
+  // already rm'd, broken pipe, etc.) shouldn't tank `up` or the test
+  // runner. Writes are guarded synchronously below.
+  stream.on('error', () => {});
   let closed = false;
   return {
     write(record) {
