@@ -129,8 +129,37 @@ export interface CreateNatsTransportOptions {
    * messages (load-balanced). When omitted, each subscription is
    * independent (every replica receives every message). This is the
    * NATS-native equivalent of Kafka's `groupId`.
+   *
+   * Kept for backward compatibility with 0.7.0 callers. New code should
+   * prefer {@link queueGroups}, which supports per-topic groups. When
+   * both are set, {@link queueGroups} takes precedence (with this
+   * serving as the fallback for unlisted topics).
+   *
+   * @deprecated since 0.7.1 — prefer {@link queueGroups}.
    */
   queueGroup?: string;
+  /**
+   * Per-topic queue-group mapping. Two shapes accepted:
+   *
+   *   - `string` — same semantics as the legacy {@link queueGroup}:
+   *     every subscription joins this group regardless of topic.
+   *   - `Record<topic, group>` — each topic gets its own queue group.
+   *     Topics absent from the map fall through to {@link queueGroup}
+   *     (if set) or no group at all (every replica receives every
+   *     message).
+   *
+   * Motivation: real fleets mix load-balanced + fan-out topologies on
+   * one NATS cluster. For example, `agents.beta.requests` needs a
+   * shared queue so replicas load-balance, while `agents.broadcast.
+   * health` needs no queue so every replica sees the heartbeat. A
+   * single construction-time queue group can't express both.
+   *
+   * When a subscription is taken against a topic listed in the map,
+   * the mapped group name is applied to the NATS `subscribe` call.
+   *
+   * @since 0.7.1 — Transport breadth backlog item #25.
+   */
+  queueGroups?: string | Record<string, string>;
   /** Simple password auth. Paired with `password`. */
   user?: string;
   password?: string;
@@ -203,8 +232,9 @@ export async function createNatsTransport(opts: CreateNatsTransportOptions): Pro
         return () => {};
       }
       const subject = prefixSubject(opts.subjectPrefix, topic);
+      const queue = resolveQueueForTopic(topic, opts.queueGroups, opts.queueGroup);
       const sub = connection.subscribe(subject, {
-        ...(opts.queueGroup !== undefined && { queue: opts.queueGroup }),
+        ...(queue !== undefined && { queue }),
         callback: (err, msg) => {
           if (err) {
             opts.logger?.warn('nats-transport.callback-error', {
@@ -285,6 +315,42 @@ export async function createNatsTransport(opts: CreateNatsTransportOptions): Pro
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Resolves which queue group (if any) a subscription on `topic` should
+ * join. Precedence:
+ *   1. `queueGroups` string — blanket group for every topic (new-style
+ *      equivalent of the legacy `queueGroup`).
+ *   2. `queueGroups[topic]` — per-topic override. If the topic is
+ *      listed here, the mapped value wins over the legacy fallback.
+ *   3. `queueGroups` record without the topic → legacy `queueGroup`
+ *      fallback. Callers who want "no queue at all" for an unlisted
+ *      topic simply omit `queueGroup`.
+ *   4. Legacy `queueGroup` string — same semantics as pre-0.7.1.
+ *   5. No queue — `undefined`, so every subscriber gets every message.
+ *
+ * Note: a record entry with an empty-string value means "no queue" for
+ * that topic — it explicitly opts out of the legacy fallback. This
+ * matters when the fleet wants 99% of topics load-balanced but 1%
+ * broadcast-only on the same transport instance.
+ */
+export function resolveQueueForTopic(
+  topic: string,
+  queueGroups: string | Record<string, string> | undefined,
+  legacyQueueGroup: string | undefined,
+): string | undefined {
+  if (typeof queueGroups === 'string') {
+    // Blanket group; legacy option is superseded.
+    return queueGroups.length > 0 ? queueGroups : undefined;
+  }
+  if (queueGroups !== undefined && Object.hasOwn(queueGroups, topic)) {
+    const mapped = queueGroups[topic];
+    return mapped !== undefined && mapped.length > 0 ? mapped : undefined;
+  }
+  return legacyQueueGroup !== undefined && legacyQueueGroup.length > 0
+    ? legacyQueueGroup
+    : undefined;
+}
 
 function prefixSubject(prefix: string | undefined, topic: string): string {
   if (prefix === undefined || prefix === '') return topic;

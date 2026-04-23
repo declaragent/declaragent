@@ -307,6 +307,77 @@ describe('createNatsTransport', () => {
     await t.close();
   });
 
+  test('queueGroups as a string applies the same group to every topic (new-style equivalent of queueGroup)', async () => {
+    const fake = makeFakeNats();
+    const t = await createNatsTransport({
+      servers: ['nats://localhost:4222'],
+      natsModule: fake.module,
+      queueGroups: 'beta-workers',
+    });
+    t.subscribe('agents.beta.requests', async () => {});
+    t.subscribe('agents.beta.responses', async () => {});
+    expect(fake.connection.subs[0]?.queue).toBe('beta-workers');
+    expect(fake.connection.subs[1]?.queue).toBe('beta-workers');
+    await t.close();
+  });
+
+  test('queueGroups as a record applies per-topic queue groups', async () => {
+    const fake = makeFakeNats();
+    const t = await createNatsTransport({
+      servers: ['nats://localhost:4222'],
+      natsModule: fake.module,
+      queueGroups: {
+        'agents.beta.requests': 'beta-workers',
+        'agents.alpha.requests': 'alpha-workers',
+        // Explicit empty string → opt this topic out of any queue group.
+        'agents.broadcast.health': '',
+      },
+    });
+    t.subscribe('agents.beta.requests', async () => {});
+    t.subscribe('agents.alpha.requests', async () => {});
+    t.subscribe('agents.broadcast.health', async () => {});
+    // Topic with no entry in the map + no legacy fallback.
+    t.subscribe('agents.unmapped.topic', async () => {});
+
+    expect(fake.connection.subs[0]?.queue).toBe('beta-workers');
+    expect(fake.connection.subs[1]?.queue).toBe('alpha-workers');
+    expect(fake.connection.subs[2]?.queue).toBeUndefined();
+    expect(fake.connection.subs[3]?.queue).toBeUndefined();
+    await t.close();
+  });
+
+  test('queueGroups record falls back to legacy queueGroup for unmapped topics', async () => {
+    const fake = makeFakeNats();
+    const t = await createNatsTransport({
+      servers: ['nats://localhost:4222'],
+      natsModule: fake.module,
+      queueGroup: 'default-workers',
+      queueGroups: {
+        'agents.beta.requests': 'beta-workers',
+      },
+    });
+    t.subscribe('agents.beta.requests', async () => {});
+    t.subscribe('agents.alpha.requests', async () => {});
+
+    expect(fake.connection.subs[0]?.queue).toBe('beta-workers');
+    // Unmapped topic falls back to the legacy `queueGroup`.
+    expect(fake.connection.subs[1]?.queue).toBe('default-workers');
+    await t.close();
+  });
+
+  test('queueGroups string supersedes legacy queueGroup entirely', async () => {
+    const fake = makeFakeNats();
+    const t = await createNatsTransport({
+      servers: ['nats://localhost:4222'],
+      natsModule: fake.module,
+      queueGroup: 'legacy-workers',
+      queueGroups: 'new-workers',
+    });
+    t.subscribe('agents.beta.requests', async () => {});
+    expect(fake.connection.subs[0]?.queue).toBe('new-workers');
+    await t.close();
+  });
+
   test('callback-level errors from nats are logged and do not crash the handler', async () => {
     const fake = makeFakeNats();
     const warnings: unknown[] = [];
