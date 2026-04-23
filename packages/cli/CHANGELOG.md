@@ -1,5 +1,59 @@
 # @declaragent/cli
 
+## 0.7.5
+
+### Patch Changes
+
+- 7858f66: feat(control-plane): fleet.yaml controlPlane block + fleet logs -f live multi-host SSE
+
+  Sprint 5 post-enterprise backlog: two deliverables on the cross-host
+  control-plane surface shipped in 0.7.4 (#50).
+
+  **#17 — `fleet.yaml`-level `controlPlane:` block.** Single source of
+  truth for how every agent on a fleet's hosts exposes its control-plane
+  HTTP listener. When set, the fleet-level block wins over per-agent
+  `agent.yaml#controlPlane` blocks (deprecation warning on overrides).
+  When absent, legacy per-agent fallback is preserved bit-for-bit —
+  `up-cli` picks the first agent's block with auth enabled and warns
+  about any others. Orthogonal to the `hosts[]` block (#50): `hosts[]`
+  is the CLIENT-side address book the CLI fans out TO;
+  `controlPlane:` is the SERVER-side config each host exposes.
+
+  - `fleet.yaml#controlPlane` accepts the same auth discriminated
+    union as `agent.yaml#controlPlane.auth`
+    (`{enabled:false} | oidc | oauth2-client`), plus the
+    `bindAddress` + `idleTimeout` advisory hints.
+  - New `parseControlPlaneAuth` + `controlPlaneAuthSchema` exports on
+    `@declaragent/core` so the fleet loader doesn't duplicate the
+    discriminated-union narrowing.
+  - New pure `resolveControlPlaneAuth` helper in
+    `packages/cli/src/fleet-control-plane-resolver.ts` — unit-testable
+    precedence logic decoupled from the `up-cli` happy path.
+
+  **Slice 6a — `fleet logs -f` live multi-host SSE.** Follow-mode
+  counterpart to the snapshot-only `fleet logs` shipped in 0.7.4.
+  `tailLogsMultiHost` opens one long-lived SSE connection per
+  configured host, renders each frame as `[host/agent] <text>`, and
+  survives mid-stream disconnects with per-host exponential backoff
+  (500ms → 30s cap). `SIGINT`/`SIGTERM` tears every socket down
+  cleanly via the returned handle's `stop()`. Streams are ordered by
+  arrival — no timestamp merge layer.
+
+- 07957e2: feat(gitops): config-split ConfigMaps + Kustomize render target (#32, #33)
+
+  - `fleet render --target k8s` gains a new `--config-split` flag (#32). When enabled, each agent's `agent.yaml` is fanned out into dedicated ConfigMaps per concern — `<agent>-channels-config`, `<agent>-sources-config` (matches `event-sources` or `sources`), `<agent>-plugins-config` — and the Deployment mounts each via `envFrom: [{configMapRef:...}]`. Operators can now rotate channel / source / plugin config via `kubectl edit configmap` without rebuilding the container image. Sections absent from the agent's `agent.yaml` are skipped (no empty ConfigMaps). The existing monolithic `<agent>-config` ConfigMap (full `agent.yaml` as one key) is preserved so the runtime's file-mount boot path still works. The fleet-wide Secret `envFrom` entry stays LAST in the composition so `${secret:...}` values deterministically override any stray config key.
+  - Flag-gated, default-off at 0.7.5 so pre-0.7.5 GitOps repos render byte-identical. Helm rendering mirrors the split behind a new `.Values.configSplit.enabled` toggle — per-agent templates emit a `{{- if .Values.configSplit.enabled }}`-guarded ConfigMap doc alongside the main `agent.yaml` ConfigMap, and the Deployment's `envFrom` block picks the right combination of configMap + secret refs at chart-install time without re-rendering.
+  - `fleet render --target k8s --format kustomize` (#33) adds Kustomize as a first-class packaging wrapper alongside Helm (the existing k8s default). Output layout: `base/` (Namespace + per-agent ConfigMap/Deployment/Service/ServiceMonitor resources + `base/kustomization.yaml` listing them as resources), `overlays/{dev,staging,prod}/kustomization.yaml` (each references `../../base`, applies a per-env `commonLabels` + namespace + strategic-merge patches sizing Deployment replicas + container resource limits), and a root `kustomization.yaml` pointing at `./base` so a plain `kubectl apply -k <dir>` deploys the un-overlayed baseline. Overlay defaults — dev: replicas=1 + memory 512Mi + namespace `<fleet>-dev`; staging: replicas=2 + 1Gi + namespace `<fleet>-staging`; prod: replicas=3 + 2Gi + namespace `<fleet>` (prod keeps the base namespace). Operators tune by editing the overlay in their GitOps repo.
+  - The Kustomize renderer reuses the existing pure `renderK8sFromSources` output so base manifests are byte-identical to the direct k8s render — one rendering pipeline, two packaging wrappers. `--config-split` applies to the Kustomize base too.
+  - CLI surface: new `--format <helm|kustomize>` flag on `fleet render`; new `--config-split` flag; default output directory for Kustomize is `./kustomize`; `--format=kustomize` on `--target helm` is rejected with a helpful error; `--json` summary includes the resolved format. Help text + auto-extracted `docs-site/docs/reference/cli.mdx` updated.
+  - Snapshot goldens for k8s/helm/kustomize × default/split under `packages/cli/src/fleet-render/__snapshots__/fleet-starter-{k8s,helm,kustomize}[-config-split]/`; `packages/cli/scripts/regen-k8s-snapshot.ts` regenerates all six trees. 29 new tests across `kustomize-renderer.test.ts`, `k8s-renderer.test.ts`, `helm-renderer.test.ts`, `fleet-render-cli.test.ts`.
+
+  Backlog: POST_ENTERPRISE_BACKLOG.md #32, #33.
+
+- Updated dependencies [0bfc5a7]
+- Updated dependencies [7858f66]
+  - @declaragent/core@0.5.4
+
 ## 0.7.4
 
 ### Patch Changes

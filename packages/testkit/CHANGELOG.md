@@ -1,5 +1,13 @@
 # @declaragent/testkit
 
+## 4.0.4
+
+### Patch Changes
+
+- Updated dependencies [0bfc5a7]
+- Updated dependencies [7858f66]
+  - @declaragent/core@0.5.4
+
 ## 4.0.3
 
 ### Patch Changes

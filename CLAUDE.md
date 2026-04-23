@@ -30,17 +30,16 @@ The enterprise pitch — "an agent to build and manage fleets of agents" — dec
 | 1 · Define agents (capabilities, skills, inbound/outbound channels, peers) | ✅ | ✅ (v0.7.4) — typed capabilities shipped; per-agent auth registry (#18); SSO-bridged channel permissions remain a polish item, not a blocker |
 | 2 · Deploy + monitor fleet (up/down/ps/logs + Prometheus + OTel + canary) | ✅ | ✅ (v0.7.4) — managed control plane Slices 1–3 shipped incl. cross-host fan-out (#50); GitOps render + SIEM export + back-pressure + adaptive batch all live; traffic-splitting canary remains roadmap |
 | 3 · Independent agents with optional delegation (memory + Kafka / NATS / JetStream / SQS / AMQP / MQTT RPC) | ✅ | ✅ (v0.7.4) — every named broker transport shipped; per-agent `AuthVerifyRegistry` (#18); Kafka 7-week soak proof accumulating Sundays |
-| 4 · Tools + MCP (8 built-ins + MCP stdio/HTTP/SSE/OAuth PKCE + plugins) | ✅ | 🟡 — per-tool rate limit + auto-recovery shipped; **per-MCP-server aggregate rate-limit (#27)** is the remaining 0.7.5 item; approval workflows remain roadmap |
+| 4 · Tools + MCP (8 built-ins + MCP stdio/HTTP/SSE/OAuth PKCE + plugins) | ✅ | ✅ (v0.7.5) — per-tool + per-MCP-server aggregate rate limits shipped (#27), graceful drain across respawn (#13), auto-recovery + supervised mode live; approval workflows remain roadmap |
 | 5 · **Conversational builder → deployable fleet** (`DECLARAGENT_BUILDER=on`) | ✅ | ✅ (v0.7.1) — recorded-conversation regression fixtures shipped via PR #24; fixture polish items (#36 / #37 / #38) remain open but are non-blocking |
 
 **Single-machine production: ✅** ready — `@declaragent/cli@0.7.4` on npm. A single host runs `declaragent up -d`, webhook/cron in, Claude + MCP tools + Slack/Telegram/Discord/WhatsApp in/out, `/metrics` + OTel + circuit breakers + per-tool + provider rate limits + dispatch DLQ all on by default. Conversational builder (`DECLARAGENT_BUILDER=on`) produces deployable single-agent and multi-agent fleets end-to-end.
 
-**Enterprise production: ✅ (4 of 5 pillars), Pillar 4 one item away.** All 12 items on `docs/ENTERPRISE_PRODUCTION_PLAN.md` shipped during the 0.7.0 → 0.7.1 push; the follow-up backlog closed **31 of 52 items** across 0.7.1 → 0.7.4. See **[docs/POST_ENTERPRISE_BACKLOG.md](./docs/POST_ENTERPRISE_BACKLOG.md)** for the 21 remaining follow-ups. Top open work:
-1. **#27 per-MCP-server aggregate rate-limit cap** — the only item still holding Pillar 4's enterprise column at 🟡 (shipping Sprint 5).
-2. **#13 MCP graceful draining** across respawn — robustness polish.
-3. **#17 `fleet.yaml#controlPlane:` block** — consolidate per-agent listener picks.
-4. **#5b `rpc.auth.enabled: true` default flip** — behavioural change deferred to **0.8.0**; see [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md) for the migration plan.
-5. **#51 Grafana dashboard bundle** — `mcp_server_restarts_total` + circuit state + audit queue depth + rate-limit waits in one importable JSON.
+**Enterprise production: ✅ (5 of 5 pillars).** All 12 items on `docs/ENTERPRISE_PRODUCTION_PLAN.md` shipped during the 0.7.0 → 0.7.1 push; the follow-up backlog has closed **34 of 52 items** across 0.7.1 → 0.7.5. See **[docs/POST_ENTERPRISE_BACKLOG.md](./docs/POST_ENTERPRISE_BACKLOG.md)** for the 18 remaining follow-ups. Top open work:
+1. **#5b `rpc.auth.enabled: true` default flip** — behavioural change deferred to **0.8.0**; see [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md) for the migration plan.
+2. **#51 Grafana dashboard bundle** — `mcp_server_restarts_total` + circuit state + audit queue depth + rate-limit waits in one importable JSON.
+3. **Builder polish (#36–#38)** — `tool_result` blocks in BUILDER_RECORD, FixtureEntry usage fields, longer-lived RecordingProviderHandle. Non-blocking for production use.
+4. **#50 Slice 6b** — `fleet dlq drop/requeue` cross-host mutations (snapshot + `logs -f` shipped; mutations pending).
 
 See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" for the evidence ledger.
 
@@ -78,13 +77,12 @@ See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" f
 
 **See [AGENTS.md](./AGENTS.md)** for the full evidence-backed matrix with file:line references. If you're about to promise a user a capability, verify against AGENTS.md first.
 
-**Next priorities after 0.7.4 ships** (ordered by leverage, per `docs/POST_ENTERPRISE_BACKLOG.md`):
-1. **#27 per-MCP-server aggregate rate-limit cap** — last item holding Pillar 4's enterprise column at 🟡 (Sprint 5).
-2. **#13 MCP graceful draining** of in-flight tool calls across respawn.
-3. **#17 fleet-level `controlPlane:` block** to replace per-agent listener pick.
-4. **#5b zero-trust default flip** at 0.8.0 — migration plan [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md).
-5. **#51 Grafana dashboard** aggregating the four key counters in one importable JSON.
-6. Builder fixture polish (#36 `tool_result` blocks, #37 cache-token cost regression, #38 longer-lived `RecordingProviderHandle`).
+**Next priorities after 0.7.5 ships** (ordered by leverage, per `docs/POST_ENTERPRISE_BACKLOG.md`):
+1. **#5b zero-trust default flip** at 0.8.0 — migration plan [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md); pre-flight inspector `declaragent fleet audit-rpc --suggest-enable --strict` already shipped at 0.7.3.
+2. **#51 Grafana dashboard** aggregating the key counters (`mcp_server_restarts_total`, `mcp_server_circuit_state`, `audit_export_queue_depth`, `rate_limit_waits_total`, `audit_backpressure_paused_total`, `audit_batch_interval_ms`) in one importable JSON.
+3. **#50 Slice 6b** — `fleet dlq drop/requeue` cross-host mutations (snapshot + `logs -f` shipped 0.7.4 + 0.7.5).
+4. **Builder fixture polish** (#36 `tool_result` blocks, #37 cache-token cost regression, #38 longer-lived `RecordingProviderHandle`) — non-blocking for production use.
+5. **Soak evidence accrual** — Pillar 3's Kafka 24h soak needs 7+ consecutive Sunday greens; tracked externally to repo.
 
 ## Stack
 

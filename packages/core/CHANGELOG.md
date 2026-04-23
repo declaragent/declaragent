@@ -1,5 +1,73 @@
 # @declaragent/core
 
+## 0.5.4
+
+### Patch Changes
+
+- 0bfc5a7: feat(mcp): graceful draining of in-flight tool calls across respawn + per-server aggregate rate-limit cap
+
+  **#13 — Graceful drain during respawn.** When the MCP supervisor triggers a
+  respawn (crash, ping-failure, config reload, probe), it now waits up to
+  `drainTimeoutMs` (default 5 s) for in-flight tool calls to complete before
+  tearing the client down. New supervisor state `draining` blocks new calls
+  during the window. Calls that finish inside the window return their response
+  normally. Calls that miss the window either (a) reject with a typed
+  `ToolCallDrainedError` (default — carries `toolName` + `argSnapshot` so the
+  caller can decide), or (b) are transparently re-issued against the fresh
+  client when `resubmitOnRespawn: true` is set (opt-in for idempotent tools).
+  Second respawn trigger arriving mid-drain cancels the drain cleanly and
+  supersedes — no queue, no hang. New histogram
+  `mcp_server_drain_duration_ms{server_id, outcome}` tracks completed vs.
+  timed-out drains.
+
+  **#27 — Per-MCP-server aggregate rate-limit cap.** Adds `rateLimit: { rps, burst }`
+  to `createMCPSupervisor`. A token bucket on the whole server sits ABOVE any
+  per-tool gate (`ToolRateLimitGate`) — a distributed spike across every tool
+  still gets shed with `MCPServerRateLimitedError` (code `MCP_RATE_LIMITED`)
+  before the per-tool gate is even consulted. Fails fast (no sleep), so the LLM
+  tool-use loop sees a typed error and can back off. New counter
+  `mcp_server_rate_limited_total{server_id, reason="aggregate"}`. Also exposes
+  the new `ProviderTokenBucket.tryTake()` non-blocking primitive used by the
+  aggregate gate.
+
+  New exports: `ToolCallDrainedError`, `MCPServerRateLimitedError`,
+  `MCPServerRateLimitConfig`, plus the extended `MCPSupervisorState`.
+
+- 7858f66: feat(control-plane): fleet.yaml controlPlane block + fleet logs -f live multi-host SSE
+
+  Sprint 5 post-enterprise backlog: two deliverables on the cross-host
+  control-plane surface shipped in 0.7.4 (#50).
+
+  **#17 — `fleet.yaml`-level `controlPlane:` block.** Single source of
+  truth for how every agent on a fleet's hosts exposes its control-plane
+  HTTP listener. When set, the fleet-level block wins over per-agent
+  `agent.yaml#controlPlane` blocks (deprecation warning on overrides).
+  When absent, legacy per-agent fallback is preserved bit-for-bit —
+  `up-cli` picks the first agent's block with auth enabled and warns
+  about any others. Orthogonal to the `hosts[]` block (#50): `hosts[]`
+  is the CLIENT-side address book the CLI fans out TO;
+  `controlPlane:` is the SERVER-side config each host exposes.
+
+  - `fleet.yaml#controlPlane` accepts the same auth discriminated
+    union as `agent.yaml#controlPlane.auth`
+    (`{enabled:false} | oidc | oauth2-client`), plus the
+    `bindAddress` + `idleTimeout` advisory hints.
+  - New `parseControlPlaneAuth` + `controlPlaneAuthSchema` exports on
+    `@declaragent/core` so the fleet loader doesn't duplicate the
+    discriminated-union narrowing.
+  - New pure `resolveControlPlaneAuth` helper in
+    `packages/cli/src/fleet-control-plane-resolver.ts` — unit-testable
+    precedence logic decoupled from the `up-cli` happy path.
+
+  **Slice 6a — `fleet logs -f` live multi-host SSE.** Follow-mode
+  counterpart to the snapshot-only `fleet logs` shipped in 0.7.4.
+  `tailLogsMultiHost` opens one long-lived SSE connection per
+  configured host, renders each frame as `[host/agent] <text>`, and
+  survives mid-stream disconnects with per-host exponential backoff
+  (500ms → 30s cap). `SIGINT`/`SIGTERM` tears every socket down
+  cleanly via the returned handle's `stop()`. Streams are ordered by
+  arrival — no timestamp merge layer.
+
 ## 0.5.3
 
 ### Patch Changes
