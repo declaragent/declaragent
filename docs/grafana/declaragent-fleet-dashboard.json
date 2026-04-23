@@ -1,0 +1,442 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus instance scraping declaragent /metrics (the CLI's 127.0.0.1:9464 listener, or the OTel-collector Prometheus exporter).",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__layout_sketch__": [
+    "┌─────────────────────────────────────────────────────────────────────────────┐",
+    "│ Row 1 · MCP health                                                          │",
+    "│ ┌─────────┬─────────┬─────────┬──────────────────┬──────────────────────┐   │",
+    "│ │ restart │ circuit │ open 5m │ drain p99 (ms)   │ rate-limited (rate)  │   │",
+    "│ └─────────┴─────────┴─────────┴──────────────────┴──────────────────────┘   │",
+    "├─────────────────────────────────────────────────────────────────────────────┤",
+    "│ Row 2 · Audit + SIEM                                                        │",
+    "│ ┌─────────┬─────────┬──────────────┬──────────────┬───────────────────┐     │",
+    "│ │ backlog │ paused  │ batch int ms │ batch rows   │ export failures   │     │",
+    "│ │   ms    │ active  │  (adaptive)  │  p50 / p95   │  + last_seq       │     │",
+    "│ └─────────┴─────────┴──────────────┴──────────────┴───────────────────┘     │",
+    "├─────────────────────────────────────────────────────────────────────────────┤",
+    "│ Row 3 · Rate limits + dispatch                                              │",
+    "│ ┌───────────────────┬───────────────────┬──────────────┬────────────────┐   │",
+    "│ │ provider waits/s  │ tool waits/s      │ source DLQ/s │ source inflight│   │",
+    "│ └───────────────────┴───────────────────┴──────────────┴────────────────┘   │",
+    "└─────────────────────────────────────────────────────────────────────────────┘",
+    "",
+    "All panels filter on `$server_id` / `$agent` / `$source` template variables.",
+    "Time range default 15m, refresh 30s — tuned for incident triage, not capacity planning."
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Declaragent fleet dashboard — MCP health, audit / SIEM export back-pressure, rate limits, and dispatch DLQ flow. Scrapes the Prometheus endpoint exposed by `declaragent up -d` on 127.0.0.1:9464 (see docs/grafana/README.md). Ships with 0.7.6.",
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 1,
+  "id": null,
+  "iteration": 1,
+  "links": [
+    {
+      "title": "Declaragent — CLI reference",
+      "url": "https://docs.declaragent.dev/reference/cli",
+      "type": "link",
+      "icon": "external link",
+      "targetBlank": true
+    },
+    {
+      "title": "Declaragent — observability reference",
+      "url": "https://docs.declaragent.dev/reference/observability",
+      "type": "link",
+      "icon": "external link",
+      "targetBlank": true
+    }
+  ],
+  "tags": ["declaragent", "fleet", "mcp", "audit", "rate-limit"],
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "server_id",
+        "label": "MCP server",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(mcp_server_restarts_total, server_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "agent",
+        "label": "Agent",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(declaragent_tool_rate_limit_waits_total, agent)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "source",
+        "label": "Event source",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(source_messages_received, id)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "MCP health",
+      "id": 1,
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "MCP restarts (total)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 110,
+      "gridPos": { "h": 6, "w": 5, "x": 0, "y": 1 },
+      "description": "Sum of `mcp_server_restarts_total` across selected servers. Non-zero in steady state is a red flag — the supervisor is respawning. Drill into the per-server timeseries below when this climbs.",
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "expr": "sum(mcp_server_restarts_total{server_id=~\"$server_id\"})",
+          "legendFormat": "restarts",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Circuit state (max over servers)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 111,
+      "gridPos": { "h": 6, "w": 5, "x": 5, "y": 1 },
+      "description": "`mcp_server_circuit_state`: 0=closed (healthy), 1=half-open (probing), 2=open (shorting). Any value ≥ 1 means at least one supervised MCP server is degraded. Alert on `max(mcp_server_circuit_state) >= 2 for 1m`.",
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "closed", "color": "green" } } },
+            { "type": "value", "options": { "1": { "text": "half-open", "color": "yellow" } } },
+            { "type": "value", "options": { "2": { "text": "open", "color": "red" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(mcp_server_circuit_state{server_id=~\"$server_id\"})",
+          "legendFormat": "max",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Circuit-open transitions (5m increase)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 112,
+      "gridPos": { "h": 6, "w": 7, "x": 10, "y": 1 },
+      "description": "`increase(mcp_server_circuit_open_total[5m])`. Alert rule: `> 0` pages the MCP on-call — a circuit that just opened means users are now seeing tool-call failures. Suggested Alertmanager: `expr: increase(mcp_server_circuit_open_total[5m]) > 0`, `for: 0m`, severity page.",
+      "targets": [
+        {
+          "expr": "increase(mcp_server_circuit_open_total{server_id=~\"$server_id\"}[5m])",
+          "legendFormat": "{{server_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Drain duration p99 (ms)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 113,
+      "gridPos": { "h": 6, "w": 7, "x": 17, "y": 1 },
+      "description": "`histogram_quantile(0.99, rate(mcp_server_drain_duration_ms_bucket[5m]))`. `outcome=\"timeout\"` samples at the drain cap (default 2000ms) mean the supervisor gave up waiting for in-flight tool calls. Alert when p99 approaches the cap, e.g. `> 1500` for 5m.",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (server_id, le) (rate(mcp_server_drain_duration_ms_bucket{server_id=~\"$server_id\"}[5m])))",
+          "legendFormat": "{{server_id}} p99",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "MCP rate-limit rejections (rps)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 114,
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 7 },
+      "description": "`rate(mcp_server_rate_limited_total[1m])` — tool calls rejected by the aggregate per-server cap (Sprint 5 #27). Healthy fleet sits at 0. Persistent > 0 means either (a) the cap is too low or (b) a skill is hot-looping tool calls. Alert: `> 0.1` for 10m.",
+      "targets": [
+        {
+          "expr": "sum by (server_id, reason) (rate(mcp_server_rate_limited_total{server_id=~\"$server_id\"}[1m]))",
+          "legendFormat": "{{server_id}} / {{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Audit + SIEM",
+      "id": 2,
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 }
+    },
+    {
+      "type": "stat",
+      "title": "Audit backlog (ms)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 120,
+      "gridPos": { "h": 6, "w": 5, "x": 0, "y": 14 },
+      "description": "`declaragent_audit_backpressure_backlog_ms` — age in ms of the oldest audit row not yet shipped to the SIEM exporter. The closest proxy to `audit_export_queue_depth` the runtime exposes. Alert when it grows past your SIEM's SLA (e.g. `> 60000` = 1 minute behind).",
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10000 },
+              { "color": "red", "value": 60000 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(declaragent_audit_backpressure_backlog_ms)",
+          "legendFormat": "backlog",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Back-pressure active",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 121,
+      "gridPos": { "h": 6, "w": 5, "x": 5, "y": 14 },
+      "description": "`declaragent_audit_backpressure_active` (gauge, 0|1). When 1, the audit-intake gate is engaged — new audit writes pause or drop per policy (Sprint 4 #11). Companion counter `declaragent_audit_backpressure_paused_total` counts activations.",
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "running", "color": "green" } } },
+            { "type": "value", "options": { "1": { "text": "paused", "color": "red" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(declaragent_audit_backpressure_active)",
+          "legendFormat": "active",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Batch interval (ms, adaptive)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 122,
+      "gridPos": { "h": 6, "w": 7, "x": 10, "y": 14 },
+      "description": "`declaragent_audit_batch_interval_ms` — current exporter tick cadence (Sprint 4 #12). The adaptive loop shortens when batches are full and lengthens when they're empty. A flat line pinned at `maxIntervalMs` means the exporter is idle; pinned at `minIntervalMs` means it's chasing a growing backlog.",
+      "targets": [
+        {
+          "expr": "avg by (exporter, vendor) (declaragent_audit_batch_interval_ms)",
+          "legendFormat": "{{exporter}}/{{vendor}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Batch rows (p50 / p95)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 123,
+      "gridPos": { "h": 6, "w": 7, "x": 17, "y": 14 },
+      "description": "`declaragent_audit_batch_rows_bucket` — rows per export tick. When p95 hugs `targetBatchRows` the adaptive loop is parked at steady state; when p95 >> target the exporter is behind.",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (exporter, vendor, le) (rate(declaragent_audit_batch_rows_bucket[5m])))",
+          "legendFormat": "{{exporter}}/{{vendor}} p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (exporter, vendor, le) (rate(declaragent_audit_batch_rows_bucket[5m])))",
+          "legendFormat": "{{exporter}}/{{vendor}} p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Export acked vs failures (rps)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 124,
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 20 },
+      "description": "`rate(declaragent_audit_export_acked_total[1m])` vs `rate(declaragent_audit_export_failures_total[1m])`. Alert: failures > 0 sustained for 5m, or acked rate drops while `source_messages_processed` is rising.",
+      "targets": [
+        {
+          "expr": "sum by (exporter, vendor) (rate(declaragent_audit_export_acked_total[1m]))",
+          "legendFormat": "{{exporter}}/{{vendor}} acked",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (exporter, vendor, retryable) (rate(declaragent_audit_export_failures_total[1m]))",
+          "legendFormat": "{{exporter}}/{{vendor}} failed ({{retryable}})",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Exporter last_seq (catch-up tracer)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 125,
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 20 },
+      "description": "`declaragent_audit_export_last_seq` — highest audit seq the SIEM exporter has ack'd. The slope should track the audit-write rate; a flat line means the exporter is stuck. Use this alongside the backlog_ms panel for a 2D picture of export health.",
+      "targets": [
+        {
+          "expr": "max by (exporter, vendor) (declaragent_audit_export_last_seq)",
+          "legendFormat": "{{exporter}}/{{vendor}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Rate limits + dispatch",
+      "id": 3,
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Provider rate-limit waits (rps)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 130,
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 27 },
+      "description": "`rate(declaragent_provider_rate_limit_waits[1m])` — how often the LLM-provider token bucket forced a call to wait (Anthropic 50rps / OpenRouter 20rps / default 10rps). Persistent non-zero = you're at quota. Pair with `declaragent_provider_rate_limit_wait_ms` p99 for impact.",
+      "targets": [
+        {
+          "expr": "sum by (provider) (rate(declaragent_provider_rate_limit_waits[1m]))",
+          "legendFormat": "{{provider}} waits/s",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (provider, le) (rate(declaragent_provider_rate_limit_wait_ms_bucket[5m])))",
+          "legendFormat": "{{provider}} wait p99",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool rate-limit waits (rps)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 131,
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 27 },
+      "description": "`rate(declaragent_tool_rate_limit_waits_total[1m])` per `agent` + `tool`. A persistent spike for one tool typically means the skill's loop needs throttling or the per-tool budget is too tight.",
+      "targets": [
+        {
+          "expr": "sum by (agent, tool) (rate(declaragent_tool_rate_limit_waits_total{agent=~\"$agent\"}[1m]))",
+          "legendFormat": "{{agent}}/{{tool}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Source DLQ rate (msg/s)",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 132,
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 27 },
+      "description": "`rate(source_messages_dlq[1m])` — messages that exhausted their retry budget and hit the dispatch DLQ (SQLite `rejected_events`). Non-zero is always a regression. Cross-reference with `declaragent events list --state circuit-open` and `declaragent dlq list --kind dispatch`.",
+      "targets": [
+        {
+          "expr": "sum by (id) (rate(source_messages_dlq{id=~\"$source\"}[1m]))",
+          "legendFormat": "{{id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Source throughput + inflight",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 133,
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 33 },
+      "description": "`rate(source_messages_received[1m])` vs `rate(source_messages_processed[1m])`. Healthy source: processed ≈ received. A persistent gap means handler work is blocking or the normalizer is dropping messages.",
+      "targets": [
+        {
+          "expr": "sum by (id) (rate(source_messages_received{id=~\"$source\"}[1m]))",
+          "legendFormat": "{{id}} received",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (id) (rate(source_messages_processed{id=~\"$source\"}[1m]))",
+          "legendFormat": "{{id}} processed",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Source inflight handlers",
+      "datasource": "${DS_PROMETHEUS}",
+      "id": 134,
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 33 },
+      "description": "`source_inflight` — in-flight handler gauge, bounded above by the adapter's `limits.concurrency`. Persistent saturation at the cap means downstream latency is higher than configured throughput.",
+      "targets": [
+        {
+          "expr": "max by (id) (source_inflight{id=~\"$source\"})",
+          "legendFormat": "{{id}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "title": "Declaragent fleet — MCP / audit / rate-limit / dispatch",
+  "uid": "declaragent-fleet-0-7-6"
+}
