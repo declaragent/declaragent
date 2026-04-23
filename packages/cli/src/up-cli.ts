@@ -40,6 +40,7 @@ import {
   type ControlPlaneServerHandle,
   type ControlSocketContext,
   type ControlSocketServer,
+  DEFAULT_TENANT_CONTEXT,
   type EventBus,
   type EventDispatcher,
   type EventStore,
@@ -65,7 +66,6 @@ import {
   createPrometheusRegistry,
   createSendMessageTool,
   createSplunkExporter,
-  createSqliteAuditSink,
   createSqliteSessionStore,
   createToolRateLimitGate,
   defaultRateForProvider,
@@ -85,6 +85,7 @@ import {
 } from '@declaragent/core';
 import type { ResolveLogPaths } from '@declaragent/core';
 import { type AuthVerifyRegistry, buildAuthVerifyRegistry } from '@declaragent/plugin-agent-rpc';
+import { getOrOpenSharedAuditSink, releaseSharedAuditSink } from './audit-sink-singleton.js';
 import { resolveCredentials } from './auth.js';
 import { buildRuntimeTools } from './builtin-tools.js';
 import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
@@ -425,22 +426,29 @@ async function runForeground(
     : null;
   // Shared `TenantAuditSink` — opened ONCE per up-process so every
   // consumer reuses the same SQLite handle (Enterprise Production
-  // Plan §3 Item #7 follow-up + #10 sharing note).
+  // Plan §3 Item #7 follow-up + #10 sharing note + backlog #52
+  // singleton dedup).
   //
   //   - per-agent `createToolRateLimitGate({ auditSink })` writes
   //     `rate_limited` records.
   //   - `/audit` route serves reads.
   //   - `startAuditExportLoop` tails the same file for SIEM export.
   //
+  // Routed through {@link getOrOpenSharedAuditSink} so future callers
+  // that target the same SQLite file transparently reuse this handle
+  // rather than opening a second connection (backlog #52). The
+  // singleton's module-scoped cache is released in `doShutdown()`.
+  //
   // Best-effort open: a failure here leaves `sharedAuditSink` null and
   // each consumer silently no-ops — daemon still boots. We only log
   // once so the banner doesn't swamp the warning channel.
+  const auditSinkPath = auditDbPath();
   let sharedAuditSink: TenantAuditSink | null = null;
   try {
-    sharedAuditSink = await createSqliteAuditSink({ path: auditDbPath() });
+    sharedAuditSink = await getOrOpenSharedAuditSink({ path: auditSinkPath });
   } catch (err) {
     io.err(
-      `⚠ audit sink at ${auditDbPath()} failed to open — ${err instanceof Error ? err.message : String(err)}. Rate-limit + /audit + SIEM export disabled.\n`,
+      `⚠ audit sink at ${auditSinkPath} failed to open — ${err instanceof Error ? err.message : String(err)}. Rate-limit + /audit + SIEM export disabled.\n`,
     );
   }
 
@@ -480,6 +488,11 @@ async function runForeground(
   if (anyFailed) {
     // Partial boot — clean up whatever we started before returning.
     await stopAll(running);
+    // Release the shared audit sink so a retry opens a fresh handle
+    // (the singleton cache is module-level).
+    if (sharedAuditSink) {
+      await releaseSharedAuditSink(auditSinkPath);
+    }
     return 1;
   }
 
@@ -662,12 +675,13 @@ async function runForeground(
   // lives in the same SQLite DB (`audit_export_cursor` table) so a
   // restart doesn't re-push rows already acked.
   //
-  // Lifecycle: opens its own TenantAuditSink handle (separate from the
-  // control-plane one) so a daemon with `DECLARAGENT_METRICS_PORT=0`
-  // still exports audit. Stopped during shutdown before the underlying
-  // sink closes.
+  // Lifecycle: reuses `sharedAuditSink` — the SAME handle the `/audit`
+  // route serves from and every per-agent rate-limit gate writes to
+  // (backlog #52). Stopped during shutdown before the underlying sink
+  // closes.
   //
-  // @since 0.6.x
+  // @since 0.6.x — sink dedup hardened 0.7.2 via
+  //                {@link getOrOpenSharedAuditSink}.
   const auditExports = running
     .map((r) => ({ id: r.summary.id, cfg: r.auditExport }))
     .filter((x): x is { id: string; cfg: LoadedAuditExport } => x.cfg !== undefined);
@@ -730,13 +744,12 @@ async function runForeground(
       }
       await stopAll(running);
       // Close the shared audit sink after every consumer has torn
-      // down — exporter loops, /audit route, rate-limit gates.
+      // down — exporter loops, /audit route, rate-limit gates. Go
+      // through the singleton so the module-level cache is also
+      // cleared; otherwise a subsequent `up` in the same process
+      // (test runner, nested spawn) would hand out a closed handle.
       if (sharedAuditSink) {
-        try {
-          await sharedAuditSink.close();
-        } catch {
-          // best-effort — sink close is idempotent
-        }
+        await releaseSharedAuditSink(auditSinkPath);
       }
       clearUpState();
       io.out('✓ down\n');
@@ -1222,6 +1235,21 @@ async function attachDispatcherToAgent(opts: {
         })
       : undefined;
 
+  // Tenant context for the engine loop. Single-process `up` is still
+  // one-tenant today — fleet-run's #4 + #11 follow-ups land tenant
+  // routing via envelope `tenantId`; up-cli doesn't consume envelopes,
+  // so every engine turn inherits the default tenant. Threading this
+  // explicitly (rather than relying on `undefined` → default coercion
+  // inside the engine) keeps the rate-limit gate's audit records and
+  // quota tracking keyed on a stable `tenantId` so downstream SIEM
+  // queries can filter by tenant in both topologies.
+  //
+  // @since 0.7.2 — POST_ENTERPRISE_BACKLOG.md #16 (fleet-run wired in
+  //                round-5 via `auditSink` plumbing; up-cli mirrors
+  //                the pattern here so single-process deployments
+  //                emit the same tenant-keyed records).
+  const tenant = DEFAULT_TENANT_CONTEXT;
+
   const engine = createEngine({
     provider,
     tools: [
@@ -1233,6 +1261,7 @@ async function attachDispatcherToAgent(opts: {
     permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
     hookRegistry,
     createChildSession: () => runtime.sessionStore.create(spec),
+    tenant,
     ...(toolRateLimit !== undefined && { toolRateLimit }),
   });
 

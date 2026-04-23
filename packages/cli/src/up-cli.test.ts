@@ -742,6 +742,40 @@ describe('up verb — single agent', () => {
     }
   });
 
+  test('audit sink singleton: a second up run reuses the same module handle (#52)', async () => {
+    const { __hasSharedAuditSink } = await import('./audit-sink-singleton.js');
+    const { auditDbPath } = await import('./paths.js');
+
+    // First up boots + shuts down — the singleton should be released.
+    const cap1 = captureIo();
+    const code1 = await up(
+      {},
+      {
+        io: cap1.io,
+        cwd: dir,
+        startSources: stubSources().fn,
+        installSignals: immediateShutdown(),
+      },
+    );
+    expect(code1).toBe(0);
+    expect(__hasSharedAuditSink(auditDbPath())).toBe(false);
+
+    // Second up boots + shuts down — proves the cache was cleared so the
+    // next call re-opens cleanly instead of handing back a closed handle.
+    const cap2 = captureIo();
+    const code2 = await up(
+      {},
+      {
+        io: cap2.io,
+        cwd: dir,
+        startSources: stubSources().fn,
+        installSignals: immediateShutdown(),
+      },
+    );
+    expect(code2).toBe(0);
+    expect(__hasSharedAuditSink(auditDbPath())).toBe(false);
+  });
+
   test('rpc.auth.enabled=false leaves the legacy envelope path (no banner line)', async () => {
     const cap = captureIo();
     const code = await up(
