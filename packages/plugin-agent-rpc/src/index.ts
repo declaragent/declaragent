@@ -110,3 +110,23 @@ export type {
   SqsReceiveRequest,
   SqsSendRequest,
 } from './sqs-transport.js';
+export { createAmqpTransport } from './amqp-transport.js';
+export type {
+  AmqpChannelLike,
+  AmqpConnectUrl,
+  AmqpConnectionLike,
+  AmqpDecodeFailPolicy,
+  AmqpExchangeKind,
+  AmqpIncomingMessageLike,
+  AmqpTopicRoute,
+  AmqplibModule,
+  CreateAmqpTransportOptions,
+} from './amqp-transport.js';
+export { createMqttTransport, matchTopic } from './mqtt-transport.js';
+export type {
+  CreateMqttTransportOptions,
+  MqttClientLike,
+  MqttConnectOptionsLike,
+  MqttModule,
+  MqttQoS,
+} from './mqtt-transport.js';
