@@ -66,6 +66,11 @@ export interface ControlPlanePrincipal {
  * {@link RpcAuthRejectReason} vocabulary so SIEM / audit filters can
  * reuse the same labels. Additive — unknown reasons are coerced into
  * `'bad-signature'` by the middleware.
+ *
+ * `'untrusted-proxy'` fires when `allowLoopback` is configured with a
+ * `trustedProxies` allow-list and the immediate peer is not on it — the
+ * request can't be attributed to a real loopback client and is refused
+ * before the verifier even runs. See `POST_ENTERPRISE_BACKLOG.md #7`.
  */
 export type ControlPlaneAuthRejectReason =
   | 'missing-token'
@@ -78,7 +83,8 @@ export type ControlPlaneAuthRejectReason =
   | 'insufficient-scope'
   | 'idp-unreachable'
   | 'config-error'
-  | 'provider-failed';
+  | 'provider-failed'
+  | 'untrusted-proxy';
 
 /**
  * Return shape of the verifier callable supplied to the middleware.
@@ -95,19 +101,70 @@ export type ControlPlaneTokenVerifyResult =
  */
 export type ControlPlaneTokenVerifier = (token: string) => Promise<ControlPlaneTokenVerifyResult>;
 
+/**
+ * Loopback bypass policy.
+ *
+ *   - `true`  (the default) — same-host curls + `declaragent ps` bypass
+ *     the verifier whenever the `Host` header resolves to localhost.
+ *     Matches today's 0.7.0 Slice-2 behaviour.
+ *   - `false` — zero-trust localhost. Every request (loopback or not)
+ *     MUST carry a token.
+ *   - `{ trustedProxies }` — proxy-aware. When the request arrives from
+ *     a peer whose IP is in `trustedProxies`, inspect the leftmost
+ *     `X-Forwarded-For` hop and treat THAT as the real client IP. If
+ *     the XFF-derived IP is loopback, bypass the verifier; otherwise
+ *     require a token. Requests from peers NOT in `trustedProxies` are
+ *     refused with `untrusted-proxy` regardless of headers — this
+ *     closes the "behind nginx, every request looks like 127.0.0.1"
+ *     bypass vulnerability.
+ *
+ * @since 0.7.2 — POST_ENTERPRISE_BACKLOG.md #7
+ */
+export type ControlPlaneAllowLoopback =
+  | boolean
+  | {
+      /**
+       * IPs permitted to act as a reverse proxy. When the immediate
+       * peer matches, the leftmost `X-Forwarded-For` entry is promoted
+       * to the "real" peer for loopback evaluation.
+       *
+       * Values are matched by exact string equality against the
+       * peer-IP string the middleware receives (see
+       * {@link ControlPlaneAuthContext.peerIp}). IPv4-mapped IPv6 peers
+       * (`::ffff:127.0.0.1`) are normalised to their IPv4 form before
+       * comparison so `'127.0.0.1'` is sufficient for both transports.
+       */
+      readonly trustedProxies: readonly string[];
+    };
+
 export interface ControlPlaneAuth {
   /** Bearer-token verifier. Fires on every non-loopback request. */
   readonly verifyToken: ControlPlaneTokenVerifier;
   /**
-   * When `true` (the default), requests whose `Host` header resolves to
-   * localhost bypass the verifier. Same posture as
-   * `startControlPlaneServer`'s `allowRemote: false` default — same-host
-   * curls + `declaragent ps` keep working.
-   *
-   * Operators with a zero-trust localhost policy set `false` and then
-   * every request — loopback or not — MUST carry a token.
+   * Loopback bypass policy. See {@link ControlPlaneAllowLoopback}.
+   * Defaults to `true` (back-compat).
    */
-  readonly allowLoopback?: boolean;
+  readonly allowLoopback?: ControlPlaneAllowLoopback;
+  /**
+   * Per-route required-scope overrides. Map of exact request pathname
+   * (e.g. `/audit`) to the scope list the principal MUST satisfy to
+   * reach that route. Principals missing any required scope get a 401
+   * `insufficient-scope` with a detail string naming the mismatched
+   * route.
+   *
+   * When a route is absent from this map, the verifier's own scope
+   * enforcement (from the OIDC / OAuth2 peer config) is the only gate
+   * — matches today's behaviour (no breaking change).
+   *
+   * Note: route scopes are checked AFTER the verifier runs. They're an
+   * AND on top of whatever scopes the verifier itself required, not a
+   * replacement. That keeps the per-route knob additive — an operator
+   * can tighten `/audit` to `read:audit` without having to weaken the
+   * global `control:read` floor.
+   *
+   * @since 0.7.2 — POST_ENTERPRISE_BACKLOG.md #6
+   */
+  readonly routeScopes?: Readonly<Record<string, readonly string[]>>;
 }
 
 /**
@@ -133,17 +190,53 @@ export type ControlPlaneAuthResult =
 // ── Middleware runner ──────────────────────────────────────────────────────
 
 /**
+ * Per-request context threaded through from the HTTP substrate. Optional
+ * so legacy call sites (and unit tests that invoke
+ * {@link applyControlPlaneAuth} directly without a live Bun server)
+ * still compile. All fields are read-only observations of the transport
+ * layer — the middleware never mutates them.
+ *
+ * @since 0.7.2 — POST_ENTERPRISE_BACKLOG.md #6 + #7
+ */
+export interface ControlPlaneAuthContext {
+  /**
+   * Immediate TCP peer IP, as reported by Bun's `server.requestIP(req)`.
+   * `undefined` when the listener can't resolve it (older Bun, unit
+   * tests, stub listeners). In that case proxy-aware loopback checks
+   * fall back to the legacy Host-header sniff.
+   */
+  readonly peerIp?: string;
+  /**
+   * Matched route's exact pathname. Supplied by the server loop after
+   * it picks the route but before it invokes the route's `fetch`. Used
+   * to look up `routeScopes[routePath]`. Omit for "no route matched
+   * yet" (middleware is being invoked before dispatch, e.g. unit tests
+   * that just want to check a token).
+   */
+  readonly routePath?: string;
+}
+
+/**
  * Evaluate the middleware against a single request. Returns either a
  * pass (route dispatch should run) or a pre-baked 401 {@link Response}.
  *
  * Contract:
- *   1. If `allowLoopback !== false` AND the request's Host header points
- *      at a loopback address, bypass verification unconditionally.
- *   2. Otherwise require `Authorization: Bearer <token>`. Missing /
+ *   1. Resolve the "effective peer" for loopback evaluation. When
+ *      `allowLoopback` is `{ trustedProxies }` and the immediate peer
+ *      is on the list, the leftmost X-Forwarded-For IP replaces it;
+ *      non-trusted peers presenting XFF headers are refused with
+ *      `untrusted-proxy`.
+ *   2. If `allowLoopback !== false` AND the effective peer is loopback,
+ *      bypass verification unconditionally.
+ *   3. Otherwise require `Authorization: Bearer <token>`. Missing /
  *      malformed headers → 401 `missing-token`.
- *   3. Invoke `verifyToken(token)`. Verifier `ok: true` → pass through.
- *      Verifier `ok: false` → 401 with the verifier's reason code.
- *   4. If the verifier throws, surface as `provider-failed` → 401 (never
+ *   4. Invoke `verifyToken(token)`. Verifier `ok: true` → proceed to
+ *      route-scope enforcement. Verifier `ok: false` → 401 with the
+ *      verifier's reason code.
+ *   5. If a `routeScopes` entry matches the context's `routePath`,
+ *      check the principal's scopes against it. Missing any required
+ *      scope → 401 `insufficient-scope`.
+ *   6. If the verifier throws, surface as `provider-failed` → 401 (never
  *      500). Throwing providers are a config bug; returning 401 matches
  *      the fail-closed RPC-side posture and keeps the server from
  *      leaking stack traces in error bodies.
@@ -154,11 +247,29 @@ export type ControlPlaneAuthResult =
 export async function applyControlPlaneAuth(
   auth: ControlPlaneAuth,
   request: Request,
+  context: ControlPlaneAuthContext = {},
 ): Promise<ControlPlaneAuthResult> {
   const allowLoopback = auth.allowLoopback ?? true;
-  if (allowLoopback && isLoopbackRequest(request)) {
+
+  // Step 1: proxy-aware peer resolution.
+  const peerResolution = resolveEffectivePeer(allowLoopback, request, context);
+  if (peerResolution.kind === 'reject-untrusted-proxy') {
+    return {
+      ok: false,
+      reason: 'untrusted-proxy',
+      response: authError(
+        'untrusted-proxy',
+        `untrusted proxy "${peerResolution.peerIp}" supplied X-Forwarded-For; refuse to trust`,
+      ),
+    };
+  }
+
+  // Step 2: loopback bypass.
+  if (allowLoopback !== false && peerResolution.isLoopback) {
     return { ok: true, bypassed: true, principal: undefined };
   }
+
+  // Step 3: token extraction.
   const token = extractBearerToken(request);
   if (token === undefined) {
     return {
@@ -167,6 +278,8 @@ export async function applyControlPlaneAuth(
       response: authError('missing-token', 'Authorization: Bearer <token> required'),
     };
   }
+
+  // Step 4: verify.
   let result: ControlPlaneTokenVerifyResult;
   try {
     result = await auth.verifyToken(token);
@@ -185,7 +298,151 @@ export async function applyControlPlaneAuth(
       response: authError(result.reason, result.message),
     };
   }
+
+  // Step 5: per-route scope enforcement.
+  const routeScopeCheck = enforceRouteScopes(auth.routeScopes, context.routePath, result.principal);
+  if (routeScopeCheck !== undefined) {
+    return {
+      ok: false,
+      reason: 'insufficient-scope',
+      response: authError('insufficient-scope', routeScopeCheck),
+    };
+  }
+
   return { ok: true, bypassed: false, principal: result.principal };
+}
+
+// ── Proxy-aware peer resolution ────────────────────────────────────────────
+
+/**
+ * Result of figuring out which IP the middleware should treat as the
+ * "real" caller for loopback evaluation. See contract step 1 above.
+ */
+type PeerResolution =
+  | { kind: 'ok'; peerIp: string | undefined; isLoopback: boolean }
+  | { kind: 'reject-untrusted-proxy'; peerIp: string };
+
+function resolveEffectivePeer(
+  allowLoopback: ControlPlaneAllowLoopback,
+  request: Request,
+  context: ControlPlaneAuthContext,
+): PeerResolution {
+  const rawPeer = context.peerIp;
+  const normalizedPeer = rawPeer !== undefined ? normaliseIp(rawPeer) : undefined;
+
+  // Proxy-aware path: honour X-Forwarded-For only when the immediate
+  // peer is explicitly trusted.
+  if (typeof allowLoopback === 'object') {
+    const xff = request.headers.get('x-forwarded-for');
+    const trusted = allowLoopback.trustedProxies.map(normaliseIp);
+
+    if (xff && xff.trim().length > 0) {
+      // Either the peer IP is known + trusted, or the peer is unknown
+      // (stub listener). Unknown is strictly safer to reject — we can't
+      // vouch for the XFF in that case.
+      if (normalizedPeer === undefined || !trusted.includes(normalizedPeer)) {
+        return {
+          kind: 'reject-untrusted-proxy',
+          peerIp: normalizedPeer ?? '<unknown>',
+        };
+      }
+      const leftmost = extractLeftmostXff(xff);
+      if (leftmost === undefined) {
+        // Malformed XFF from a trusted proxy — fall back to the peer
+        // itself. Don't reject; a trusted proxy with a bad header is a
+        // proxy-config bug we surface via the normal auth flow.
+        return {
+          kind: 'ok',
+          peerIp: normalizedPeer,
+          isLoopback: isLoopbackIp(normalizedPeer) || isLoopbackRequest(request),
+        };
+      }
+      return {
+        kind: 'ok',
+        peerIp: leftmost,
+        isLoopback: isLoopbackIp(leftmost),
+      };
+    }
+
+    // No XFF → treat the peer as the caller. Reject loopback bypass for
+    // an untrusted peer so `{ trustedProxies: [...] }` is strictly
+    // tighter than `true` — the operator opted into zero-trust semantics.
+    return {
+      kind: 'ok',
+      peerIp: normalizedPeer,
+      isLoopback: normalizedPeer !== undefined ? isLoopbackIp(normalizedPeer) : false,
+    };
+  }
+
+  // Scalar policy (`true` / `false`): preserve today's Host-header
+  // behaviour exactly (POST_ENTERPRISE_BACKLOG.md #7 deliverable 2 —
+  // "Default `allowLoopback: true` preserves today's behavior, no
+  // breaking change"). Operators who want peer-IP-tight loopback
+  // evaluation opt into the object form with an explicit
+  // `trustedProxies: []` (matches only real loopback; rejects every XFF).
+  return {
+    kind: 'ok',
+    peerIp: normalizedPeer,
+    isLoopback: isLoopbackRequest(request),
+  };
+}
+
+/**
+ * Strip the leftmost entry out of an `X-Forwarded-For` header value.
+ * Returns `undefined` when the header is empty / malformed. Also
+ * strips a bracketed IPv6 form.
+ */
+function extractLeftmostXff(xff: string): string | undefined {
+  const first = xff.split(',')[0]?.trim();
+  if (!first) return undefined;
+  // Strip surrounding brackets for IPv6 (`[::1]` → `::1`).
+  const stripped = first.startsWith('[') && first.endsWith(']') ? first.slice(1, -1) : first;
+  const normalized = normaliseIp(stripped);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function isLoopbackIp(ip: string): boolean {
+  const n = normaliseIp(ip);
+  if (n === '127.0.0.1' || n === '::1') return true;
+  // 127.0.0.0/8 — any address in this block is loopback.
+  return n.startsWith('127.');
+}
+
+/**
+ * Normalise an IP string for comparison. Strips IPv4-mapped IPv6
+ * prefixes (`::ffff:127.0.0.1` → `127.0.0.1`) so operators don't need
+ * to enumerate both forms in `trustedProxies`. Trims whitespace.
+ */
+function normaliseIp(ip: string): string {
+  const trimmed = ip.trim();
+  if (trimmed.toLowerCase().startsWith('::ffff:')) {
+    return trimmed.slice('::ffff:'.length);
+  }
+  return trimmed;
+}
+
+// ── Route-scope enforcement ────────────────────────────────────────────────
+
+/**
+ * Returns a human-readable detail string when the principal is missing
+ * a scope required for `routePath`. Returns `undefined` when the check
+ * passes (or doesn't apply).
+ */
+function enforceRouteScopes(
+  routeScopes: ControlPlaneAuth['routeScopes'],
+  routePath: string | undefined,
+  principal: ControlPlanePrincipal,
+): string | undefined {
+  if (!routeScopes || routePath === undefined) return undefined;
+  const required = routeScopes[routePath];
+  if (!required || required.length === 0) return undefined;
+  const have = new Set(principal.scopes);
+  const missing: string[] = [];
+  for (const s of required) {
+    if (!have.has(s)) missing.push(s);
+  }
+  if (missing.length === 0) return undefined;
+  return `route "${routePath}" requires scope(s) ${missing.map((s) => `"${s}"`).join(', ')}; principal has [${[...have].join(', ') || '—'}]`;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

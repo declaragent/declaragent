@@ -33,7 +33,11 @@
  * @since 0.7.0-slice.1
  */
 
-import { type ControlPlaneAuth, applyControlPlaneAuth } from './control-plane-auth.js';
+import {
+  type ControlPlaneAuth,
+  type ControlPlaneAuthContext,
+  applyControlPlaneAuth,
+} from './control-plane-auth.js';
 import type { PrometheusRegistry } from './prometheus.js';
 
 // ── Route contract ─────────────────────────────────────────────────────────
@@ -66,7 +70,20 @@ export interface ControlPlaneRoute {
 export interface ControlPlaneServerListenOptions {
   port: number;
   hostname: string;
-  fetch: (req: Request) => Promise<Response> | Response;
+  /**
+   * Incoming-request handler. The second argument carries transport
+   * observations the middleware needs — `peerIp` lets the auth layer
+   * enforce `allowLoopback: { trustedProxies }` correctly behind a
+   * reverse proxy.
+   *
+   * Back-compat: `context` is optional. Listener stubs in older tests
+   * that invoke `fetch(req)` without a second arg keep working; the
+   * server only loses proxy-aware loopback evaluation, which is the
+   * legacy behaviour anyway.
+   *
+   * @since 0.7.2 — POST_ENTERPRISE_BACKLOG.md #7
+   */
+  fetch: (req: Request, context?: { peerIp?: string }) => Promise<Response> | Response;
 }
 
 export interface ControlPlaneServerInstance {
@@ -119,19 +136,35 @@ export async function startControlPlaneServer(
 
   assertUniquePaths(routes);
 
-  async function fetch(req: Request): Promise<Response> {
+  async function fetch(req: Request, ctx?: { peerIp?: string }): Promise<Response> {
     if (!allowRemote && !isLocalClient(req)) {
       return new Response('remote control-plane disabled', { status: 403 });
+    }
+    // Pre-compute the matched route path (if any) so per-route scope
+    // overrides can be enforced *inside* the auth middleware. Matching
+    // twice (once here, once in the loop below) is cheap — `routes` is
+    // a tiny array (≤ 6 entries) and the comparison is string equality.
+    const url = new URL(req.url);
+    let routePath: string | undefined;
+    for (const route of routes) {
+      if (route.path === url.pathname) {
+        routePath = route.path;
+        break;
+      }
     }
     // Auth fires BEFORE route dispatch. Loopback bypass (the default)
     // keeps same-host curls + `declaragent ps` working without a token;
     // a non-loopback request with a bad / missing token gets a typed
-    // 401 straight from the middleware.
+    // 401 straight from the middleware. Per-route scope overrides land
+    // in the same 401 flow (`insufficient-scope` reason).
     if (auth) {
-      const result = await applyControlPlaneAuth(auth, req);
+      const authContext: ControlPlaneAuthContext = {
+        ...(ctx?.peerIp !== undefined && { peerIp: ctx.peerIp }),
+        ...(routePath !== undefined && { routePath }),
+      };
+      const result = await applyControlPlaneAuth(auth, req, authContext);
       if (!result.ok) return result.response;
     }
-    const url = new URL(req.url);
     for (const route of routes) {
       if (route.path !== url.pathname) continue;
       const res = await route.fetch(req);
@@ -192,6 +225,18 @@ const defaultListen: NonNullable<ControlPlaneServerOptions['listen']> = async ({
       'control-plane server: Bun.serve not available. Supply an explicit `listen` option in non-Bun hosts.',
     );
   }
+  // `Bun.serve` passes the server as the 2nd arg to `fetch`. We use
+  // `server.requestIP(req)` to resolve the immediate TCP peer — needed
+  // by the auth middleware to evaluate `allowLoopback: { trustedProxies }`.
+  // biome-ignore lint/suspicious/noExplicitAny: Bun's server handle is untyped here.
+  const dispatch = (req: Request, server: any): Promise<Response> | Response => {
+    const peer = server?.requestIP?.(req);
+    const peerIp: string | undefined =
+      peer && typeof peer === 'object' && typeof peer.address === 'string'
+        ? peer.address
+        : undefined;
+    return fetch(req, peerIp !== undefined ? { peerIp } : undefined);
+  };
   const server = bun.serve({
     port,
     hostname,
@@ -201,7 +246,7 @@ const defaultListen: NonNullable<ControlPlaneServerOptions['listen']> = async ({
     // streams server-side — disable it so the client controls
     // lifetime via cancel / AbortController.
     idleTimeout: 0,
-    fetch: (req: Request) => fetch(req),
+    fetch: dispatch,
   });
   return {
     port: server.port,

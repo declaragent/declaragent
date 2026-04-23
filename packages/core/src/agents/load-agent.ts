@@ -35,6 +35,34 @@ export class AgentConfigError extends Error {
 }
 
 /**
+ * `controlPlane.auth.allowLoopback` — scalar bool OR a trusted-proxy
+ * descriptor for reverse-proxy deploys. The object form lets the
+ * middleware honour `X-Forwarded-For` only from peers the operator has
+ * vetted; see `POST_ENTERPRISE_BACKLOG.md #7` for the threat model.
+ *
+ * @since 0.7.2
+ */
+const controlPlaneAllowLoopbackSchema = z.union([
+  z.boolean(),
+  z
+    .object({
+      trustedProxies: z.array(z.string().min(1)).min(1),
+    })
+    .strict(),
+]);
+
+/**
+ * `controlPlane.auth.routeScopes` — per-route scope override map.
+ * Keys are exact request pathnames (`/audit`, `/events`, …); values
+ * are required-scope arrays. Empty arrays mean "no extra scope
+ * required beyond the verifier's floor" — allowed but useless, so
+ * we accept and warn downstream rather than fail validation.
+ *
+ * @since 0.7.2 — POST_ENTERPRISE_BACKLOG.md #6
+ */
+const controlPlaneRouteScopesSchema = z.record(z.string().min(1), z.array(z.string().min(1)));
+
+/**
  * Fields we actively consume from `agent.yaml`. The schema is
  * `passthrough()` so scaffolded configs can carry forward-compat
  * keys (channels, sources, plugins refs) without tripping validation
@@ -148,7 +176,8 @@ const agentYamlSchema = z
             z
               .object({
                 enabled: z.literal(true),
-                allowLoopback: z.boolean().optional(),
+                allowLoopback: controlPlaneAllowLoopbackSchema.optional(),
+                routeScopes: controlPlaneRouteScopesSchema.optional(),
                 provider: z.literal('oidc'),
                 issuer: z.string().min(1),
                 audience: z.string().min(1),
@@ -159,7 +188,8 @@ const agentYamlSchema = z
             z
               .object({
                 enabled: z.literal(true),
-                allowLoopback: z.boolean().optional(),
+                allowLoopback: controlPlaneAllowLoopbackSchema.optional(),
+                routeScopes: controlPlaneRouteScopesSchema.optional(),
                 provider: z.literal('oauth2-client'),
                 tokenEndpoint: z.string().min(1),
                 clientId: z.string().min(1),
@@ -340,10 +370,21 @@ export type LoadedMCPSupervised = 'all' | 'none' | readonly string[];
  *
  * @since 0.7.x — Enterprise Production Plan §3 Item #5 Slice 2
  */
+/**
+ * Normalised form of `controlPlane.auth.allowLoopback`. Matches the
+ * shape the observability middleware consumes (`ControlPlaneAllowLoopback`).
+ *
+ * @since 0.7.2 — POST_ENTERPRISE_BACKLOG.md #7
+ */
+export type LoadedControlPlaneAllowLoopback =
+  | boolean
+  | { readonly trustedProxies: readonly string[] };
+
 export type LoadedControlPlaneAuth =
   | {
       provider: 'oidc';
-      allowLoopback?: boolean;
+      allowLoopback?: LoadedControlPlaneAllowLoopback;
+      routeScopes?: Readonly<Record<string, readonly string[]>>;
       issuer: string;
       audience: string;
       jwksUri?: string;
@@ -351,7 +392,8 @@ export type LoadedControlPlaneAuth =
     }
   | {
       provider: 'oauth2-client';
-      allowLoopback?: boolean;
+      allowLoopback?: LoadedControlPlaneAllowLoopback;
+      routeScopes?: Readonly<Record<string, readonly string[]>>;
       tokenEndpoint: string;
       clientId: string;
       clientSecretRef: string;
@@ -523,6 +565,9 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
         ...(cpAuthCfg.allowLoopback !== undefined && {
           allowLoopback: cpAuthCfg.allowLoopback,
         }),
+        ...(cpAuthCfg.routeScopes !== undefined && {
+          routeScopes: cpAuthCfg.routeScopes,
+        }),
         issuer: cpAuthCfg.issuer,
         audience: cpAuthCfg.audience,
         ...(cpAuthCfg.jwksUri !== undefined && { jwksUri: cpAuthCfg.jwksUri }),
@@ -533,6 +578,9 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
         provider: 'oauth2-client',
         ...(cpAuthCfg.allowLoopback !== undefined && {
           allowLoopback: cpAuthCfg.allowLoopback,
+        }),
+        ...(cpAuthCfg.routeScopes !== undefined && {
+          routeScopes: cpAuthCfg.routeScopes,
         }),
         tokenEndpoint: cpAuthCfg.tokenEndpoint,
         clientId: cpAuthCfg.clientId,

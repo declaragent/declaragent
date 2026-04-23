@@ -606,8 +606,12 @@ async function runForeground(
             config: first.cfg,
             secrets: (ref) => resolver.resolve(ref),
           });
+          const loopbackDesc = describeAllowLoopback(first.cfg.allowLoopback);
+          const routeScopeKeys = first.cfg.routeScopes ? Object.keys(first.cfg.routeScopes) : [];
+          const routeScopeSuffix =
+            routeScopeKeys.length > 0 ? `, routeScopes: ${routeScopeKeys.join(',')}` : '';
           io.out(
-            `  control-plane auth enabled (provider: ${first.cfg.provider}, allowLoopback: ${first.cfg.allowLoopback ?? true})\n`,
+            `  control-plane auth enabled (provider: ${first.cfg.provider}, allowLoopback: ${loopbackDesc}${routeScopeSuffix})\n`,
           );
         } catch (err) {
           io.err(
@@ -1655,6 +1659,19 @@ async function maybeCreateOtelTracer(io: UpIO): Promise<Tracer | undefined> {
 
 function manifestDir(manifestPath: string): string {
   return manifestPath.replace(/\/[^/]*$/, '');
+}
+
+/**
+ * Render `controlPlane.auth.allowLoopback` for the startup banner. The
+ * config now accepts `boolean | { trustedProxies }`
+ * (`POST_ENTERPRISE_BACKLOG.md #7`) — print the list inline when the
+ * object form is used so operators immediately see which proxies will
+ * be honoured.
+ */
+function describeAllowLoopback(v: LoadedControlPlaneAuth['allowLoopback']): string {
+  if (v === undefined) return 'true'; // matches ControlPlaneAuth middleware default
+  if (typeof v === 'boolean') return String(v);
+  return `trustedProxies=[${v.trustedProxies.join(',')}]`;
 }
 
 async function loadFleetAgentDirs(fleetPath: string): Promise<string[]> {

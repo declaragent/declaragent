@@ -9,7 +9,7 @@ This doc is the honest 0.7.x+ backlog. Every entry was flagged by a shipped PR's
 ## 0 · Summary banner
 
 ```
-Status:               50 open follow-ups from the enterprise push (2 shipped: #41, #42)
+Status:               48 open follow-ups from the enterprise push (#6, #7, #41, #42 shipped)
 Shipping-gate count:  4 (must land before 0.7.0 cut)
 Security count:       6 (address within 0.7.x)
 Robustness count:     7 (enterprise-nice-to-have)
@@ -38,8 +38,8 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 3 | [ ] Flip website `/principles` 🟡 → ✅; replace "10–14 engineer-weeks" with "shipped" | Ship-gate | 30 min | Not started | — |
 | 4 | [ ] Regenerate `docs/FIRST_PRINCIPLES_AUDIT.md` + `FIRST_PRINCIPLES_VALIDATION.md` capability matrix | Ship-gate | 2 h | Not started | — |
 | 5 | [ ] `rpc.auth.enabled: true` default flip + `declaragent fleet audit-rpc --suggest-enable` pre-flight inspector | Security | 1 wk | Not started | PR #25 open Q1 |
-| 6 | [ ] Per-route scope overrides on `/audit` + `/events` + `/logs` + `/status` + `/metrics` | Security | 3 d | Not started | PR #27 open Q1 |
-| 7 | [ ] `allowLoopback` + reverse-proxy semantics (X-Forwarded-For / proxy-IP-as-loopback) | Security | 2 d | Not started | PR #27 open Q2 |
+| 6 | [x] Per-route scope overrides on `/audit` + `/events` + `/logs` + `/status` + `/metrics` | Security | 3 d | Shipped — branch `agent-a/security-sprint-2-items-6-7` | `controlPlane.auth.routeScopes: Record<path, string[]>` in `packages/core/src/agents/load-agent.ts`; enforced by `applyControlPlaneAuth` in `packages/core/src/observability/control-plane-auth.ts` with new `ControlPlaneAuthContext.routePath`; one test per route in `control-plane-auth.test.ts` |
+| 7 | [x] `allowLoopback` + reverse-proxy semantics (X-Forwarded-For / proxy-IP-as-loopback) | Security | 2 d | Shipped — branch `agent-a/security-sprint-2-items-6-7` | `allowLoopback: boolean \| { trustedProxies: string[] }` in `load-agent.ts`; `resolveEffectivePeer()` in `control-plane-auth.ts` rejects XFF from untrusted peers with new `untrusted-proxy` reason; `control-plane-server.ts` threads `peerIp` via `Bun.serve`'s `server.requestIP(req)` |
 | 8 | [x] Add `AUTH_REJECTED` to `RPC_ERROR_CODES` constant (today string literal) | Security | 30 min | Shipped — branch `agent-a/security-sprint-1-items-8-9` | `packages/core/src/rpc/errors.ts` + `errors.test.ts`; `fleet-run.ts` literals swapped for `RPC_ERROR_CODES.AUTH_REJECTED` (wire value preserved) |
 | 9 | [x] Audit cardinality for `capability.schema_violation` — per-envelope vs per-violation | Security | 1 d | Shipped — decision: batched per envelope (pinned) | `packages/plugin-agent-rpc/src/request-agent.ts` JSDoc + multi-violation regression test in `request-agent.test.ts`; inline `POST_ENTERPRISE_BACKLOG.md #9` notes in `audit/types.ts` + `fleet-run.test.ts` |
 | 10 | [ ] Schema-version policy: hard-fail vs soft-warn on breaking capability schema bumps | Security | 3 d | Not started | PR #23 open Q1 |

@@ -308,7 +308,10 @@ interface FakeServer extends ControlPlaneServerInstance {
 
 async function startFake(
   routes: Parameters<typeof startControlPlaneServer>[0]['routes'],
-  options: { auth?: ControlPlaneAuth; allowRemote?: boolean } = {},
+  options: {
+    auth?: ControlPlaneAuth;
+    allowRemote?: boolean;
+  } = {},
 ): Promise<{
   handle: Awaited<ReturnType<typeof startControlPlaneServer>>;
   server: FakeServer;
@@ -440,5 +443,316 @@ describe('startControlPlaneServer — auth integration', () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('hits 11');
     await handle.close();
+  });
+});
+
+// ── Per-route scope overrides (POST_ENTERPRISE_BACKLOG.md #6) ──────────────
+
+describe('applyControlPlaneAuth — per-route scope overrides', () => {
+  it('passes when the matched route has no override (verifier scopes are the only gate)', async () => {
+    const stub = stubVerifier({
+      ok: true,
+      principal: mkPrincipal({ scopes: ['control:read'] }),
+    });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      routeScopes: { '/audit': ['read:audit'] },
+    };
+    const req = new Request('http://fleet.internal:9464/status', {
+      headers: { host: 'fleet.internal:9464', authorization: 'Bearer any.token.x' },
+    });
+
+    const result = await applyControlPlaneAuth(auth, req, { routePath: '/status' });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects with insufficient-scope when the matched route requires a scope the principal lacks', async () => {
+    const stub = stubVerifier({
+      ok: true,
+      principal: mkPrincipal({ scopes: ['control:read'] }),
+    });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      routeScopes: { '/audit': ['read:audit'] },
+    };
+    const req = new Request('http://fleet.internal:9464/audit', {
+      headers: { host: 'fleet.internal:9464', authorization: 'Bearer x.y.z' },
+    });
+
+    const result = await applyControlPlaneAuth(auth, req, { routePath: '/audit' });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('insufficient-scope');
+      expect(result.response.status).toBe(401);
+      const body = (await result.response.json()) as { error: string; reason: string };
+      expect(body.error).toContain('/audit');
+      expect(body.error).toContain('read:audit');
+    }
+  });
+
+  it('accepts when the principal carries every required scope for the matched route', async () => {
+    const stub = stubVerifier({
+      ok: true,
+      principal: mkPrincipal({ scopes: ['read:audit', 'control:read'] }),
+    });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      routeScopes: { '/audit': ['read:audit'] },
+    };
+    const req = new Request('http://fleet.internal:9464/audit', {
+      headers: { host: 'fleet.internal:9464', authorization: 'Bearer x.y.z' },
+    });
+
+    const result = await applyControlPlaneAuth(auth, req, { routePath: '/audit' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.principal?.scopes).toContain('read:audit');
+    }
+  });
+
+  it('does not enforce a route override when the route was not matched (principal has no scopes)', async () => {
+    // Route-scope enforcement only fires when `routePath` is supplied
+    // from the server. Callers that pre-check auth without a matched
+    // route (e.g. for a 404 path) stay on the verifier's own scopes.
+    const stub = stubVerifier({
+      ok: true,
+      principal: mkPrincipal({ scopes: [] }),
+    });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      routeScopes: { '/audit': ['read:audit'] },
+    };
+    const req = new Request('http://fleet.internal:9464/audit', {
+      headers: { host: 'fleet.internal:9464', authorization: 'Bearer x.y.z' },
+    });
+
+    const result = await applyControlPlaneAuth(auth, req); // no routePath
+
+    expect(result.ok).toBe(true);
+  });
+});
+
+// Parameterised server-integration tests — one per enforced route. Each
+// asserts (a) the route's override fires with a scope-mismatched token,
+// and (b) the global scope is the only gate for a route NOT listed in
+// `routeScopes` (fallback). Covers the deliverable in
+// POST_ENTERPRISE_BACKLOG.md #6 row 4 ("one test per route").
+const PER_ROUTE_CASES: readonly {
+  readonly label: string;
+  readonly path: string;
+  readonly required: string;
+}[] = [
+  { label: '/audit', path: '/audit', required: 'read:audit' },
+  { label: '/events', path: '/events', required: 'read:events' },
+  { label: '/logs', path: '/logs', required: 'read:logs' },
+  { label: '/status', path: '/status', required: 'read:status' },
+  { label: '/metrics', path: '/metrics', required: 'read:metrics' },
+];
+
+describe('startControlPlaneServer — per-route scope overrides', () => {
+  for (const c of PER_ROUTE_CASES) {
+    it(`${c.label}: scope override fires when the principal lacks "${c.required}"`, async () => {
+      const dummyRoute = {
+        path: c.path,
+        fetch: () => new Response('ok', { status: 200 }),
+      };
+      const stub = stubVerifier({
+        ok: true,
+        principal: mkPrincipal({ scopes: ['control:read'] }),
+      });
+      const { handle, server } = await startFake([dummyRoute], {
+        auth: {
+          verifyToken: stub.verify,
+          routeScopes: { [c.path]: [c.required] },
+        },
+        allowRemote: true,
+      });
+
+      const res = await server.fetch(
+        new Request(`http://fleet.internal:9464${c.path}`, {
+          headers: { host: 'fleet.internal:9464', authorization: 'Bearer t.t.t' },
+        }),
+      );
+
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: string; reason: string };
+      expect(body.reason).toBe('insufficient-scope');
+      expect(body.error).toContain(c.path);
+      expect(body.error).toContain(c.required);
+      await handle.close();
+    });
+
+    it(`${c.label}: falls back cleanly when the route is NOT listed in routeScopes`, async () => {
+      const dummyRoute = {
+        path: c.path,
+        fetch: () => new Response('served', { status: 200 }),
+      };
+      const stub = stubVerifier({
+        ok: true,
+        principal: mkPrincipal({ scopes: ['control:read'] }),
+      });
+      const { handle, server } = await startFake([dummyRoute], {
+        auth: {
+          verifyToken: stub.verify,
+          // Override exists for a DIFFERENT path only — the matched
+          // route `c.path` should not be affected.
+          routeScopes: { '/some-other-path': ['never:granted'] },
+        },
+        allowRemote: true,
+      });
+
+      const res = await server.fetch(
+        new Request(`http://fleet.internal:9464${c.path}`, {
+          headers: { host: 'fleet.internal:9464', authorization: 'Bearer t.t.t' },
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('served');
+      await handle.close();
+    });
+  }
+});
+
+// ── allowLoopback: trusted-proxy semantics (POST_ENTERPRISE_BACKLOG.md #7) ─
+
+describe('applyControlPlaneAuth — allowLoopback trustedProxies', () => {
+  it('direct loopback peer is allowed (bypass, no token required)', async () => {
+    const stub = stubVerifier({ ok: false, reason: 'bad-signature', message: 'never called' });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      allowLoopback: { trustedProxies: ['10.0.0.5'] },
+    };
+    const req = new Request('http://127.0.0.1:9464/status', { headers: LOCAL_HEADERS });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '127.0.0.1' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.bypassed).toBe(true);
+    expect(stub.callCount()).toBe(0);
+  });
+
+  it('proxy-chain from an UNTRUSTED peer is rejected before the verifier runs', async () => {
+    const stub = stubVerifier({ ok: true, principal: mkPrincipal() });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      allowLoopback: { trustedProxies: ['10.0.0.5'] },
+    };
+    // Peer is `127.0.0.1` (loopback from the kernel's POV) — nginx on
+    // the same host would look like this — but it's NOT in trustedProxies.
+    // XFF says the real client is external. Without trusted-proxy gating,
+    // pre-0.7.2 code would treat this as loopback and bypass auth.
+    const req = new Request('http://internal/status', {
+      headers: {
+        host: 'internal:9464',
+        'x-forwarded-for': '198.51.100.9',
+      },
+    });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '127.0.0.1' });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('untrusted-proxy');
+      expect(result.response.status).toBe(401);
+    }
+    expect(stub.callCount()).toBe(0);
+  });
+
+  it('proxy-chain from a TRUSTED peer + loopback XFF is bypassed', async () => {
+    const stub = stubVerifier({ ok: false, reason: 'bad-signature', message: 'never called' });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      allowLoopback: { trustedProxies: ['10.0.0.5'] },
+    };
+    const req = new Request('http://internal/status', {
+      headers: {
+        host: 'internal:9464',
+        'x-forwarded-for': '127.0.0.1',
+      },
+    });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '10.0.0.5' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.bypassed).toBe(true);
+    expect(stub.callCount()).toBe(0);
+  });
+
+  it('proxy-chain from a TRUSTED peer + non-loopback XFF requires a token (no bypass)', async () => {
+    const stub = stubVerifier({ ok: true, principal: mkPrincipal() });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      allowLoopback: { trustedProxies: ['10.0.0.5'] },
+    };
+    const req = new Request('http://internal/status', {
+      headers: {
+        host: 'internal:9464',
+        'x-forwarded-for': '198.51.100.9, 10.0.0.5',
+        authorization: 'Bearer proxy.forwarded.token',
+      },
+    });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '10.0.0.5' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.bypassed).toBe(false);
+    expect(stub.callCount()).toBe(1);
+    expect(stub.lastToken()).toBe('proxy.forwarded.token');
+  });
+
+  it('normalises ::ffff: IPv4-mapped peer IPs against trustedProxies', async () => {
+    const stub = stubVerifier({ ok: false, reason: 'bad-signature', message: 'never called' });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      allowLoopback: { trustedProxies: ['10.0.0.5'] },
+    };
+    const req = new Request('http://internal/status', {
+      headers: {
+        host: 'internal:9464',
+        'x-forwarded-for': '127.0.0.1',
+      },
+    });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '::ffff:10.0.0.5' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.bypassed).toBe(true);
+  });
+
+  it('an untrusted peer WITHOUT an XFF header cannot loopback-bypass either', async () => {
+    // Trusted-proxy config tightens loopback semantics: if the operator
+    // opted into a proxy list, an untrusted peer that "happens" to be
+    // on localhost (e.g. a docker sidecar) should not slip through.
+    const stub = stubVerifier({ ok: true, principal: mkPrincipal() });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      allowLoopback: { trustedProxies: ['10.0.0.5'] },
+    };
+    const req = new Request('http://127.0.0.1:9464/status', { headers: LOCAL_HEADERS });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '10.0.0.6' });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('missing-token');
+    }
+  });
+
+  it('scalar allowLoopback: true still bypasses on loopback peerIp (no regression)', async () => {
+    const stub = stubVerifier({ ok: false, reason: 'bad-signature', message: 'never called' });
+    const auth: ControlPlaneAuth = {
+      verifyToken: stub.verify,
+      // Default behaviour — no trustedProxies key.
+    };
+    const req = new Request('http://127.0.0.1:9464/status', { headers: LOCAL_HEADERS });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '127.0.0.1' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.bypassed).toBe(true);
   });
 });

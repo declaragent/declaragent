@@ -218,6 +218,34 @@ describe('buildControlPlaneAuth (OIDC)', () => {
     });
     expect(auth.allowLoopback).toBe(false);
   });
+
+  it('propagates trustedProxies allowLoopback + routeScopes to the middleware', async () => {
+    // POST_ENTERPRISE_BACKLOG.md #6 + #7 — factory must preserve the
+    // richer `allowLoopback` object and the per-route scope map so the
+    // middleware can enforce them at request time.
+    const pair = await genKeyPair('k1');
+    const cfg: LoadedControlPlaneAuth = {
+      provider: 'oidc',
+      allowLoopback: { trustedProxies: ['10.0.0.5'] },
+      routeScopes: {
+        '/audit': ['read:audit'],
+        '/events': ['read:events'],
+      },
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      jwksUri: JWKS_URI,
+    };
+    const auth = await buildControlPlaneAuth({
+      config: cfg,
+      fetch: cannedFetch({ [JWKS_URI]: { body: { keys: [pair.publicJwk] } } }),
+      now,
+    });
+    expect(auth.allowLoopback).toEqual({ trustedProxies: ['10.0.0.5'] });
+    expect(auth.routeScopes).toEqual({
+      '/audit': ['read:audit'],
+      '/events': ['read:events'],
+    });
+  });
 });
 
 describe('buildControlPlaneAuth (oauth2-client)', () => {
