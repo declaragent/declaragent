@@ -256,7 +256,7 @@ describe('fleetDlqList', () => {
 });
 
 describe('fleetLogs (snapshot mode)', () => {
-  it('prints a hint when -f is passed (Slice 6 deferred)', async () => {
+  it('prints a pointer when no hosts are declared', async () => {
     // fetch is never called because we pass hosts=[] → early return.
     const { io, outBuf } = makeIO();
     await fleetLogs({ follow: true }, { io, hosts: [] });
@@ -270,3 +270,105 @@ describe('fleetLogs (snapshot mode)', () => {
     expect(errBuf.join('')).toContain('host "unknown" not declared');
   });
 });
+
+describe('fleetLogs -f (live multi-host follow, Slice 6a)', () => {
+  it('streams log frames from multiple hosts tagged with [host/agent]', async () => {
+    const encoder = new TextEncoder();
+    // Each host gets a streamed response we drive from inside fetch.
+    const hostStreams = new Map<string, { push: (s: string) => void; close: () => void }>();
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const origin = new URL(url).origin;
+      let pushFn: ((s: string) => void) | null = null;
+      let closeFn: (() => void) | null = null;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          pushFn = (s) => controller.enqueue(encoder.encode(s));
+          closeFn = () => {
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          };
+          hostStreams.set(origin, { push: pushFn, close: closeFn });
+        },
+      });
+      const signal = init?.signal;
+      signal?.addEventListener('abort', () => {
+        closeFn?.();
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as unknown as typeof fetch;
+
+    const { io, outBuf, errBuf } = makeIO();
+    const logsHosts: FleetHost[] = [
+      { name: 'us-east', url: 'http://us' },
+      { name: 'eu-west', url: 'http://eu' },
+    ];
+
+    const runPromise = fleetLogs(
+      { follow: true, installSignalHandlers: false },
+      { io, hosts: logsHosts, clientOptions: { fetchImpl } },
+    );
+
+    // Wait for both origins to attach their controllers.
+    await waitUntil(() => hostStreams.size >= 2);
+    hostStreams
+      .get('http://us')
+      ?.push(
+        `event: log\ndata: ${JSON.stringify({ ts: 100, agentId: 'a', message: 'hi-us' })}\n\n`,
+      );
+    hostStreams
+      .get('http://eu')
+      ?.push(
+        `event: log\ndata: ${JSON.stringify({ ts: 110, agentId: 'b', message: 'hi-eu' })}\n\n`,
+      );
+
+    await waitUntil(() => outBuf.join('').includes('hi-us') && outBuf.join('').includes('hi-eu'));
+    const out = outBuf.join('');
+    expect(out).toContain('[us-east/a]');
+    expect(out).toContain('[eu-west/b]');
+    expect(out).toContain('hi-us');
+    expect(out).toContain('hi-eu');
+    // tail header on stderr
+    expect(errBuf.join('')).toContain('tailing 2 host');
+
+    // Close both streams → done. We expect the runPromise to resolve
+    // once every per-host loop has exited, which requires we trigger a
+    // stop. The simplest way from this test: close streams (triggers
+    // disconnect + reconnect loop), then kill the in-flight fetches
+    // by closing the pending stream controllers again. Since fetch's
+    // abort is wired we just need to tear everything down. Use the
+    // public API path: send SIGINT… but we disabled signals. So we
+    // directly invoke the reconnect exit path via closing + assert
+    // that the runPromise hangs (expected). For this test the stream
+    // tag assertions are the contract — the lifecycle is covered in
+    // fleet-logs-stream.test.ts. Forcibly close controllers.
+    for (const s of hostStreams.values()) s.close();
+    // Poll for the promise to race via a short timeout — we don't
+    // await indefinitely.
+    const raced = await Promise.race([
+      runPromise.then(() => 'done' as const),
+      new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 50)),
+    ]);
+    // Follow loop reconnects forever — 'timeout' is the expected
+    // shape. What we care about is that fetch was called twice +
+    // output was produced.
+    expect(raced).toBe('timeout');
+  });
+});
+
+async function waitUntil(pred: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`waitUntil timed out after ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}

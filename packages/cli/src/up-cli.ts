@@ -90,6 +90,7 @@ import { resolveCredentials } from './auth.js';
 import { buildRuntimeTools } from './builtin-tools.js';
 import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
 import { buildControlPlaneAuth } from './control-plane-auth-factory.js';
+import { resolveControlPlaneAuth } from './fleet-control-plane-resolver.js';
 import {
   type ConsentResolver,
   type MCPRuntime,
@@ -392,9 +393,20 @@ async function runForeground(
   const startSources = deps.startSources ?? startAgentSources;
 
   let agentDirs: string[];
+  // Fleet-level `controlPlane:` block lives on the fleet manifest. We
+  // load it ONCE here (kind === 'fleet' only) and thread the manifest
+  // into the control-plane auth resolver (POST_ENTERPRISE_BACKLOG.md
+  // #17). For single-`agent.yaml` mode the manifest is undefined and
+  // the resolver falls through to the per-agent path.
+  let fleetManifest: import('@declaragent/core').FleetManifest | undefined;
   try {
-    agentDirs =
-      kind === 'fleet' ? await loadFleetAgentDirs(manifestPath) : [manifestDir(manifestPath)];
+    if (kind === 'fleet') {
+      const loaded = await loadFleet({ root: manifestDir(manifestPath) });
+      fleetManifest = loaded.manifest;
+      agentDirs = loaded.agents.map((a) => a.path);
+    } else {
+      agentDirs = [manifestDir(manifestPath)];
+    }
   } catch (err) {
     io.err(`✗ ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
@@ -631,50 +643,51 @@ async function runForeground(
     );
 
     // Control-plane auth middleware (§3 Item #5 Slice 2 —
-    // CONTROL_PLANE_PLAN.md §9 PR 2). The listener is process-wide, so
-    // we pick the first agent whose `agent.yaml#controlPlane.auth.enabled`
-    // is true and use that provider block. Multi-agent fleets with
-    // conflicting blocks emit a warning (the first wins) — a future
-    // slice can promote this to a fleet-level config in `fleet.yaml`.
-    const cpAuthCandidates = running
-      .map((r) => ({ id: r.summary.id, cfg: r.controlPlaneAuthCfg }))
-      .filter((x): x is { id: string; cfg: LoadedControlPlaneAuth } => x.cfg !== undefined);
+    // CONTROL_PLANE_PLAN.md §9 PR 2). The listener is process-wide.
+    // Precedence (POST_ENTERPRISE_BACKLOG.md #17):
+    //   1. `fleet.yaml#controlPlane` present → wins; per-agent blocks
+    //      get a deprecation warning and are ignored.
+    //   2. Legacy fallback: first per-agent block wins, warn rest.
+    //   3. No blocks → boot the listener without middleware.
+    const cpResolution = resolveControlPlaneAuth({
+      fleetManifest,
+      perAgentCandidates: running.map((r) => ({
+        id: r.summary.id,
+        cfg: r.controlPlaneAuthCfg,
+      })),
+    });
+    for (const w of cpResolution.warnings) {
+      io.err(`${w}\n`);
+    }
     let controlPlaneAuth: ControlPlaneAuth | undefined;
-    if (cpAuthCandidates.length > 0) {
-      const first = cpAuthCandidates[0];
-      if (first === undefined) {
-        // Unreachable — `length > 0` guarantees the element exists. The
-        // guard keeps TypeScript's `noUncheckedIndexedAccess` happy.
-      } else {
-        if (cpAuthCandidates.length > 1) {
-          const others = cpAuthCandidates
-            .slice(1)
-            .map((x) => x.id)
-            .join(', ');
-          io.err(
-            `⚠ multiple agents set controlPlane.auth.enabled=true (${others}). Using ${first.id}'s config for the process-wide listener.\n`,
-          );
-        }
-        try {
-          const resolver = createDefaultSecretResolver({
-            fileRoot: agentDirs[0] ?? manifestDir(manifestPath),
-          });
-          controlPlaneAuth = await buildControlPlaneAuth({
-            config: first.cfg,
-            secrets: (ref) => resolver.resolve(ref),
-          });
-          const loopbackDesc = describeAllowLoopback(first.cfg.allowLoopback);
-          const routeScopeKeys = first.cfg.routeScopes ? Object.keys(first.cfg.routeScopes) : [];
-          const routeScopeSuffix =
-            routeScopeKeys.length > 0 ? `, routeScopes: ${routeScopeKeys.join(',')}` : '';
-          io.out(
-            `  control-plane auth enabled (provider: ${first.cfg.provider}, allowLoopback: ${loopbackDesc}${routeScopeSuffix})\n`,
-          );
-        } catch (err) {
-          io.err(
-            `⚠ control-plane auth failed to initialise — ${err instanceof Error ? err.message : String(err)}. Falling back to no-auth (loopback-only bind still protects the port).\n`,
-          );
-        }
+    if (cpResolution.cfg !== undefined) {
+      try {
+        const resolver = createDefaultSecretResolver({
+          fileRoot: agentDirs[0] ?? manifestDir(manifestPath),
+        });
+        controlPlaneAuth = await buildControlPlaneAuth({
+          config: cpResolution.cfg,
+          secrets: (ref) => resolver.resolve(ref),
+        });
+        const loopbackDesc = describeAllowLoopback(cpResolution.cfg.allowLoopback);
+        const routeScopeKeys = cpResolution.cfg.routeScopes
+          ? Object.keys(cpResolution.cfg.routeScopes)
+          : [];
+        const routeScopeSuffix =
+          routeScopeKeys.length > 0 ? `, routeScopes: ${routeScopeKeys.join(',')}` : '';
+        const sourceDesc =
+          cpResolution.source === 'fleet'
+            ? 'fleet.yaml'
+            : cpResolution.chosenAgentId !== undefined
+              ? `agent.yaml:${cpResolution.chosenAgentId}`
+              : 'agent.yaml';
+        io.out(
+          `  control-plane auth enabled (provider: ${cpResolution.cfg.provider}, source: ${sourceDesc}, allowLoopback: ${loopbackDesc}${routeScopeSuffix})\n`,
+        );
+      } catch (err) {
+        io.err(
+          `⚠ control-plane auth failed to initialise — ${err instanceof Error ? err.message : String(err)}. Falling back to no-auth (loopback-only bind still protects the port).\n`,
+        );
       }
     }
 
@@ -1747,12 +1760,6 @@ function describeAllowLoopback(v: LoadedControlPlaneAuth['allowLoopback']): stri
   if (v === undefined) return 'true'; // matches ControlPlaneAuth middleware default
   if (typeof v === 'boolean') return String(v);
   return `trustedProxies=[${v.trustedProxies.join(',')}]`;
-}
-
-async function loadFleetAgentDirs(fleetPath: string): Promise<string[]> {
-  const root = manifestDir(fleetPath);
-  const fleet = await loadFleet({ root });
-  return fleet.agents.map((a) => a.path);
 }
 
 /**

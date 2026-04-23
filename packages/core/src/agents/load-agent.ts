@@ -52,6 +52,55 @@ const controlPlaneAllowLoopbackSchema = z.union([
 ]);
 
 /**
+ * Exported zod schema for a `controlPlane.auth` block. Shape is the
+ * same discriminated union used in `agent.yaml#controlPlane.auth`:
+ *
+ *   - `{ enabled: false }` — disabled/back-compat (or absent block).
+ *   - `oidc` provider — verifies incoming Bearer tokens against an IdP.
+ *   - `oauth2-client` provider — PKCE / client-credentials flow.
+ *
+ * Exposed so adjacent loaders (fleet-level `controlPlane:` block in
+ * `fleet.yaml`, POST_ENTERPRISE_BACKLOG.md #17) can validate an
+ * identically-shaped object without duplicating the union.
+ *
+ * @since 0.7.5
+ */
+export const controlPlaneAuthSchema = z.union([
+  z
+    .object({
+      enabled: z.literal(false).optional(),
+    })
+    .passthrough(),
+  z
+    .object({
+      enabled: z.literal(true),
+      allowLoopback: controlPlaneAllowLoopbackSchema.optional(),
+      routeScopes: z.record(z.string().min(1), z.array(z.string().min(1))).optional(),
+      provider: z.literal('oidc'),
+      issuer: z.string().min(1),
+      audience: z.string().min(1),
+      jwksUri: z.string().min(1).optional(),
+      scopes: z.array(z.string().min(1)).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      enabled: z.literal(true),
+      allowLoopback: controlPlaneAllowLoopbackSchema.optional(),
+      routeScopes: z.record(z.string().min(1), z.array(z.string().min(1))).optional(),
+      provider: z.literal('oauth2-client'),
+      tokenEndpoint: z.string().min(1),
+      clientId: z.string().min(1),
+      clientSecretRef: z.string().min(1),
+      jwksUri: z.string().min(1).optional(),
+      issuer: z.string().min(1).optional(),
+      audience: z.string().min(1).optional(),
+      scopes: z.array(z.string().min(1)).optional(),
+    })
+    .strict(),
+]);
+
+/**
  * `controlPlane.auth.routeScopes` — per-route scope override map.
  * Keys are exact request pathnames (`/audit`, `/events`, …); values
  * are required-scope arrays. Empty arrays mean "no extra scope
@@ -402,6 +451,52 @@ export type LoadedControlPlaneAuth =
       audience?: string;
       scopes?: readonly string[];
     };
+
+/**
+ * Parse + narrow a raw `controlPlane.auth` object into a
+ * {@link LoadedControlPlaneAuth}. Returns `undefined` when the block
+ * is absent or `enabled: false` — the caller boots the control-plane
+ * listener without auth in that case.
+ *
+ * Throws a {@link z.ZodError} on a shape violation — callers are
+ * expected to wrap with their own config-error class.
+ *
+ * Reused by `load-agent.ts` (per-agent block) AND the fleet-level
+ * `controlPlane:` resolver (POST_ENTERPRISE_BACKLOG.md #17) so the
+ * discriminated-union narrowing lives in one place.
+ *
+ * @since 0.7.5
+ */
+export function parseControlPlaneAuth(raw: unknown): LoadedControlPlaneAuth | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const cfg = controlPlaneAuthSchema.parse(raw);
+  if (!cfg || !('enabled' in cfg) || cfg.enabled !== true || !('provider' in cfg)) {
+    return undefined;
+  }
+  if (cfg.provider === 'oidc') {
+    return {
+      provider: 'oidc',
+      ...(cfg.allowLoopback !== undefined && { allowLoopback: cfg.allowLoopback }),
+      ...(cfg.routeScopes !== undefined && { routeScopes: cfg.routeScopes }),
+      issuer: cfg.issuer,
+      audience: cfg.audience,
+      ...(cfg.jwksUri !== undefined && { jwksUri: cfg.jwksUri }),
+      ...(cfg.scopes !== undefined && { scopes: cfg.scopes }),
+    };
+  }
+  return {
+    provider: 'oauth2-client',
+    ...(cfg.allowLoopback !== undefined && { allowLoopback: cfg.allowLoopback }),
+    ...(cfg.routeScopes !== undefined && { routeScopes: cfg.routeScopes }),
+    tokenEndpoint: cfg.tokenEndpoint,
+    clientId: cfg.clientId,
+    clientSecretRef: cfg.clientSecretRef,
+    ...(cfg.jwksUri !== undefined && { jwksUri: cfg.jwksUri }),
+    ...(cfg.issuer !== undefined && { issuer: cfg.issuer }),
+    ...(cfg.audience !== undefined && { audience: cfg.audience }),
+    ...(cfg.scopes !== undefined && { scopes: cfg.scopes }),
+  };
+}
 
 export interface LoadedAgent {
   readonly spec: AgentSpec;

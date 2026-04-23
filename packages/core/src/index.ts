@@ -518,7 +518,13 @@ export type {
   SkillSourceLocation,
   SkillTier,
 } from './skills/index.js';
-export { AgentConfigError, composeSystemPromptWithSkills, loadAgent } from './agents/load-agent.js';
+export {
+  AgentConfigError,
+  composeSystemPromptWithSkills,
+  controlPlaneAuthSchema,
+  loadAgent,
+  parseControlPlaneAuth,
+} from './agents/load-agent.js';
 export type {
   AgentYaml,
   LoadAgentOptions,
@@ -860,6 +866,7 @@ export type {
   AggregatedPeerEntry,
   AggregatedPeerReport,
   FleetAgentEntry,
+  FleetControlPlane,
   FleetDeploy,
   FleetDeployHealthGate,
   FleetDeployStrategy,

@@ -17,6 +17,7 @@ export type {
   FleetDeployTargetConfig,
   FleetEnvironment,
   FleetEnvironmentOverride,
+  FleetControlPlane,
   FleetHost,
   FleetHostAuth,
   FleetManifest,

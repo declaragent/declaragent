@@ -497,11 +497,37 @@ tracked as #50-follow-up.
 
 ### Slice 6 · `fleet logs -f` (1 week)
 
-**PR 6.1** · SSE multiplexer in the CLI — reads from N `/logs?follow=1` streams, interleaves by timestamp, prefixes each line with `[host/agent]`. Clean shutdown on SIGINT.
+**PR 6.1 (Slice 6a)** · ✅ Shipped (0.7.5) — SSE multiplexer in the CLI
+(`packages/cli/src/fleet-logs-stream.ts`). Reads from N `/logs`
+streams (the host-side route is SSE-only — there is no `?follow=1`
+toggle; "follow" means "hold the socket open"). Chunks are emitted
+to the renderer as they arrive, tagged `[host/agent]` — NO merge-by-
+timestamp layer since live streams are inherently ordered by arrival
+and a cross-host timestamp sort would require unbounded buffering.
+Clean shutdown on SIGINT via `TailLogsMultiHostHandle.stop()` — aborts
+every `fetch`, clears pending reconnect timers, resolves the handle's
+`done` promise. See `fleet-logs-stream.test.ts` for the three ship-gate
+scenarios (interleaving, per-host reconnect isolation, clean stop).
 
-**PR 6.2** · Replay / follow switching — `fleet logs` (no `-f`) shows last 100 per host; `-f` switches to SSE. Cursor handover between the two modes so no log lines are lost at the transition.
+Reconnect: exponential backoff per host, `initialReconnectDelayMs: 500`
+(configurable) doubled up to `maxReconnectDelayMs: 30_000`. A successful
+connect resets the delay. `stop()` during an inter-attempt wait cancels
+the timer — no 30s hang on exit. A mid-stream failure on one host
+NEVER bounces the others; error isolation is per-host by construction.
 
-**Acceptance:** a three-host fleet tailing in one terminal shows interleaved output in real time; SIGINT closes all streams promptly.
+**PR 6.2** · Replay / follow switching — `fleet logs` (no `-f`) shows
+last 100 per host; `-f` switches to SSE. Cursor handover between the
+two modes so no log lines are lost at the transition. Not yet shipped
+— 0.7.5 keeps snapshot + follow as two separate modes (the snapshot
+reader in `fleet-cross-host-cli.ts` and the follow multiplexer in
+`fleet-logs-stream.ts`). Cursor handover follow-up tracked as a
+Sprint-6 item once operators confirm the one-terminal UX is right.
+
+**Acceptance:** ✅ a three-host fleet tailing in one terminal shows
+interleaved output in real time; SIGINT closes all streams promptly.
+Verified in unit tests; live multi-host integration harness is the
+Sprint-6 follow-up (same pattern as the `packages/testkit/src/control-plane-integration/`
+pair of `up` processes on 19001/19002 the Slice 5 tests use).
 
 ### Slice 7 · `fleet health` + `fleet metrics` (4 days)
 
