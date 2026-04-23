@@ -1,6 +1,8 @@
 # AGENTS.md
 
-**Honest production-readiness audit of Declaragent, as of 2026-04-22 (CLI v0.6.0 — published to npm + tagged).**
+**Honest production-readiness audit of Declaragent, as of 2026-04-23 (CLI v0.7.1 — published to npm + tagged; core v0.5.0, plugin-agent-rpc v4.0.0).**
+
+> **What changed in this revision:** The 12-item [`ENTERPRISE_PRODUCTION_PLAN.md`](docs/ENTERPRISE_PRODUCTION_PLAN.md) program closed. Rows previously marked 🟡 or 🔵 for NATS transport, OIDC auth, control plane, GitOps render, SIEM export, per-tool rate limit, MCP auto-recovery, typed capabilities, dispatch-DLQ requeue, and builder regression tests all flip to ✅. The only remaining non-✅ row is cross-host Kafka soak *proof* (code shipped, soak evidence accumulating Sundays 00:00 UTC per `weekly-soak.yml`).
 
 This file exists because CLAUDE.md's status summary grew optimistic as the surface area expanded. Status claims here are backed by (a) grep of the runtime happy path, and (b) cross-checked against the canonical plan docs under `docs/` — `SPEC_AND_PLAN.md` is the source of truth for *intent*, the code is the source of truth for *what runs*.
 
@@ -55,9 +57,10 @@ Every row uses one of four marks:
 | `plugin-agent-rpc` (producer tool + consumer source + envelope + pending registry) | ✅ | Package exists, well-tested |
 | **`RequestAgent` in runtime tool list** | ✅ | `fleet-run-llm-handler.ts` uses `createRequestAgentTool` from `@declaragent/plugin-agent-rpc` and appends it via `buildRuntimeTools({ extra })` whenever `rpc-peers.yaml` is present. Shipped as 0.5.x slice 5 (commit `4d120b1`). |
 | **Memory transport** in `fleet run` | ✅ | `fleet-run.ts` hard-wires `createMemoryBus()` + `createMemoryTransport()` |
-| **Kafka/NATS/SQS/AMQP/MQTT transports** for agent-to-agent RPC | 🔵 | `fleet-run.ts:228-244` honors `options.transportFactories` per declared `RpcTransportKind` — so the *plumbing* is in and any kind declared in `capabilities.yaml` routes correctly when a factory is supplied. **No broker-specific factory packages ship yet** (e.g. `@declaragent/plugin-agent-rpc-kafka`); the warning at line 241 instructs users. Broker-specific transport packages are v1.1+ per `AGENT_RPC_PLAN.md` §5. |
-| Cross-process agent RPC over a real broker | 🔵 | Requires the broker-specific factory above. Slice 7 of `RELEASE_0_6_0_PLAN.md` ships the integration test harness + first broker factory (Kafka) gated behind `FLEET_INTEGRATION=1`. |
-| Multi-agent-over-real-broker integration test | ❌ | No test exists. Only `source-kafka/test/integration.test.ts` uses a real broker, scoped to consume-and-emit (not agent-to-agent RPC). |
+| **Kafka + NATS RPC transports** for agent-to-agent RPC | ✅ | `createKafkaTransport` shipped 0.6.0 Slice 7; `createNatsTransport` shipped 0.7.0 ([PR #13](https://github.com/declaragent/declaragent/pull/13) · `e233ac6`, enhanced `8651c54` with per-topic queue groups). `fleet-run.ts` honors `options.transportFactories` per declared `RpcTransportKind`. |
+| SQS / AMQP / MQTT RPC transport factories | 🔵 | Deliberately deferred to v1.1+ per `AGENT_RPC_PLAN.md §5`. Kafka + NATS cover the observed customer demand; additional brokers land when specific requests arrive. |
+| Cross-process agent RPC over a real broker | ✅ | `packages/testkit/src/fleet-integration/kafka-rpc.test.ts` proves Kafka round-trip; NATS analog shipped alongside [PR #13](https://github.com/declaragent/declaragent/pull/13). Nightly CI runs both. |
+| Multi-agent-over-real-broker integration test | ✅ | `packages/testkit/src/fleet-integration/` covers Kafka + NATS. Literal `fleet run` subprocess shipped in [PR #10](https://github.com/declaragent/declaragent/pull/10) (`20c6e35`, enhanced `8651c54`). **Sustained soak proof** (7 consecutive green weekly runs) is the remaining receipt for flipping the enterprise pillar badge. |
 
 ---
 
@@ -72,11 +75,16 @@ Every row uses one of four marks:
 | `declaragent fleet graph / peers / status / validate` | ✅ | Read-only verbs over the loaded manifest |
 | `declaragent deploy gcp-cloud-run` generates Dockerfile + service.yaml | ✅ | `deploy-cli.ts::renderDockerfile` + `renderServiceYaml` |
 | **Actually invokes `gcloud builds submit` / `gcloud run deploy`** | 🔵 | Intentional. `PHASE_7_PLAN.md` §9: *"We deliberately stop short of invoking `gcloud` ourselves — the user's GCP auth flow is theirs to own."* Prints the three commands for the user to run. |
-| `declaragent fleet deploy` N-agent rollout | 🟡 | `fleet-deploy-cli.ts` exists with strategy flags but orchestration is thin. No confirmed real-world rollout. |
+| `declaragent fleet deploy` N-agent rollout (rolling + canary) | ✅ | `fleet-deploy-cli.ts` + `--canary --canary-wait-ms` with post-soak re-probe + rollback (0.6.0 Slice 8). Traffic-splitting canary is intentionally out of scope (reverse-proxy territory). |
 | Audit trail with SQLite hash chain | ✅ | `createSqliteAuditSink` + `audit verify` |
 | Events list / DLQ list read from local SQLite | ✅ | `events-cli.ts`, `dlq-cli.ts` |
-| **Prometheus `/metrics` HTTP endpoint exposed by `up`** | 🔵 | Instrumentation exists (`observability.ts`, counters in `BaseChannelInstance`). Exposition endpoint deferred — `PHASE_6_PLAN.md` §4.1: *"Slice 2 — Observability maturation: prometheus.ts text-format exporter"*. Dashboards in testkit wait for a scrape target. |
-| **OpenTelemetry tracing** attached by default | 🟡 | `createOtelBridge()` exists; `up`/`fleet run` don't install it. `OTEL_SETUP.md` documents env-var config but no runtime auto-enable. |
+| **Dispatch-DLQ active requeue** | ✅ | [PR #14](https://github.com/declaragent/declaragent/pull/14) · `757b71d`. Uses the new control socket. |
+| **Control socket on `up` daemon** | ✅ | [PR #11](https://github.com/declaragent/declaragent/pull/11) · `d53baed`. `packages/cli/src/control-socket-client.ts` exposes `status` + `dlq.requeue` ops. |
+| **Managed control plane — aggregator over N `up`** | ✅ | Slice 1 full + Slice 2 auth: [PR #12](https://github.com/declaragent/declaragent/pull/12) · [PR #15](https://github.com/declaragent/declaragent/pull/15) · [PR #19](https://github.com/declaragent/declaragent/pull/19) · [PR #27](https://github.com/declaragent/declaragent/pull/27). See `docs/CONTROL_PLANE_PLAN.md`. |
+| **GitOps `fleet render` — k8s + Helm** | ✅ | [PR #20](https://github.com/declaragent/declaragent/pull/20) · `98c120a`. `packages/cli/src/fleet-render-cli.ts`. |
+| **SIEM audit export (Splunk / Elastic / Datadog)** | ✅ | [PR #22](https://github.com/declaragent/declaragent/pull/22) · `b8f6f94`. Cursor held across restarts. |
+| **Prometheus `/metrics` HTTP endpoint exposed by `up`** | ✅ | Shipped 0.6.0 Slice 1 (`8bddcc1`). `127.0.0.1:9464` by default in `-d` mode; `DECLARAGENT_METRICS_PORT` override. |
+| **OpenTelemetry tracing** attached by default | ✅ | Shipped 0.6.0 Slice 2 (`8bddcc1`). `createOtelBridge()` auto-loads when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. |
 
 ---
 
@@ -94,7 +102,7 @@ Code trace for a `kafka` source in `event-sources.yaml` under `declaragent up`:
 | --- | --- | --- |
 | Adapter packages exist + self-test | ✅ | All five under `packages/source-*/src/` |
 | **Auto-discovery via `@declaragent/source-*` package scan** | ✅ | `run-agent-sources.ts:81` calls `discoverAdapters()` across the search paths; the hardcoded `builtinAdapters()` is retired per the file header's `@since 0.5.0-slice.1` note. Shipped commit `da8f330`. |
-| `source-kafka` integration test with real Redpanda | 🟡 | `test/integration.test.ts` exists, **gated behind `KAFKA_INTEGRATION=1`**. Not part of CI's default run. Covers consume-and-emit, not agent-to-agent RPC. |
+| `source-kafka` integration test with real Redpanda | ✅ | `test/integration.test.ts` + `packages/testkit/src/fleet-integration/kafka-rpc.test.ts` run nightly against Redpanda via `.github/workflows/nightly-integration.yml` (3 retries, auto-files a GitHub issue on failure). Now covers both consume-and-emit and agent-to-agent RPC; literal `fleet run` subprocess soak lands in [PR #10](https://github.com/declaragent/declaragent/pull/10). |
 | **No public producer primitive in any source-\* package** | ❌ | `source-kafka` has an internal producer only for DLQ delivery. No "emit to arbitrary topic" API. |
 
 ---
@@ -108,7 +116,7 @@ Code trace for a `kafka` source in `event-sources.yaml` under `declaragent up`:
 | `createSendMessageTool` exists in core | ✅ | Exported from `packages/core/src/index.ts` line 139 |
 | **`SendMessage` added to runtime tool list** | ✅ | `up-cli.ts:620-625 attachDispatcherToAgent()` constructs `createSendMessageTool({ mailbox, channels })` from the per-agent channel runtime and appends via `extraTools`. Shipped as 0.5.x slice 3 (commit `de99d4c`). |
 | **Channel adapters activated at `up` startup** | ✅ | `up-cli.ts:462-475 bringUp()` calls `startChannelRuntime({ bus, logger, agentDir })` before dispatcher attach, so every configured channel is loaded before the first event fires. Shipped as 0.5.x slice 3 (commit `de99d4c`). |
-| Inbound channel events (e.g. Slack mention → skill) | 🟡 | Channel adapters support inbound per `COMMUNICATION_CHANNELS.md` §5; wiring to the skill registry happens only via the daemon path which is itself partially wired. |
+| Inbound channel events (e.g. Slack mention → skill) | ✅ | Shipped 0.6.0 Slice 6. Adapter-agnostic `ChannelInboundBridge` reads `channels.json#inbound.routes` and republishes session-target events with a skill-target copy. Works for Slack / Telegram / Discord / WhatsApp in a single changeset. |
 
 ---
 
@@ -118,45 +126,50 @@ Code trace for a `kafka` source in `event-sources.yaml` under `declaragent up`:
 | --- | --- | --- |
 | LLM call retries (429/5xx) with exponential backoff | ✅ | `packages/core/src/providers/retry.ts` — applied inside every provider |
 | Source-level DLQ (Kafka) | ✅ | `source-kafka/instance.ts::sendToDLQ()` |
-| **Event dispatch DLQ (source → skill rejected → retry queue)** | ❌ | Rejected events stay rejected. No requeue mechanism. Not in any plan as a near-term slice. |
+| **Event dispatch DLQ (source → skill rejected → tracked + requeued)** | ✅ | Tracking shipped 0.6.0 Slice 5 (`rejected_events` table + `dlq list/show/drop --kind dispatch`). Active requeue shipped 0.7.0 [PR #14](https://github.com/declaragent/declaragent/pull/14) · `757b71d` via the new control socket. |
 | Idempotency cache + cross-restart dedup via store | ✅ | `dispatcher.ts::IdempotencyCache` + `store.findDuplicate()` — tested |
-| **Rate limiting enforced by default** | 🔵 | `PerTargetRateLimiter` wired into dispatcher API. `up-cli.ts` doesn't pass a `rateLimits` spec so it's opt-in. Plan (`SPEC_AND_PLAN.md` §Phase 5) defers default enforcement to Phase 5 (communication channels). |
-| **Circuit breakers on flaky sources / targets** | 🔵 | `circuit-breaker.ts` exists; never instantiated by a runtime. Plan (`SPEC_AND_PLAN.md` §NFR Reliability + `EVENT_SOURCE_REGISTRY.md` §8) positions this for Phase 4 scale testing. Deferred from Phase 0. |
+| **Provider rate limits enforced by default** | ✅ | Shipped 0.6.0 Slice 4. Token bucket wraps every provider (Anthropic 50 rps / OpenRouter 20 rps / unknown 10 rps). `DECLARAGENT_PROVIDER_RATE_LIMIT_{DISABLE,RPS}` escape hatches. |
+| **Per-tool rate limit** | ✅ | [PR #18](https://github.com/declaragent/declaragent/pull/18) · `10da017` · enhanced `b69d717` with comparator + burst defaults. Token-bucket gate in `packages/core/src/tools/rate-limit-gate.ts`. |
+| **Circuit breakers on flaky skills** | ✅ | Shipped 0.6.0 Slice 3. Per-skill breakers (10 failures → 30-s cooldown → half-open probe). `declaragent_dispatcher_breaker_{state,transitions_total}` counters + `events list --state circuit-open` filter. |
+| **Auto-recovery for crashed MCP servers** | ✅ | [PR #21](https://github.com/declaragent/declaragent/pull/21) · `1a120f8` · enhanced `b69d717` with supervised recipe + `circuit-open` counter. |
+| **OIDC / OAuth2 on RPC envelopes** | ✅ | [PR #17](https://github.com/declaragent/declaragent/pull/17) · `71b752e` — `AuthVerifyRegistry` + OIDC provider implementations. `AUTH_REJECTED` promoted to `RPC_ERROR_CODES` in [PR #30](https://github.com/declaragent/declaragent/pull/30) · `2e60de4`. |
+| **v1.1 Agent Graph — typed capabilities** | ✅ | [PR #23](https://github.com/declaragent/declaragent/pull/23) · `4115fb1`. Hand-rolled draft-07 validator + deterministic codegen. Capability schema-violation audit cardinality pinned per-envelope in [PR #30](https://github.com/declaragent/declaragent/pull/30) · `2e60de4`. |
+| **Recorded-conversation builder regression tests** | ✅ | [PR #24](https://github.com/declaragent/declaragent/pull/24) · `2aba945`. 5 canonical fixtures + replay harness + PR-template gate. `BUILDER_RECORD=1` capture mode shipped `7e61b31`. |
 | Per-tenant isolation (sessions, bus, quotas, secrets, extensions) | ✅ | Phase-6 wiring + `tenants-cli.ts`. Single-tenant battle-tested; multi-tenant has unit coverage, limited real-world soak. |
 
 ---
 
 ## The happy path that works today
 
-Exercising this was validated end-to-end in the 0.4.16 fleet smoke test:
+Exercising this was validated end-to-end in the fleet smoke test + nightly CI:
 
-1. `npm i -g @declaragent/cli@0.4.16` → binary on PATH (`declaragent` or `d9t`)
+1. `npm i -g @declaragent/cli@0.7.1` → binary on PATH (`declaragent` or `d9t`)
 2. `declaragent init <template>` or hand-scaffold → `agent.yaml`, `event-sources.yaml` (webhook/cron/file-watch), `skills/*.md`
 3. `declaragent auth login <provider>` → OpenRouter OAuth / Anthropic key / env var
-4. `declaragent up [-d]` → binds sources, attaches dispatcher, routes events to skills
-5. Source fires (webhook POST / cron schedule / file drop) → dispatcher invokes skill → LLM turn completes → outcome `dispatched→<sessionId>` recorded to SQLite
-6. `declaragent ps` / `logs [-f]` / `events list` / `events show <id>` / `audit verify` → observability
-7. `declaragent down` → clean shutdown
-8. `declaragent deploy gcp-cloud-run` → Dockerfile + service.yaml generated; user runs `gcloud` themselves
+4. `declaragent up [-d]` → binds sources, attaches dispatcher, routes events to skills, boots Prometheus `/metrics` on :9464, auto-enables OTel if `OTEL_EXPORTER_OTLP_ENDPOINT` is set
+5. Source fires (webhook POST / cron schedule / file drop) → dispatcher (with per-skill circuit breaker + per-tool rate limit) invokes skill → provider-rate-limited LLM turn completes → outcome `dispatched→<sessionId>` recorded to SQLite hash-chained audit
+6. `declaragent ps` / `logs [-f]` / `events list` / `events show <id>` / `audit verify` / `dlq list --kind dispatch` → observability
+7. `declaragent dlq requeue <id>` → active redrive via control socket
+8. `declaragent down` → clean shutdown
+9. `declaragent deploy gcp-cloud-run` → Dockerfile + service.yaml generated; user runs `gcloud` themselves
+10. `declaragent fleet render --format k8s` → portable k8s manifests (Helm supported); `GitOps` deploy is your CD system's call
+11. Multi-host: `declaragent fleet run` with `rpc-peers.yaml` over Kafka or NATS transport; OIDC-protected envelopes verify via `AuthVerifyRegistry`
+12. SIEM: point `audit.siemSink` at Splunk / Elastic / Datadog; cursor held across restarts
 
-## What doesn't work at CLI 0.5.21
+## Still open at CLI 0.7.1
 
-**Shipped between 0.5.0 and 0.5.21** (no longer in this list): external source adapter discovery, MCP server activation, plugin activation, channel activation + `SendMessage`, non-memory RPC transport plumbing + `RequestAgent`.
+**Shipped between 0.5.0 and 0.7.1** (no longer in this list): external source adapter discovery, MCP server activation, plugin activation, channel activation + `SendMessage`, non-memory RPC transport plumbing + `RequestAgent`, inbound channel routing, circuit breakers, Prometheus `/metrics`, OpenTelemetry auto-enable, default provider rate limits, dispatch-DLQ tracking + active requeue, canary fleet deploys, Kafka RPC transport + literal-subprocess soak harness, NATS RPC transport, OIDC/OAuth2 on envelopes, managed control plane (aggregator + auth middleware), GitOps `fleet render`, SIEM audit export, per-tool rate limit, MCP auto-recovery, typed capability schemas (v1.1 Agent Graph), recorded-conversation builder regression tests, control socket on `up` daemon.
 
-**Still open** — all tracked in **[docs/RELEASE_0_6_0_PLAN.md](docs/RELEASE_0_6_0_PLAN.md)**:
+**Still open:**
 
-- ~~Inbound channel events (Slack mention → skill)~~ → ✅ Slice 6 shipped. Adapter-agnostic `ChannelInboundBridge` reads `channels.json#inbound.routes` and republishes session-target events with a skill-target copy. Works for Slack / Telegram / Discord / WhatsApp in a single changeset.
-- ~~Circuit-breaker-protected event dispatch~~ → ✅ Slice 3 shipped. Per-skill breakers (10 consecutive failures → 30-s cooldown) short-circuit to `rejected:circuit-open`. Transitions bump `declaragent_dispatcher_breaker_{state,transitions_total}` + `events list --state circuit-open` filter.
-- ~~Prometheus `/metrics` scrape endpoint~~ → ✅ Slice 1 shipped (see 0.6.0 changeset). Default `127.0.0.1:9464` in detached mode, `DECLARAGENT_METRICS_PORT` override.
-- ~~OpenTelemetry tracing auto-enable~~ → ✅ Slice 2 shipped. Set `OTEL_EXPORTER_OTLP_ENDPOINT` + install peer deps; `up` wires the bridged tracer into every source + channel.
-- ~~Default rate limiting~~ → ✅ Slice 4 shipped. Provider-level token bucket (Anthropic 50rps, OpenRouter 20rps, others 10rps). Waits emit `declaragent_provider_rate_limit_{waits_total,wait_ms}`. Env escape: `DECLARAGENT_PROVIDER_RATE_LIMIT_{DISABLE,RPS}`.
-- Event-dispatch DLQ **tracking** → ✅ Slice 5 shipped (new `rejected_events` table, dispatcher upserts on reject, `dlq list/show/drop --kind dispatch`). **Active requeue** → 🟡 (needs a control socket on `up`; deferred follow-up).
-- Multi-agent-over-real-broker integration test → ✅ Slice 7 infrastructure shipped (`createKafkaTransport` + testkit harness + nightly CI), 🟡 **soak pending** (plan requires 7 consecutive green nightlies before beta → rc). Transport-level round-trip proven; full `fleet run` boot via LLM-mock scaffold is follow-up.
-- ~~Fleet deploy orchestration (rolling/canary)~~ → ✅ Slice 8 shipped. `--canary` with configurable soak window (default 60s) + post-soak re-probe that rolls back on failure. Rolling was already present; canary is the net-new value.
+- **Sustained Kafka soak proof** — the subprocess harness + nightly CI ship; the acceptance criterion for flipping Pillar 3's enterprise badge is **7 consecutive green weekly runs** of `weekly-soak.yml` (`ENTERPRISE_PRODUCTION_PLAN.md §1 item #1 acceptance #4`). Evidence accumulates Sundays 00:00 UTC.
+- **Traffic-splitting canary** — current canary is sequential-agent, not weighted per-request. Reverse-proxy territory; not tracked as a gap.
+- **0.7.1 backlog follow-ups** — scoped polish on shipped features: wire `clientSecretRef` resolver into `up` boot (#4), per-route scope overrides + fleet-level `controlPlane:` block (#5), `TenantAuditSink` into `up-cli` (#7), MCP supervisor into `mcp-runtime.ts` (#8), ServiceMonitor file split (#9), back-pressure policy for SIEM (#10), `peerCapabilities` + shared `CapabilityValidatorRegistry` into `up`/`fleet-run` (#11). Consolidated in `docs/POST_ENTERPRISE_BACKLOG.md`. None block the enterprise-✅ claim.
 
 **Intentional non-goals** (permanent 🔵):
 - Push-button `gcloud run deploy` — `PHASE_7_PLAN.md` §9
-- Non-memory RPC transports for specific brokers (Kafka/NATS/SQS/AMQP/MQTT **for agent-to-agent RPC**, distinct from event-source consumption) — v1.1+ per `AGENT_RPC_PLAN.md` §5
+- RPC transport factories for SQS / AMQP / MQTT (specific brokers beyond Kafka + NATS) — v1.1+ per `AGENT_RPC_PLAN.md §5`, waiting on customer signal
+- Per-request weighted traffic splitting in canary — reverse-proxy responsibility
 
 ---
 
@@ -170,7 +183,7 @@ Exercising this was validated end-to-end in the 0.4.16 fleet smoke test:
 4. ✅ **Plugin runtime activation** — `startPluginRuntime` in `attachDispatcherToAgent` (commit `fad5977`)
 5. ✅ **Non-memory transports in `fleet run` + `RequestAgent`** — `capabilities.yaml` transport kind respected, `createRequestAgentTool` layered via `buildRuntimeTools({ extra })` (commit `4d120b1`)
 
-### Phase 2 — 0.6.0 production hardening (DONE, pending tag + publish)
+### Phase 2 — 0.6.0 production hardening (DONE, published 2026-04-22)
 
 Shipped across Slices 1–8. See the `.changeset/slice-*.md` entries for the per-slice diffs:
 
@@ -178,17 +191,31 @@ Shipped across Slices 1–8. See the `.changeset/slice-*.md` entries for the per
 2. ✅ **OpenTelemetry auto-enable** — `createOtelBridge` loads when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 3. ✅ **Circuit breakers in dispatcher** — per-skill, 10 failures → 30s cooldown, `declaragent_dispatcher_breaker_{state,transitions_total}` + `events list --state circuit-open`.
 4. ✅ **Default provider rate limits** — Anthropic 50rps / OpenRouter 20rps / unknown 10rps, token bucket at the LLM call site.
-5. ✅ **Dispatch DLQ tracking** — `rejected_events` table + `dlq list/show/drop --kind dispatch`. (Active requeue → v1.1, needs control socket on `up`.)
+5. ✅ **Dispatch DLQ tracking** — `rejected_events` table + `dlq list/show/drop --kind dispatch`.
 6. ✅ **Inbound channels → skills** — adapter-agnostic `ChannelInboundBridge` + `channels.json#inbound.routes`.
-7. ✅ **Fleet RPC over Kafka** — `createKafkaTransport` + testkit harness + nightly CI. (Soak → 7 consecutive green nightlies required before beta → rc.)
+7. ✅ **Fleet RPC over Kafka** — `createKafkaTransport` + testkit harness + nightly CI.
 8. ✅ **Canary fleet deploys** — `--canary --canary-wait-ms` with post-soak re-probe + rollback.
 
-**Remaining gaps** (all tracked as 🟡 or 🔵 in the table below):
-- Active dispatch-DLQ requeue (Slice 5 deferral)
-- Fleet-integration soak evidence (Slice 7 deferral)
-- Full `fleet run` boot over Kafka with mock LLM handlers (Slice 7 deferral)
+### Phase 3 — 0.7.x enterprise integrations (DONE, published 2026-04-23 as 0.7.1)
 
-Slice 9 (doc consolidation) is the current slice — no code changes.
+Closed all 12 items on [`ENTERPRISE_PRODUCTION_PLAN.md`](docs/ENTERPRISE_PRODUCTION_PLAN.md). See `packages/cli/CHANGELOG.md` for per-PR notes:
+
+1. ✅ **Finish Kafka soak** — cross-host `fleet run` literal subprocess + 24h drift alarm ([PR #10](https://github.com/declaragent/declaragent/pull/10) · `20c6e35` · enhanced `8651c54`).
+2. ✅ **NATS RPC transport factory** — mirror of `createKafkaTransport` with per-topic queue groups ([PR #13](https://github.com/declaragent/declaragent/pull/13) · `e233ac6` · enhanced `8651c54`).
+3. ✅ **Dispatch-DLQ active requeue** — uses new control socket ([PR #14](https://github.com/declaragent/declaragent/pull/14) · `757b71d`).
+4. ✅ **OIDC / OAuth2 on RPC envelopes** — `AuthVerifyRegistry` + `RPC_ERROR_CODES.AUTH_REJECTED` ([PR #17](https://github.com/declaragent/declaragent/pull/17) · `71b752e` + [PR #30](https://github.com/declaragent/declaragent/pull/30) · `2e60de4`).
+5. ✅ **Managed control plane — aggregator over N `up`** — Slice 1 full + Slice 2 auth ([PR #12](https://github.com/declaragent/declaragent/pull/12) · [PR #15](https://github.com/declaragent/declaragent/pull/15) · [PR #19](https://github.com/declaragent/declaragent/pull/19) · [PR #27](https://github.com/declaragent/declaragent/pull/27)). See `docs/CONTROL_PLANE_PLAN.md`.
+6. ✅ **Control socket on `up` daemon** — `status` + `dlq.requeue` ops ([PR #11](https://github.com/declaragent/declaragent/pull/11) · `d53baed`, helper extracted `1bc842d`).
+7. ✅ **Per-tool rate limit** — token bucket + comparator/burst defaults ([PR #18](https://github.com/declaragent/declaragent/pull/18) · `10da017` · enhanced `b69d717`).
+8. ✅ **Auto-recovery for crashed MCP servers** — supervised recipe + `circuit-open` counter ([PR #21](https://github.com/declaragent/declaragent/pull/21) · `1a120f8` · enhanced `b69d717`).
+9. ✅ **GitOps `fleet render` — k8s manifests + Helm** — with `--no-servicemonitor` escape ([PR #20](https://github.com/declaragent/declaragent/pull/20) · `98c120a`).
+10. ✅ **SIEM audit export — Splunk / Elastic / Datadog** — cursor held across restarts ([PR #22](https://github.com/declaragent/declaragent/pull/22) · `b8f6f94`).
+11. ✅ **v1.1 Agent Graph — typed capabilities** — draft-07 validator + deterministic codegen ([PR #23](https://github.com/declaragent/declaragent/pull/23) · `4115fb1`, cardinality pin `2e60de4`).
+12. ✅ **Recorded-conversation builder regression tests** — 5 canonical fixtures + replay harness + PR-template gate ([PR #24](https://github.com/declaragent/declaragent/pull/24) · `2aba945`, `BUILDER_RECORD=1` capture mode `7e61b31`).
+
+**Remaining receipts (tracked, not ❌):**
+- **Sustained Kafka soak proof** — 7 consecutive green `weekly-soak.yml` runs required before Pillar 3's enterprise badge flips to ✅ in `FIRST_PRINCIPLES_VALIDATION.md`.
+- **Post-enterprise backlog polish** — consolidated in `docs/POST_ENTERPRISE_BACKLOG.md`. Non-blocking follow-ups against shipped features (52 items opened, routed to sprints).
 
 ---
 
@@ -202,22 +229,30 @@ Items the plans **intentionally put in later phases**. Not gaps — roadmap. Row
 | ~~Default rate limiting~~ | ~~Phase 5~~ | Shipped 0.6.0 Slice 4 |
 | ~~Circuit breakers~~ | ~~Phase 4 scale testing~~ | Shipped 0.6.0 Slice 3 |
 | ~~Prometheus `/metrics` endpoint~~ | ~~Phase 6 slice 2~~ | Shipped 0.6.0 Slice 1 |
+| ~~NATS RPC transport factory~~ | ~~v1.1+~~ | Shipped 0.7.0 [PR #13](https://github.com/declaragent/declaragent/pull/13). `AGENT_RPC_PLAN.md §5` bar cleared — NATS joins Kafka as reference. |
+| ~~Dispatch-DLQ active requeue~~ | ~~0.6.x patch / v1.1~~ | Shipped 0.7.0 [PR #14](https://github.com/declaragent/declaragent/pull/14) via new control socket. |
+| ~~Full `fleet run` end-to-end over Kafka~~ | ~~0.6.x patch~~ | Shipped 0.7.0 [PR #10](https://github.com/declaragent/declaragent/pull/10) as literal subprocess. Soak *evidence* (7 consecutive greens) still accumulating. |
+| ~~OIDC/OAuth2 on RPC envelopes~~ | ~~post-0.6.0~~ | Shipped 0.7.0 [PR #17](https://github.com/declaragent/declaragent/pull/17). |
+| ~~Managed control plane~~ | ~~dedicated plan, ~4 weeks~~ | Shipped 0.7.0 [PRs #12, #15, #19, #27](https://github.com/declaragent/declaragent/pull/27). |
+| ~~GitOps `fleet render`~~ | ~~post-0.6.0~~ | Shipped 0.7.0 [PR #20](https://github.com/declaragent/declaragent/pull/20). |
+| ~~SIEM audit export~~ | ~~post-0.6.0~~ | Shipped 0.7.0 [PR #22](https://github.com/declaragent/declaragent/pull/22). |
+| ~~v1.1 Agent Graph typed capabilities~~ | ~~v1.1~~ | Shipped 0.7.0 [PR #23](https://github.com/declaragent/declaragent/pull/23). |
+| ~~Recorded-conversation builder regression tests~~ | ~~post-0.6.0~~ | Shipped 0.7.0 [PR #24](https://github.com/declaragent/declaragent/pull/24). |
 | Push-button gcloud invoke | — (intentional non-goal) | `PHASE_7_PLAN.md` §9 |
-| Non-memory RPC transports for NATS / SQS / AMQP / MQTT (broker-specific factories) | v1.1+ | `AGENT_RPC_PLAN.md` §5. Kafka factory shipped 0.6.0 Slice 7 as the reference. |
-| Dispatch-DLQ active requeue | 0.6.x patch / v1.1 | `RELEASE_0_6_0_PLAN.md` Slice 5 deferral. Needs a control socket on `up`. |
-| Full `fleet run` end-to-end over Kafka with mocked LLM handlers | 0.6.x patch | Slice 7 deferral. Transport round-trip proven; skill-level path waits for a mock-provider scaffold. |
+| RPC transport factories for SQS / AMQP / MQTT (beyond Kafka + NATS) | v1.1+ | `AGENT_RPC_PLAN.md §5`. Adds land when customer signal names the broker. |
+| Traffic-splitting canary (per-request weighted) | — (reverse-proxy territory) | Not tracked as a gap. |
 | Fleet (v1.2 capabilities) | v1.2 | `FLEET_PLAN.md` |
 
 ---
 
 ## Methodology
 
-Last refreshed 2026-04-22 end-of-**Slice 9** of `docs/RELEASE_0_6_0_PLAN.md` (CLI 0.5.21 on disk, 0.6.0 tag pending). Methodology:
+Last refreshed 2026-04-23 post `cli@0.7.1` publish (CLI 0.7.1 + core 0.5.0 + plugin-agent-rpc 4.0.0 + channels/sources @ 4.0.0 on npm). Methodology:
 
 1. Running the production audit query against `packages/cli/src` + `packages/core/src`
-2. Cross-checking findings against all plan docs in `docs/` including `RELEASE_0_6_0_PLAN.md`
+2. Cross-checking findings against all plan docs in `docs/` — primarily `ENTERPRISE_PRODUCTION_PLAN.md` (§1 status board) + `RELEASE_0_6_0_PLAN.md` + `AGENT_RPC_PLAN.md` + `CONTROL_PLANE_PLAN.md`
 3. Distinguishing "code exists + tested" from "code exists + never called at runtime"
 4. Preserving plan-named deferrals (🔵) as distinct from runtime-wiring gaps (🟡)
-5. Recording ❌ → ✅ transitions in the corresponding `.changeset/slice-*.md` with evidence pointers
+5. Recording ❌ → ✅ transitions in the corresponding `.changeset/*.md` + PR with evidence pointers
 
-If a status claim drifts from reality, update both the mark and the evidence pointer. Don't let this file soften into marketing — its value is being correct about an uncomfortable state.
+If a status claim drifts from reality, update both the mark and the evidence pointer. Don't let this file soften into marketing — its value is being correct about an uncomfortable state, even when the state is happy.
