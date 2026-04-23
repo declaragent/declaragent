@@ -35,6 +35,7 @@ import {
   type FleetAgentRpcContext,
   type FleetRunIO,
   type FleetTransportFactory,
+  createMemoizedLoadAgent,
   defaultHandler,
   fleetRun,
   startFleetDaemon,
@@ -1255,5 +1256,43 @@ describe('fleet-run #11 typed-capability validation', () => {
     } finally {
       h.cleanup();
     }
+  });
+});
+
+// ── #43 loadAgent memoization ────────────────────────────────────────────
+
+describe('createMemoizedLoadAgent', () => {
+  test('calls the loader once per unique agent path', async () => {
+    const calls: string[] = [];
+    const memo = createMemoizedLoadAgent(async (agent) => {
+      calls.push(agent.path);
+      // Minimal shape — cache contract is identity-equivalence of the
+      // returned promise, not the LoadedAgent's internals.
+      return { spec: { name: agent.id } } as unknown as Awaited<ReturnType<typeof memo>>;
+    });
+    const a = { id: 'a', path: '/tmp/a' } as unknown as Parameters<typeof memo>[0];
+    const b = { id: 'b', path: '/tmp/b' } as unknown as Parameters<typeof memo>[0];
+    const first = await memo(a);
+    const second = await memo(a);
+    expect(first).toBe(second);
+    expect(calls).toEqual(['/tmp/a']);
+    await memo(b);
+    expect(calls).toEqual(['/tmp/a', '/tmp/b']);
+    // Same path → cache hit, still just two distinct loader invocations.
+    await memo(a);
+    await memo(b);
+    expect(calls).toEqual(['/tmp/a', '/tmp/b']);
+  });
+
+  test('failed loads stay in the cache so the probe does not re-read bad disk', async () => {
+    let calls = 0;
+    const memo = createMemoizedLoadAgent(async () => {
+      calls += 1;
+      throw new Error('bad yaml');
+    });
+    const a = { id: 'a', path: '/tmp/a' } as unknown as Parameters<typeof memo>[0];
+    await expect(memo(a)).rejects.toThrow('bad yaml');
+    await expect(memo(a)).rejects.toThrow('bad yaml');
+    expect(calls).toBe(1);
   });
 });

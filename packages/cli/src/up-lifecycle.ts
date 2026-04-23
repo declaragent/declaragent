@@ -51,6 +51,20 @@ export interface UpAgentSummary {
 export interface UpState {
   readonly version: 1;
   readonly pid: number;
+  /**
+   * CLI version that wrote this state file. Populated from
+   * `CLI_VERSION` in `packages/cli/src/version.ts` at `up` boot time.
+   *
+   * Absent on state written by pre-0.7.2 daemons — `readUpState`
+   * returns whatever is on disk, so consumers MUST treat this as
+   * optional and fall back to `'dev'` (matches `buildUpStatusSnapshot`
+   * before #44 was wired).
+   *
+   * See: docs/POST_ENTERPRISE_BACKLOG.md #44.
+   *
+   * @since 0.7.2
+   */
+  readonly cliVersion?: string;
   /** ISO timestamp of the up-process's start. */
   readonly startedAt: string;
   /** Absolute path to the fleet.yaml or agent.yaml that drove this `up`. */

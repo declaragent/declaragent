@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# Declaragent pre-push hook — drift guards.
+#
+# Covers:
+#   #48 — regenerate `docs/cli-reference.md` via `scripts/docs-cli-extract.ts`
+#         when the commits being pushed touch `packages/cli/src/index.tsx`
+#         (the source the extractor reads). Two round-trip PRs in Sprint 1
+#         were caused by this regeneration being missed.
+#   #49 — `biome format --write docs-site/sidebars.ts` when the commits
+#         being pushed touch the file. Biome output has churned repeatedly
+#         across rounds because contributors edit the sidebar by hand.
+#
+# Both guards abort the push when they have to rewrite a file. Re-stage,
+# amend/commit, push again. This is intentional: the hook refuses to
+# silently push a drifting commit.
+#
+# Install via `bun run hooks:install` (runs `git config core.hooksPath
+# .githooks`). Opt out per-push via `git push --no-verify`.
+#
+# @since 0.7.2 (post-enterprise backlog #48, #49)
+
+set -eu
+
+# When nothing is being pushed git still invokes us (e.g. `git push` with
+# nothing to update). Stay quiet in that case.
+if ! read -r local_ref local_sha remote_ref remote_sha; then
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+# Build a diff range of what's about to be pushed. When pushing a brand-new
+# branch `remote_sha` is all-zeros — fall back to diffing against origin/main.
+zero_sha="0000000000000000000000000000000000000000"
+if [ "$remote_sha" = "$zero_sha" ]; then
+  # New branch — diff against the merge-base with the default branch.
+  base="$(git merge-base "$local_sha" origin/main 2>/dev/null || echo "")"
+  if [ -z "$base" ]; then
+    # No origin/main; diff against the parent of the tip commit so we
+    # at least inspect the pushed commits' own changes.
+    range="$local_sha~1..$local_sha"
+  else
+    range="$base..$local_sha"
+  fi
+elif [ "$local_sha" = "$zero_sha" ]; then
+  # Branch deletion — nothing to inspect.
+  exit 0
+else
+  range="$remote_sha..$local_sha"
+fi
+
+changed_files="$(git diff --name-only "$range" 2>/dev/null || true)"
+
+exit_code=0
+
+# ── #48 — docs-cli-extract regeneration ──────────────────────────────────
+if printf '%s\n' "$changed_files" | grep -qE '^packages/cli/src/index\.tsx$'; then
+  echo "pre-push: packages/cli/src/index.tsx changed — running scripts/docs-cli-extract.ts" >&2
+  bun run scripts/docs-cli-extract.ts
+  if ! git diff --quiet -- docs-site/docs/reference/cli.mdx; then
+    echo "pre-push: docs-site/docs/reference/cli.mdx drifted — stage + recommit." >&2
+    exit_code=1
+  fi
+fi
+
+# ── #49 — biome format on docs-site/sidebars.ts ──────────────────────────
+if printf '%s\n' "$changed_files" | grep -qE '^docs-site/sidebars\.ts$'; then
+  echo "pre-push: docs-site/sidebars.ts changed — running biome format --write" >&2
+  bun run biome format --write docs-site/sidebars.ts
+  if ! git diff --quiet -- docs-site/sidebars.ts; then
+    echo "pre-push: docs-site/sidebars.ts drifted after biome format — stage + recommit." >&2
+    exit_code=1
+  fi
+fi
+
+exit "$exit_code"

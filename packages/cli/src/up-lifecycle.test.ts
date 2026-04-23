@@ -86,6 +86,42 @@ describe('up-lifecycle state R/W', () => {
     writeFileSync(upStatePath(dir), JSON.stringify({ version: 99, pid: 1 }), 'utf8');
     expect(readUpState(dir)).toBeNull();
   });
+
+  // #44 — cliVersion threading. State files written pre-0.7.2 never
+  // carried the field; readUpState MUST still accept them, and
+  // writeUpState round-trips the new optional property.
+  test('cliVersion round-trips when supplied (#44)', () => {
+    const state: UpState = {
+      version: 1,
+      pid: 4242,
+      cliVersion: '0.7.2-test',
+      startedAt: '2026-04-23T00:00:00.000Z',
+      manifestPath: '/tmp/m.yaml',
+      agents: [],
+    };
+    writeUpState(state, dir);
+    const read = readUpState(dir);
+    expect(read?.cliVersion).toBe('0.7.2-test');
+  });
+
+  test('readUpState accepts legacy state files without cliVersion (#44)', () => {
+    // Pre-0.7.2 `up` writers don't stamp cliVersion. The field is
+    // optional so forward-compat reads must succeed.
+    writeFileSync(
+      upStatePath(dir),
+      JSON.stringify({
+        version: 1,
+        pid: 7777,
+        startedAt: '2026-04-20T00:00:00.000Z',
+        manifestPath: '/tmp/m.yaml',
+        agents: [],
+      }),
+      'utf8',
+    );
+    const state = readUpState(dir);
+    expect(state?.pid).toBe(7777);
+    expect(state?.cliVersion).toBeUndefined();
+  });
 });
 
 describe('isAlive', () => {

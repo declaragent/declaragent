@@ -196,6 +196,7 @@ export type {
   PrometheusRegistry,
   ResolvedLogPath,
   ResolveLogPaths,
+  UpAgentHost,
   UpAgentMetricsRollup,
   UpAgentStatus,
   UpChannelStatus,

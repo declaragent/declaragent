@@ -246,4 +246,27 @@ describe('statusRoute', () => {
     expect(res.status).toBe(500);
     await handle.close();
   });
+
+  // #45 — per-agent pid fidelity field.
+  it('preserves optional hostedBy fields on each agent (#45)', async () => {
+    const reg = createPrometheusRegistry();
+    const withHost: UpStatusSnapshot = {
+      ...snapshot,
+      agents: [
+        {
+          ...snapshot.agents[0],
+          hostedBy: { pid: 12345, index: 0 },
+        } as UpStatusSnapshot['agents'][number],
+      ],
+    };
+    const { handle, server } = await startFake([metricsRoute(reg), statusRoute(() => withHost)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1:9464/status', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as UpStatusSnapshot;
+    expect(body.agents[0]?.hostedBy?.pid).toBe(12345);
+    expect(body.agents[0]?.hostedBy?.index).toBe(0);
+    await handle.close();
+  });
 });
