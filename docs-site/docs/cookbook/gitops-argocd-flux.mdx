@@ -1,0 +1,174 @@
+---
+id: gitops-argocd-flux
+title: GitOps deploy with ArgoCD or Flux
+sidebar_label: GitOps — ArgoCD / Flux
+---
+
+# GitOps deploy with ArgoCD or Flux
+
+Your platform team already runs ArgoCD or Flux. Declaragent doesn't try to replace that — `declaragent fleet render` emits vanilla Kubernetes manifests (Helm chart **or** Kustomize base) and your existing reconciler does the deploy. Agents become a git artifact like any other workload.
+
+This recipe takes a fleet from `fleet.yaml` to "Argo reconciled, drift-detected, rollback-able" in three commits.
+
+## Prerequisites
+
+- A fleet repo with `fleet.yaml` + per-agent `agent.yaml` (e.g. the [`fleet-starter`](/cookbook/fleet-starter) template).
+- A Kubernetes cluster with **either** ArgoCD **or** Flux v2 installed.
+- Prometheus Operator (for the ServiceMonitor output) — optional, see `--no-servicemonitor` below.
+- A secrets reconciler: External Secrets Operator, Sealed Secrets, or Vault Agent Injector. Declaragent **never** renders live credentials into manifests.
+
+## Step 1 — Render
+
+```bash
+# Helm chart (default)
+declaragent fleet render --target k8s --format helm      --out ./deploy/chart
+
+# Or Kustomize base — pairs well with ApplicationSet per-env overlays
+declaragent fleet render --target k8s --format kustomize --out ./deploy/rendered
+```
+
+Output shape:
+
+```
+deploy/chart/
+├── Chart.yaml
+├── values.yaml                      # stub — real values live in Argo/Flux
+├── templates/
+│   ├── deployment-<agent>.yaml
+│   ├── service-<agent>.yaml
+│   ├── servicemonitor-<agent>.yaml   # gate with --no-servicemonitor
+│   └── secret-<agent>.yaml           # empty stub — populated by ESO / Vault
+└── README.md
+```
+
+The render is **deterministic and offline** (no `kubectl`, no network). Run it in CI on PR merge; snapshot-test the output against golden files.
+
+## Step 2 — Commit to your GitOps repo
+
+CI pushes the rendered directory to either the same repo (`deploy/` path) or a dedicated GitOps repo your Argo/Flux instance watches. Treat the render output as a **build artifact**, not a hand-edited chart — bump the chart version whenever you bump `@declaragent/cli`.
+
+## Step 3a — ArgoCD Application
+
+```yaml
+# argocd/applications/orders-fleet.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: orders-fleet
+  namespace: argocd
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/acme/agents-gitops
+    path: fleets/orders/chart
+    targetRevision: main
+    helm:
+      valueFiles: [values-prod.yaml]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agents-prod
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ApplyOutOfSyncOnly=true]
+```
+
+For per-environment fan-out use an `ApplicationSet` over a Kustomize base:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata: { name: orders-fleet, namespace: argocd }
+spec:
+  generators:
+    - list:
+        elements:
+          - { env: dev,  cluster: https://dev.example }
+          - { env: prod, cluster: https://prod.example }
+  template:
+    metadata: { name: 'orders-{{env}}' }
+    spec:
+      source:
+        repoURL: https://github.com/acme/agents-gitops
+        path: fleets/orders/overlays/{{env}}
+      destination: { server: '{{cluster}}', namespace: agents }
+```
+
+## Step 3b — Flux HelmRelease
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata: { name: agents, namespace: flux-system }
+spec:
+  url: https://github.com/acme/agents-gitops
+  ref: { branch: main }
+  interval: 1m
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: { name: orders-fleet, namespace: agents-prod }
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: ./fleets/orders/chart
+      sourceRef: { kind: GitRepository, name: agents, namespace: flux-system }
+  values:
+    replicaCount: 3
+    serviceMonitor:
+      enabled: true
+```
+
+Or swap `HelmRelease` for `Kustomization` when you rendered with `--format kustomize`.
+
+## Secrets — the non-obvious bit
+
+The rendered `Secret` has empty values by design. Wire them up with your existing reconciler:
+
+```yaml
+# ExternalSecret alongside the rendered chart
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata: { name: orders-fleet-anthropic, namespace: agents-prod }
+spec:
+  refreshInterval: 1h
+  secretStoreRef: { name: vault-prod, kind: ClusterSecretStore }
+  target: { name: orders-fleet-anthropic }
+  data:
+    - secretKey: ANTHROPIC_API_KEY
+      remoteRef: { key: agents/orders, property: anthropic_key }
+```
+
+## Verify reconciliation
+
+```bash
+# ArgoCD
+argocd app get orders-fleet --refresh
+argocd app sync orders-fleet
+
+# Flux
+flux get helmrelease orders-fleet -n agents-prod
+flux reconcile helmrelease orders-fleet -n agents-prod --with-source
+```
+
+Then confirm the audit chain is intact:
+
+```bash
+kubectl exec -n agents-prod deploy/orders-concierge -- \
+  declaragent audit verify --json
+```
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| Argo stuck `OutOfSync` on the ServiceMonitor | Prometheus Operator not installed on this cluster | Re-render with `--no-servicemonitor`, or add `ignoreDifferences` for the CRD |
+| HelmRelease `InstallFailed: missing key ANTHROPIC_API_KEY` | ExternalSecret hasn't synced yet | `kubectl get externalsecret -A`; add a sync wave so secrets reconcile before the Deployment |
+| Pods CrashLoop with `AUTH_REJECTED` | Fleet has `rpc.auth.enabled: true` but a peer is missing an `auth:` block | See [Zero-trust RPC migration](/cookbook/zero-trust-rpc-migration) |
+
+## Related
+
+- [CLI → `declaragent fleet render`](/reference/cli).
+- [Reference → Fleet manifest](/reference/fleet).
+- [Cross-host fleet on Kafka](/cookbook/cross-host-fleet-kafka) — pair GitOps deploy with multi-host observability.
+- [Grafana dashboard import](/cookbook/grafana-dashboard-import).

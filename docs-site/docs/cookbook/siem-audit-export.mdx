@@ -1,0 +1,129 @@
+---
+id: siem-audit-export
+title: Stream audit to Splunk, Elastic, or Datadog
+sidebar_label: SIEM audit export
+---
+
+# Stream the audit chain to your SIEM
+
+Every tool call, channel event, secret read, and policy decision Declaragent makes lands in a **hash-chained** audit log — each row carries a SHA-256 of the previous row, so tampering is detectable with `declaragent audit verify`. This recipe streams that same chain to Splunk HEC, Elastic bulk, or Datadog Logs v2 so your SOC can alert on it alongside everything else.
+
+Three features the `agent.yaml#audit.export` loop ships by default:
+
+- **Back-pressure** — when the exporter falls behind, the daemon slows the ingress side instead of silently dropping events (`audit_backpressure_paused_total`).
+- **Adaptive batch interval** — the loop widens `intervalMs` under steady load and collapses it back when the queue drains (`audit_batch_interval_ms`).
+- **Cursor persistence** — restart the daemon and the exporter resumes from the last ack'd `seq` (stored in the `audit_export_cursor` SQLite table).
+
+## Prerequisites
+
+- `@declaragent/cli ≥ 0.7.4`.
+- SIEM credentials in an env var or a secret resolver (`${secret:vault:…}`). **Never** inline a token in `agent.yaml`.
+- Network egress from the daemon host to the SIEM endpoint. For hardened envs, front it with a forward proxy and set `HTTPS_PROXY`.
+
+## Splunk HEC
+
+```yaml
+# agent.yaml
+id: orders-concierge
+audit:
+  export:
+    kind: splunk
+    hecUrl: https://http-inputs-acme.splunkcloud.com/services/collector/event
+    token: env:SPLUNK_HEC_TOKEN
+    index: declaragent_prod
+    sourcetype: declaragent:audit
+    batchSize: 200
+    intervalMs: 5000
+```
+
+Verify in Splunk:
+
+```
+index=declaragent_prod sourcetype="declaragent:audit"
+| head 10
+| table _time, kind, tenantId, recordHash, prevHash
+```
+
+## Elastic bulk
+
+```yaml
+audit:
+  export:
+    kind: elastic
+    baseUrl: https://es.acme.internal:9200
+    index: declaragent-audit
+    auth:
+      kind: apiKey
+      apiKey: env:ELASTIC_API_KEY
+```
+
+Supported auth modes: `apiKey`, `basic` (username + password), `bearer` (see `packages/core/src/agents/load-agent.ts:370`).
+
+## Datadog Logs v2
+
+```yaml
+audit:
+  export:
+    kind: datadog
+    apiKey: env:DATADOG_API_KEY
+    site: datadoghq.eu                 # or datadoghq.com / us3 / us5 / ap1
+    service: declaragent
+    source: declaragent:audit
+    tags: env:prod,team:platform
+```
+
+## Verify the chain inside the SIEM
+
+Each exported row carries `recordHash` + `prevHash`. Your SIEM can re-run the chain check without hitting Declaragent:
+
+```splunk
+| sort _time
+| streamstats current=f last(recordHash) as expected_prev by tenantId
+| where expected_prev != prevHash AND isnotnull(expected_prev)
+| stats count by tenantId
+```
+
+Any non-zero row = tampering (or an exporter bug). Wire that as a Splunk/Elastic/Datadog alert into your existing SOC rotation.
+
+## Metrics you should alert on
+
+All three shipped via the Prometheus registry (see the [Grafana dashboard](/cookbook/grafana-dashboard-import) row 2):
+
+| Metric | Alert when |
+| --- | --- |
+| `declaragent_audit_backpressure_paused_total` | Rate > 0 sustained for 5 min — SIEM is slow, ingress is being throttled |
+| `declaragent_audit_export_failures_total{retryable="false"}` | Any increment — permanent SIEM failure (bad token, schema reject) |
+| `declaragent_audit_batch_interval_ms` | Stuck at max — loop is in emergency widen mode |
+| `declaragent_audit_export_last_seq` lag vs `declaragent_audit_last_seq` | Gap > 10k — exporter cursor drifting; check SIEM health |
+
+## Multi-tenant
+
+Every exported row carries `tenantId` (`"_system"` for chain-wide entries). Filter at SIEM ingest, or route per-tenant to separate indices:
+
+```yaml
+audit:
+  export:
+    kind: splunk
+    hecUrl: …
+    token: env:SPLUNK_HEC_TOKEN
+    # index is set per-tenant at runtime via ${tenant:id}
+    index: "declaragent_${tenant:id}"
+```
+
+Combine with the [Multi-tenant starter](/cookbook/multi-tenant-starter) for full isolation.
+
+## Failure modes
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Loop paused, `audit_export_failures_total` climbing | 5 consecutive non-retryable failures — loop self-paused | Check exporter config; rows resume on next restart after fix |
+| `401 invalid token` on Splunk | HEC token rotated out-of-band | Rotate via [`declaragent secrets rotate`](/cookbook/rotate-vault-secret); no restart needed |
+| SIEM sees duplicate rows after crash | Exporter ack'd the POST but lost cursor commit | Idempotent — dedupe on `seq` or `recordHash` at SIEM ingest |
+| Back-pressure stuck ON | SIEM is healthy but network egress throttled | Check `HTTPS_PROXY`; widen `batchSize` (fewer round-trips) |
+
+## Related
+
+- [CLI → `declaragent audit`](/reference/cli).
+- [Reference → Observability](/reference/observability).
+- [Grafana dashboard import](/cookbook/grafana-dashboard-import) — SIEM + back-pressure panels pre-wired.
+- Source: `packages/core/src/audit/exporters/{splunk,elastic,datadog}.ts`.
