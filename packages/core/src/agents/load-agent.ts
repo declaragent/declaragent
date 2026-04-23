@@ -86,6 +86,67 @@ const agentYamlSchema = z
       })
       .passthrough()
       .optional(),
+    /**
+     * Enterprise Production Plan §3 Item #10 — SIEM audit export. When
+     * `audit.export.kind` is set, the `up` daemon starts an in-process
+     * loop that forwards new audit rows to the configured vendor on a
+     * 10-second cadence. Secrets land in environment variables, not
+     * this YAML — the loader reads `<vendor>Token` fields from
+     * `process.env` when the `token` key is an `env:FOO` reference.
+     *
+     * @since 0.6.x
+     */
+    audit: z
+      .object({
+        export: z
+          .union([
+            z.object({
+              kind: z.literal('splunk'),
+              hecUrl: z.string().min(1),
+              token: z.string().min(1),
+              index: z.string().optional(),
+              source: z.string().optional(),
+              sourcetype: z.string().optional(),
+              host: z.string().optional(),
+              name: z.string().optional(),
+              batchSize: z.number().int().positive().optional(),
+              intervalMs: z.number().int().positive().optional(),
+            }),
+            z.object({
+              kind: z.literal('elastic'),
+              baseUrl: z.string().min(1),
+              index: z.string().optional(),
+              auth: z.union([
+                z.object({ kind: z.literal('apiKey'), apiKey: z.string().min(1) }),
+                z.object({
+                  kind: z.literal('basic'),
+                  username: z.string().min(1),
+                  password: z.string().min(1),
+                }),
+                z.object({ kind: z.literal('bearer'), token: z.string().min(1) }),
+              ]),
+              name: z.string().optional(),
+              batchSize: z.number().int().positive().optional(),
+              intervalMs: z.number().int().positive().optional(),
+            }),
+            z.object({
+              kind: z.literal('datadog'),
+              apiKey: z.string().min(1),
+              site: z.string().optional(),
+              intakeUrl: z.string().optional(),
+              service: z.string().optional(),
+              source: z.string().optional(),
+              hostname: z.string().optional(),
+              tags: z.string().optional(),
+              name: z.string().optional(),
+              batchSize: z.number().int().positive().optional(),
+              intervalMs: z.number().int().positive().optional(),
+            }),
+          ])
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 
@@ -102,6 +163,57 @@ export interface LoadedToolRateLimit {
   readonly burst: number;
 }
 
+/**
+ * Loaded SIEM export config — zod-normalised shape of `agent.yaml#audit.export`.
+ * The CLI maps this into the corresponding `createSplunkExporter` /
+ * `createElasticExporter` / `createDatadogExporter` options.
+ *
+ * Secrets (tokens, api keys) may be passed inline OR via `env:FOO_BAR`
+ * prefixes. The CLI resolves env refs at daemon-boot time; this loader
+ * simply preserves the verbatim string so non-CLI consumers can do
+ * their own secret resolution.
+ *
+ * @since 0.6.x — Enterprise Production Plan §3 Item #10
+ */
+export type LoadedAuditExport =
+  | {
+      kind: 'splunk';
+      hecUrl: string;
+      token: string;
+      index?: string;
+      source?: string;
+      sourcetype?: string;
+      host?: string;
+      name?: string;
+      batchSize?: number;
+      intervalMs?: number;
+    }
+  | {
+      kind: 'elastic';
+      baseUrl: string;
+      index?: string;
+      auth:
+        | { kind: 'apiKey'; apiKey: string }
+        | { kind: 'basic'; username: string; password: string }
+        | { kind: 'bearer'; token: string };
+      name?: string;
+      batchSize?: number;
+      intervalMs?: number;
+    }
+  | {
+      kind: 'datadog';
+      apiKey: string;
+      site?: string;
+      intakeUrl?: string;
+      service?: string;
+      source?: string;
+      hostname?: string;
+      tags?: string;
+      name?: string;
+      batchSize?: number;
+      intervalMs?: number;
+    };
+
 export interface LoadedAgent {
   readonly spec: AgentSpec;
   readonly skills: readonly Skill[];
@@ -112,6 +224,12 @@ export interface LoadedAgent {
    * block is omitted. CLI passes this straight to `createToolRateLimitGate`.
    */
   readonly toolRateLimits: Readonly<Record<string, LoadedToolRateLimit>>;
+  /**
+   * SIEM export config parsed from `audit.export`. Undefined when the
+   * block is omitted. CLI hands this to {@link startAuditExportLoop}.
+   * @since 0.6.x — Enterprise Production Plan §3 Item #10
+   */
+  readonly auditExport?: LoadedAuditExport;
   readonly agentDir: string;
   readonly agentYamlPath: string;
   /** Lookup-name collisions surfaced by the skill loader; callers may warn. */
@@ -208,11 +326,16 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
     }
   }
 
+  // Audit export — passthrough. Zod has already validated the union;
+  // the cast is safe because the schema shape matches LoadedAuditExport.
+  const auditExport = cfg.audit?.export as LoadedAuditExport | undefined;
+
   return {
     spec,
     skills: skillLoad.skills,
     toolNames: cfg.tools?.defaults ?? [],
     toolRateLimits,
+    ...(auditExport !== undefined && { auditExport }),
     agentDir,
     agentYamlPath,
     skillConflicts: skillLoad.conflicts,

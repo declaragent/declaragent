@@ -101,6 +101,97 @@ tools:
 - Per-user / per-tenant ceilings are **not** yet supported; see Enterprise Production Plan #5 multi-tenant quota work.
 - Dynamic rate adjustment based on 429 response headers is **not** supported; set a conservative `rps` up front.
 
+## `audit.export` — SIEM forwarding
+
+*Added 0.6.x (Enterprise Production Plan §3 Item #10).*
+
+Declaragent keeps a hash-chained audit log in per-host SQLite. Compliance
+teams need that stream in their SIEM. Add an `audit.export` block to your
+`agent.yaml` and the `up` daemon starts an in-process loop that batches
+new rows every 10 s and POSTs them to one of:
+
+- **Splunk** — HEC (HTTP Event Collector) at `<hec-url>/services/collector/event`.
+- **Elastic** — `POST <base>/<index>/_bulk` with `apiKey` / `basic` / `bearer` auth.
+- **Datadog** — Logs v2 intake (`https://http-intake.logs.<site>/api/v2/logs`).
+
+Secrets should live in environment variables — set `token: env:SPLUNK_HEC_TOKEN`
+and the exporter resolves the value at boot. Missing / empty env vars fail
+loud so a typo can't silently bypass export.
+
+### Splunk
+
+```yaml
+audit:
+  export:
+    kind: splunk
+    hecUrl: https://splunk.acme.example:8088
+    token: env:SPLUNK_HEC_TOKEN
+    index: declaragent-audit     # optional — Splunk-side default when omitted
+    source: declaragent.audit    # optional
+    sourcetype: _json            # optional
+    batchSize: 500               # optional — rows per push, default 500
+    intervalMs: 10000            # optional — tick cadence, default 10_000
+```
+
+### Elastic
+
+```yaml
+audit:
+  export:
+    kind: elastic
+    baseUrl: https://es.acme.example:9200
+    index: declaragent-audit
+    auth:
+      kind: apiKey               # or "basic" | "bearer"
+      apiKey: env:ELASTIC_API_KEY
+```
+
+For `basic`: `{ kind: basic, username: env:ELASTIC_USER, password: env:ELASTIC_PASSWORD }`.
+For `bearer`: `{ kind: bearer, token: env:ELASTIC_TOKEN }`.
+
+### Datadog
+
+```yaml
+audit:
+  export:
+    kind: datadog
+    apiKey: env:DD_API_KEY
+    site: datadoghq.com          # or us3. / us5. / datadoghq.eu / ap1. / ddog-gov.com
+    service: declaragent
+    tags: env:prod,team:platform # optional DD tag string
+```
+
+### Operational behaviour
+
+- **Cursor.** The loop writes the highest acked `seq` to the `audit_export_cursor`
+  table in the same SQLite file. A restart picks up exactly where the previous
+  run stopped — no gaps, no duplicates under happy-path conditions. Non-happy
+  paths give **at-least-once** delivery (if the vendor acks but Declaragent
+  crashes before the cursor advance, those rows re-push on boot; the `seq`
+  is stable so downstream dedup is cheap).
+- **Failure handling.** Retryable errors (network / 5xx / 429) re-queue on the
+  next tick. Non-retryable errors (401 / 403 / 400) pause the loop immediately.
+  Five consecutive retryable failures also pause. The paused state emits
+  `declaragent_audit_export_paused{exporter,vendor}=1` on the `/metrics`
+  endpoint. Resume happens on `up` restart.
+- **Observability.**
+  - `declaragent_audit_export_acked_total{exporter,vendor}` — rows ack'd.
+  - `declaragent_audit_export_failures_total{exporter,vendor,retryable}` — failed pushes.
+  - `declaragent_audit_export_last_seq{exporter,vendor}` — highest acked seq.
+  - `declaragent_audit_export_paused{exporter,vendor}` — 1 when halted.
+- **Redaction.** Tokens and vendor-path suffixes (`/services/collector/event`,
+  `/api/v2/logs`, `/<index>/_bulk`) are never written to logs or Prometheus
+  labels — all exporter error strings go through a redaction pass first.
+
+### Scope
+
+- **In.** Forward-only stream of every new audit row. Standard `tool_call`,
+  `channel_event`, `secret_access`, `auth_check`, `rate_limited`, erasure
+  tombstones — everything the hash chain holds.
+- **Out.** Historical backfill, generic syslog/CEF, custom vendor codecs.
+  Operators who need backfill can dump the SQLite file manually and replay
+  via the vendor's own bulk-load tooling.
+
 ## Fields documented post-slice 8
 
 The generated reference will additionally document:
