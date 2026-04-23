@@ -245,6 +245,65 @@ describe('loadAgent', () => {
     });
   });
 
+  test('controlPlaneAuth parses routeScopes + trustedProxies allowLoopback', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        AGENT_YAML,
+        'controlPlane:',
+        '  auth:',
+        '    enabled: true',
+        '    provider: oidc',
+        '    issuer: "https://dex.example.com"',
+        '    audience: "declaragent-control-plane"',
+        '    scopes: ["control:read"]',
+        '    allowLoopback:',
+        '      trustedProxies: ["10.0.0.5", "10.0.0.6"]',
+        '    routeScopes:',
+        '      /audit: ["read:audit"]',
+        '      /events: ["read:events"]',
+        '      /logs: ["read:logs"]',
+        '      /status: ["read:status"]',
+        '      /metrics: ["read:metrics"]',
+        '',
+      ].join('\n'),
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.controlPlaneAuth).toEqual({
+      provider: 'oidc',
+      issuer: 'https://dex.example.com',
+      audience: 'declaragent-control-plane',
+      scopes: ['control:read'],
+      allowLoopback: { trustedProxies: ['10.0.0.5', '10.0.0.6'] },
+      routeScopes: {
+        '/audit': ['read:audit'],
+        '/events': ['read:events'],
+        '/logs': ['read:logs'],
+        '/status': ['read:status'],
+        '/metrics': ['read:metrics'],
+      },
+    });
+  });
+
+  test('controlPlaneAuth rejects trustedProxies with empty array', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        AGENT_YAML,
+        'controlPlane:',
+        '  auth:',
+        '    enabled: true',
+        '    provider: oidc',
+        '    issuer: "https://dex.example.com"',
+        '    audience: "declaragent-control-plane"',
+        '    allowLoopback:',
+        '      trustedProxies: []',
+        '',
+      ].join('\n'),
+    );
+    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/trustedProxies|validation/i);
+  });
+
   test('controlPlaneAuth rejects OIDC without issuer/audience', async () => {
     writeFileSync(
       join(dir, 'agent.yaml'),

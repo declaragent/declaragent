@@ -4,7 +4,9 @@ export {
   isLoopbackRequest,
 } from './control-plane-auth.js';
 export type {
+  ControlPlaneAllowLoopback,
   ControlPlaneAuth,
+  ControlPlaneAuthContext,
   ControlPlaneAuthRejectReason,
   ControlPlaneAuthResult,
   ControlPlanePrincipal,

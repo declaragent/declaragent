@@ -70,6 +70,11 @@ export async function buildControlPlaneAuth(
   return {
     verifyToken,
     ...(cfg.allowLoopback !== undefined && { allowLoopback: cfg.allowLoopback }),
+    // Per-route scope overrides (`POST_ENTERPRISE_BACKLOG.md #6`) are an
+    // additive gate evaluated AFTER the verifier's own scope check. The
+    // factory just passes the map through — enforcement lives in the
+    // middleware (`applyControlPlaneAuth`).
+    ...(cfg.routeScopes !== undefined && { routeScopes: cfg.routeScopes }),
   };
 }
 
