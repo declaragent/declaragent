@@ -46,7 +46,7 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 11 | [ ] SIEM back-pressure policy (pause writes after `>1h` backlog?) | Robustness | 3 d | Not started | PR #22 open Q1 |
 | 12 | [ ] SIEM adaptive batch interval for high-volume fleets (10k tool-calls/sec) | Robustness | 3 d | Not started | PR #22 open Q2 |
 | 13 | [ ] MCP graceful draining of in-flight tool calls across respawn | Robustness | 1 wk | Not started | PR #21 scope-out |
-| 14 | [ ] MCP dedicated `mcp_server_circuit_open_total` counter for alertmanager simplicity | Robustness | 1 d | Not started | PR #21 open Q3 |
+| 14 | [x] MCP dedicated `mcp_server_circuit_open_total` counter for alertmanager simplicity | Robustness | 1 d | Shipped (0.7.1) | `agent-c/robustness-sprint-1-warmups` — `packages/core/src/mcp/supervisor.ts` |
 | 15 | [ ] `/audit` tail-segment-only hash-chain verification when soak-size evidence justifies it | Robustness | 3 d | Deferred (need soak numbers) | PR #15 open Q1 |
 | 16 | [ ] Wire `TenantAuditSink` into `up-cli`'s engine path (round-5 shipped fleet-run side only) | Robustness | 1 d | Not started | PR #18 follow-up |
 | 17 | [ ] `fleet.yaml`-level `controlPlane:` block (today: process-wide listener reads per-agent; picks first + warns) | Robustness | 3 d | Not started | PR #27 open Q3 |
@@ -60,9 +60,9 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 25 | [ ] NATS per-topic queue-group semantics (today one at construction-time) | Transport | 2 d | Not started | PR #13 open Q2 |
 | 26 | [ ] Kafka soak harness: literal `declaragent fleet run` subprocess spawn (today worker replicates broker loop) | Transport | 2 d | Not started | PR #10 open Q1 |
 | 27 | [ ] Per-MCP-server aggregate rate-limit cap (`mcp.rateLimit` block) | MCP | 2 d | Not started | PR #18 open Q1 |
-| 28 | [ ] `burst = rps` default revisit (classic token-bucket wisdom is `2×rps`) | MCP | 30 min | Not started | PR #18 open Q2 |
-| 29 | [ ] Audit-threshold comparator: strict `>` 1s boundary → `>=` (today `rps=1` sits silently on the line) | MCP | 30 min | Not started | PR #18 open Q4 |
-| 30 | [ ] Document `mcp.supervised: [other-healthy-server]` recipe for flaky-one-server debugging | MCP | 1 h | Not started | PR #25 open Q2 |
+| 28 | [x] `burst = rps` default revisit (classic token-bucket wisdom is `2×rps`) | MCP | 30 min | Shipped (0.7.1) | `agent-c/robustness-sprint-1-warmups` — `packages/core/src/tools/rate-limit-gate.ts` |
+| 29 | [x] Audit-threshold comparator: strict `>` 1s boundary → `>=` (today `rps=1` sits silently on the line) | MCP | 30 min | Shipped (0.7.1) | `agent-c/robustness-sprint-1-warmups` — `packages/core/src/tools/rate-limit-gate.ts` |
+| 30 | [x] Document `mcp.supervised: [other-healthy-server]` recipe for flaky-one-server debugging | MCP | 1 h | Shipped (0.7.1) | `agent-c/robustness-sprint-1-warmups` — `docs-site/docs/reference/agent-yaml.mdx` |
 | 31 | [ ] Split ServiceMonitor into optional separate file in GitOps render | GitOps | 1 d | Not started | PR #20 open Q1 |
 | 32 | [ ] Fan channel/source/plugin configs into dedicated ConfigMaps + `envFrom` mounts | GitOps | 3 d | Not started | PR #20 open Q2 |
 | 33 | [ ] Kustomize render target (Helm covers the common case today) | GitOps | 3 d | Not started | PR #20 scope-out |

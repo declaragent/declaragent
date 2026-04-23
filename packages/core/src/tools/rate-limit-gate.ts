@@ -32,8 +32,9 @@ export interface ToolRateLimitConfig {
   rps: number;
   /**
    * Max calls the bucket can absorb without throttling. Defaults to
-   * `rps` (i.e. a full second of steady-state calls). Operators who
-   * want the classic "2× rps" burst behaviour set it explicitly.
+   * `2 × rps` — classic token-bucket wisdom: a full second of headroom
+   * plus one second of catch-up for transient spikes. Operators who
+   * want a tighter ceiling (e.g. `burst == rps`) set it explicitly.
    */
   burst?: number;
 }
@@ -113,7 +114,7 @@ export function createToolRateLimitGate(options: ToolRateLimitGateOptions): Tool
     if (!(cfg.rps > 0)) {
       throw new Error(`tools.rateLimit[${toolName}]: rps must be > 0 (got ${String(cfg.rps)})`);
     }
-    const burst = Math.max(1, cfg.burst ?? cfg.rps);
+    const burst = Math.max(1, cfg.burst ?? Math.ceil(cfg.rps * 2));
     const bucketOpts: ConstructorParameters<typeof ProviderTokenBucket>[0] = {
       ratePerSec: cfg.rps,
       burst,
@@ -135,7 +136,7 @@ export function createToolRateLimitGate(options: ToolRateLimitGateOptions): Tool
         // Metrics hook misbehaved; the tool call already waited. Swallow.
       }
     }
-    if (waitMs > auditThresholdMs && auditSink) {
+    if (waitMs >= auditThresholdMs && auditSink && waitMs > 0) {
       const cfg = configs.get(toolName);
       if (cfg) {
         const record: RateLimitedAuditRecord & { tenantId: string } = {

@@ -271,6 +271,11 @@ mcp:
 - `mcp_server_circuit_state{server_id}` gauge (`0=closed`, `1=half-open`,
   `2=open`). A PagerDuty alert on `mcp_server_circuit_state > 1 for 5m`
   catches a genuinely stuck server.
+- `mcp_server_circuit_open_total{server_id}` counter — increments once
+  per `closed | half-open → open` transition. Prefer this over the
+  gauge for alertmanager rules: a simple
+  `increase(mcp_server_circuit_open_total[5m]) > 0` expression fires
+  exactly when a server flips to open, no label comparison required.
 
 **Behaviour.**
 - Backoff schedule: 1s, 2s, 4s, 8s, 16s, 32s, 60s cap.
@@ -280,6 +285,45 @@ mcp:
   resolves with a typed `EMCPCRASHED` error instead of hanging — the
   tool adapter translates this into a normal `ToolEvent` error so
   engine callers see a clean rejection.
+
+### Recipe — isolate a flaky MCP server for debugging
+
+When one MCP server is crash-looping and you want to understand why
+without taking the rest of the fleet offline, use the list form of
+`mcp.supervised` to *exclude* the suspect server while the healthy
+ones stay wrapped in the supervisor.
+
+```yaml
+# agent.yaml — healthy servers keep auto-recovery; `flaky-server` runs raw
+mcp:
+  servers:
+    github: { command: 'npx', args: ['@modelcontextprotocol/server-github'] }
+    jira:   { command: 'npx', args: ['@modelcontextprotocol/server-jira'] }
+    flaky-server:
+      command: 'node'
+      args: ['./mcp-servers/flaky-server.js']
+
+  # Allow-list: only these servers get supervised. `flaky-server` is
+  # absent, so it runs as a raw client — you see every crash surface as
+  # an `EMCPCRASHED` error in the engine log with no respawn churn
+  # hiding the root cause.
+  supervised: [github, jira]
+```
+
+**Why this helps.**
+- You can reproduce the crash in place. The supervisor's default 1s → 2s
+  → 4s backoff respawns the server behind your back; raw-mode leaves the
+  transport closed so the first crash is the last crash.
+- The other servers keep auto-recovering. A flaky Jira instance today
+  doesn't need to block you from investigating a flaky internal tool
+  you shipped yesterday.
+- Metrics still tell a story. The `mcp_server_restarts_total` and
+  `mcp_server_circuit_open_total` counters continue to emit for the
+  supervised servers, so your existing alerts stay useful while you
+  debug the excluded one.
+
+Once the fix lands, flip the entry back into the list (or drop to
+`supervised: all`) and redeploy — no code change required.
 
 ## `audit.export` — SIEM forwarding
 
