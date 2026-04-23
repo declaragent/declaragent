@@ -4,7 +4,7 @@ Project memory for Declaragent. Read this first when starting work here.
 
 - **Name:** Declaragent (official).
 - **Domain:** [declaragent.dev](https://declaragent.dev)
-- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest published `@declaragent/cli@0.6.0` (2026-04-22; `npm view @declaragent/cli dist-tags` → `latest: 0.6.0`). Companion bumps: `core@0.4.0`, `plugin-agent-rpc@3.0.0`, `testkit@3.0.0`, all channel-* + source-* packages at `3.0.0` (peer-dep cascade from core's semver-major-in-0.x).
+- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest published `@declaragent/cli@0.7.4` (2026-04-23; `npm view @declaragent/cli dist-tags` → `latest: 0.7.4`). 0.7.5 (docs-only Sprint 5) is in-flight.
 - **GitHub org:** `declaragent`.
 - **Theme:** *an agent for enterprises to build and manage fleets of agents.* Declaragent itself is an agent — same core, same tools, same audit — that helps operators author + run everyone else's agents.
 - **Honest capability status:** see **[AGENTS.md](./AGENTS.md)** for the feature-level ledger. For the intent→code audit ("does the first-principles vision actually work at production scale?") see **[docs/FIRST_PRINCIPLES_AUDIT.md](./docs/FIRST_PRINCIPLES_AUDIT.md)** (exhaustive capability matrix) and **[docs/FIRST_PRINCIPLES_VALIDATION.md](./docs/FIRST_PRINCIPLES_VALIDATION.md)** (pillar-by-pillar yes/no verdict with ranked enterprise gap list). This file is a project-orientation guide, not a status dashboard.
@@ -27,56 +27,64 @@ The enterprise pitch — "an agent to build and manage fleets of agents" — dec
 
 | Pillar | Single-machine | Enterprise (multi-host, soak-proven, SSO/SIEM/GitOps) |
 | --- | --- | --- |
-| 1 · Define agents (capabilities, skills, inbound/outbound channels, peers) | ✅ | 🟡 — typed capabilities + SSO-bridged channel permissions pending |
-| 2 · Deploy + monitor fleet (up/down/ps/logs + Prometheus + OTel + canary) | ✅ | 🟡 — no managed control plane, no traffic-splitting canary, audit is local SQLite |
-| 3 · Independent agents with optional delegation (memory + Kafka RPC) | ✅ | 🟡 — Kafka transport shipped 0.6.0, soak pending; NATS/SQS/AMQP/MQTT factories missing |
-| 4 · Tools + MCP (8 built-ins + MCP stdio/HTTP/SSE/OAuth PKCE + plugins) | ✅ | 🟡 — no per-tool rate limit, no approval-workflow integration, no auto-recovery for crashed MCP |
-| 5 · **Conversational builder → deployable fleet** (`DECLARAGENT_BUILDER=on`) | ✅ | 🟡 — 14 builder tools + plan-confirm-execute + git rollback + fleet-e2e test ship; no live-LLM regression fixture, manual `.env` + `up` hand-off |
+| 1 · Define agents (capabilities, skills, inbound/outbound channels, peers) | ✅ | ✅ (v0.7.4) — typed capabilities shipped; per-agent auth registry (#18); SSO-bridged channel permissions remain a polish item, not a blocker |
+| 2 · Deploy + monitor fleet (up/down/ps/logs + Prometheus + OTel + canary) | ✅ | ✅ (v0.7.4) — managed control plane Slices 1–3 shipped incl. cross-host fan-out (#50); GitOps render + SIEM export + back-pressure + adaptive batch all live; traffic-splitting canary remains roadmap |
+| 3 · Independent agents with optional delegation (memory + Kafka / NATS / JetStream / SQS / AMQP / MQTT RPC) | ✅ | ✅ (v0.7.4) — every named broker transport shipped; per-agent `AuthVerifyRegistry` (#18); Kafka 7-week soak proof accumulating Sundays |
+| 4 · Tools + MCP (8 built-ins + MCP stdio/HTTP/SSE/OAuth PKCE + plugins) | ✅ | 🟡 — per-tool rate limit + auto-recovery shipped; **per-MCP-server aggregate rate-limit (#27)** is the remaining 0.7.5 item; approval workflows remain roadmap |
+| 5 · **Conversational builder → deployable fleet** (`DECLARAGENT_BUILDER=on`) | ✅ | ✅ (v0.7.1) — recorded-conversation regression fixtures shipped via PR #24; fixture polish items (#36 / #37 / #38) remain open but are non-blocking |
 
-**Single-machine production: ✅** ready — `@declaragent/cli@0.6.0` on npm. A single host runs `declaragent up -d`, webhook/cron in, Claude + MCP tools + Slack/Telegram/Discord/WhatsApp in/out, `/metrics` + OTel + circuit breakers + rate limits + dispatch DLQ all on by default. Conversational builder (`DECLARAGENT_BUILDER=on`) produces deployable single-agent and multi-agent fleets end-to-end.
+**Single-machine production: ✅** ready — `@declaragent/cli@0.7.4` on npm. A single host runs `declaragent up -d`, webhook/cron in, Claude + MCP tools + Slack/Telegram/Discord/WhatsApp in/out, `/metrics` + OTel + circuit breakers + per-tool + provider rate limits + dispatch DLQ all on by default. Conversational builder (`DECLARAGENT_BUILDER=on`) produces deployable single-agent and multi-agent fleets end-to-end.
 
-**Enterprise production: 🟡** roughly 10–14 focused engineer-weeks of *integration* work (not new architecture). See **[docs/ENTERPRISE_PRODUCTION_PLAN.md](./docs/ENTERPRISE_PRODUCTION_PLAN.md)** for the tracked 12-item plan with per-item specs, sequencing, and a status board. Top-line slices:
-1. Finish Kafka soak (Slice 7 tail) + NATS factory — unblocks cross-host + non-Kafka customers.
-2. OIDC/OAuth2 on RPC envelopes (`RpcAuth` shape exists, provider implementations don't).
-3. Managed control plane — aggregator over N `up` processes. See `docs/CONTROL_PLANE_PLAN.md`.
-4. GitOps `fleet render` + SIEM audit export.
-5. Runtime hardening — control socket on `up`, dispatch-DLQ requeue, per-tool rate limit, MCP auto-recovery.
-6. Quality — recorded-conversation builder regression tests + v1.1 typed capabilities.
+**Enterprise production: ✅ (4 of 5 pillars), Pillar 4 one item away.** All 12 items on `docs/ENTERPRISE_PRODUCTION_PLAN.md` shipped during the 0.7.0 → 0.7.1 push; the follow-up backlog closed **31 of 52 items** across 0.7.1 → 0.7.4. See **[docs/POST_ENTERPRISE_BACKLOG.md](./docs/POST_ENTERPRISE_BACKLOG.md)** for the 21 remaining follow-ups. Top open work:
+1. **#27 per-MCP-server aggregate rate-limit cap** — the only item still holding Pillar 4's enterprise column at 🟡 (shipping Sprint 5).
+2. **#13 MCP graceful draining** across respawn — robustness polish.
+3. **#17 `fleet.yaml#controlPlane:` block** — consolidate per-agent listener picks.
+4. **#5b `rpc.auth.enabled: true` default flip** — behavioural change deferred to **0.8.0**; see [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md) for the migration plan.
+5. **#51 Grafana dashboard bundle** — `mcp_server_restarts_total` + circuit state + audit queue depth + rate-limit waits in one importable JSON.
 
 See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" for the evidence ledger.
 
+## Upcoming breaking changes
+
+- **0.8.0 · zero-trust default flip.** `rpc.auth.enabled` will default to `true` when `rpc-peers.yaml` is present on a fleet. Fleets without an `auth:` block on every peer-using agent will fail boot with `AUTH_REJECTED`. Migration inspector shipped at 0.7.3 (`declaragent fleet audit-rpc --suggest-enable [--strict]`). Full plan: **[docs/ZERO_TRUST_DEFAULT_MIGRATION.md](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md)**. Recommended pre-flight: 2–3 weeks of `--strict` runs in CI before taking 0.8.0.
+
 ---
 
-## Current status (verified 2026-04-22, @declaragent/cli@0.6.0 live on npm)
+## Current status (verified 2026-04-23, @declaragent/cli@0.7.4 live on npm)
 
-**What works end-to-end** (production-usable single-machine path):
+**What works end-to-end** (production-usable single-machine + multi-host path):
 - `declaragent init` → scaffold with `agent.yaml` + skills + `event-sources.yaml`
 - `declaragent auth login` → OpenRouter / Anthropic / env-var credentials
-- `declaragent up [-d]` → binds sources (webhook/cron/file-watch + any installed `@declaragent/source-*`), routes events to skills, LLM turn runs, outcome recorded. Runtime now threads a shared `PrometheusRegistry` + optional OTel tracer into every source + channel, wraps the provider with a token-bucket rate limiter, and applies per-skill circuit breakers. See §"0.6.0 staged" below.
-- `declaragent ps / logs / down` → lifecycle verbs
-- `declaragent events list / audit verify / dlq list` → observability backed by SQLite with hash-chained audit. `events list --state circuit-open` + `dlq list/show/drop --kind dispatch` shipped in 0.6.0.
-- `declaragent deploy gcp-cloud-run` → generates Dockerfile + service.yaml (user runs `gcloud` themselves)
-- `declaragent fleet deploy --canary --canary-wait-ms <n>` → canary strategy with post-soak re-probe (0.6.0 Slice 8)
-- Builder toolkit (`DECLARAGENT_BUILDER=on`): conversational authoring for skills, sources, channels, MCP, plugins, secrets, peers, fleet-add
+- `declaragent up [-d]` → binds sources (webhook/cron/file-watch + any installed `@declaragent/source-*`), routes events to skills, LLM turn runs, outcome recorded. Runtime threads shared `PrometheusRegistry` + optional OTel tracer, wraps provider with token-bucket rate limiter, applies per-skill circuit breakers, routes tool calls through per-tool rate-limit gate with `TenantAuditSink` recording (`rate_limited` audit events), and supervises MCP servers with auto-restart + circuit counter.
+- `declaragent ps / logs / down` → lifecycle verbs; `logs` coalesces per-agent lines and caps multi-agent fan-out at 50 watchers.
+- `declaragent events list / audit verify / dlq list` → observability backed by SQLite with hash-chained audit; dispatch-DLQ active requeue via control socket (#3); `events list --state circuit-open` + `dlq drop --kind dispatch` shipped.
+- `declaragent fleet audit-rpc [--suggest-enable] [--strict] [--json]` → pre-flight inspector for `rpc.auth.enabled` gaps; outputs copy-pasteable YAML diffs pre-filled with each peer's declared provider. See [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md).
+- `declaragent fleet render --format k8s|helm` → GitOps manifests; optional `--no-servicemonitor` / split ServiceMonitor files.
+- `declaragent fleet run` → multi-agent runtime over `memory` (single-process), `kafka`, `nats`, `jetstream`, `sqs`, `amqp`, `mqtt` transports; per-agent `AuthVerifyRegistry` from `<agent>/rpc-peers.yaml`.
+- `declaragent fleet ps / events / dlq / logs [--host <name>] [--json]` → Slice 3 cross-host fan-out via `fleet.yaml#hosts[]` + `CrossHostControlPlaneClient`; one bad host tagged, survivors returned.
+- `declaragent deploy gcp-cloud-run` → generates Dockerfile + service.yaml (user runs `gcloud` themselves).
+- `declaragent fleet deploy --canary --canary-wait-ms <n>` → canary strategy with post-soak re-probe.
+- SIEM audit export (Splunk / Elastic / Datadog) with **back-pressure** (#11) + **adaptive batch interval** (#12) + cursor held across restarts.
+- Builder toolkit (`DECLARAGENT_BUILDER=on`): conversational authoring for skills, sources, channels, MCP, plugins, secrets, peers, fleet-add; **recorded-conversation regression fixtures** (PR #24) replayed on every CI run.
 
-**0.6.0 shipped** (published 2026-04-22 via local `bun run release` after org-level Actions write-restriction blocked the changesets/action auto-PR path; tags pushed to origin):
-- Prometheus `/metrics` endpoint on `127.0.0.1:9464` when `-d`
-- OpenTelemetry auto-enable when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
-- Per-skill circuit breakers (10 failures → 30s cooldown → half-open probe)
-- Provider rate limits (Anthropic 50rps / OpenRouter 20rps / 10rps default)
-- Dispatch DLQ **tracking** in `rejected_events` — active requeue is a 0.6.x follow-up
-- Inbound channels → skills via `channels.json#inbound.routes` (Slack/Telegram/Discord/WhatsApp)
-- Kafka RPC transport (`createKafkaTransport`) + nightly fleet integration CI — soak proof pending
-- Canary fleet deploys with configurable soak window
+**0.7.1 → 0.7.4 cumulative ship manifest (31 of 52 post-enterprise backlog items):**
+- **Security** (#5a, #6, #7, #8, #9): fleet audit-rpc inspector; per-route scope overrides on control-plane routes; `allowLoopback` + reverse-proxy / X-Forwarded-For semantics; `AUTH_REJECTED` promoted to `RPC_ERROR_CODES` constant; capability schema-violation audit cardinality decided.
+- **Topology** (#18, #19, #20, #21, #22): per-agent `AuthVerifyRegistry`; `/events` + `/dlq` + `/logs` multi-agent fan-out with scope-gated `?all=1`; `/logs` fan-out cap (default 50) with 413 + coalescing; streaming `idleTimeout: 0` narrowed to `/logs` only; in-process log-rotation signal.
+- **Transports** (#23, #24, #25, #26): JetStream + SQS + AMQP + MQTT RPC transport factories; NATS per-topic queue groups; literal `fleet run` subprocess spawn for Kafka soak harness.
+- **Robustness** (#11, #12, #14, #16, #52): SIEM back-pressure + adaptive batch; MCP `mcp_server_circuit_open_total` counter; `TenantAuditSink` threaded into `up`; SIEM loop + `/audit` route share one singleton SQLite sink.
+- **MCP** (#28, #29, #30): `burst = 2×rps` default; `>=` boundary comparator fix; supervised-recipe doc.
+- **Platform** (#31, #40, #47, #50): GitOps ServiceMonitor file-split + `regen-snapshots`; ref-counted `acquireTenantAuditSink` owner API; prod-smoke Kafka scaffold fix; **Slice 3 cross-host fan-out** for all four observability verbs.
+- **Architectural** (#41, #42, #43, #44, #45, #48, #49): `ChannelMessageContent` rename; `control-socket-client.ts` shared helper; memoized `loadAgent` in fleet-run; `cliVersion` on `UpState`; per-agent `hostedBy.pid` fidelity; pre-push hook for CLI-surface docs + `docs-site/sidebars.ts` Biome drift.
 
 **See [AGENTS.md](./AGENTS.md)** for the full evidence-backed matrix with file:line references. If you're about to promise a user a capability, verify against AGENTS.md first.
 
-**Next priorities after 0.6.0 publishes** (ordered by leverage):
-1. Dispatch-DLQ active requeue — needs a control socket on `up` (~1 day once the socket exists)
-2. Full `fleet run` boot over Kafka with mocked LLM handlers — closes Slice 7's soak gap
-3. NATS / SQS / AMQP / MQTT RPC transport factories — same pattern as `createKafkaTransport`
-4. Broker-specific fleet integration tests (beyond Kafka)
-5. v1.1 Agent Graph — schema work for typed capabilities per `AGENT_RPC_PLAN.md`
+**Next priorities after 0.7.4 ships** (ordered by leverage, per `docs/POST_ENTERPRISE_BACKLOG.md`):
+1. **#27 per-MCP-server aggregate rate-limit cap** — last item holding Pillar 4's enterprise column at 🟡 (Sprint 5).
+2. **#13 MCP graceful draining** of in-flight tool calls across respawn.
+3. **#17 fleet-level `controlPlane:` block** to replace per-agent listener pick.
+4. **#5b zero-trust default flip** at 0.8.0 — migration plan [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md).
+5. **#51 Grafana dashboard** aggregating the four key counters in one importable JSON.
+6. Builder fixture polish (#36 `tool_result` blocks, #37 cache-token cost regression, #38 longer-lived `RecordingProviderHandle`).
 
 ## Stack
 
