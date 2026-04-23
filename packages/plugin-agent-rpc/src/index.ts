@@ -83,3 +83,19 @@ export type {
   NatsModule,
   NatsSubscriptionLike,
 } from './nats-transport.js';
+export { buildDurableName, createJetStreamTransport } from './jetstream-transport.js';
+export type {
+  CreateJetStreamTransportOptions,
+  JetStreamClient,
+  JetStreamConnectionLike,
+  JetStreamConsumer,
+  JetStreamConsumerConfig,
+  JetStreamConsumerMessages,
+  JetStreamConsumersManager,
+  JetStreamDeliverPolicy,
+  JetStreamManager,
+  JetStreamMessageLike,
+  JetStreamNatsModule,
+  JetStreamPublishAck,
+  JetStreamReplayPolicy,
+} from './jetstream-transport.js';

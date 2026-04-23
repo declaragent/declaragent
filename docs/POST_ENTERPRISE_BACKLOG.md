@@ -55,7 +55,7 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 20 | [ ] `/logs` multi-agent fan-out guard via `?all=1` (today opens N watchers at N=50 agents) | Topology | 2 d | Not started | PR #19 open Q1 |
 | 21 | [ ] Narrow `idleTimeout: 0` to `/logs` only once Slice 2 adds remote bind | Topology | 1 d | Not started | PR #19 open Q4 |
 | 22 | [ ] In-process log-rotation signal for `openAgentLog` (external rotation already handled via inode) | Topology | 2 d | Not started | PR #19 open Q2 |
-| 23 | [ ] `createJetStreamTransport` for at-least-once RPC with replay | Transport | 1 wk | Not started | PR #13 open Q3 |
+| 23 | [x] `createJetStreamTransport` for at-least-once RPC with replay | Transport | 1 wk | Shipped — branch `agent-b/transport-sprint-2-item-23` | `packages/plugin-agent-rpc/src/jetstream-transport.ts` + 16-case unit suite + `packages/testkit/src/fleet-integration/jetstream-rpc.test.ts` (FLEET_INTEGRATION=1 + NATS_INTEGRATION=1) |
 | 24 | [ ] SQS / AMQP / MQTT RPC transport factories (same pattern as Kafka + NATS) | Transport | 2 wk | Not started | PR #13 scope-out |
 | 25 | [x] NATS per-topic queue-group semantics (today one at construction-time) | Transport | 2 d | Shipped (0.7.1) | agent-b/transport-sprint-1-items-25-26 — `createNatsTransport` accepts `queueGroups: string \| Record<topic, group>`; legacy `queueGroup` stays as fallback |
 | 26 | [x] Kafka soak harness: literal `declaragent fleet run` subprocess spawn (today worker replicates broker loop) | Transport | 2 d | Shipped (0.7.1) | agent-b/transport-sprint-1-items-25-26 — subprocess now boots via `loadFleet` + real `fleet.yaml`/`capabilities.yaml` scaffolded per run; gap documented on the `startFleetDaemon` memory-hardwired respond path |
