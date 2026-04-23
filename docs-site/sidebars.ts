@@ -29,6 +29,7 @@ const sidebars: SidebarsConfig = {
         'reference/rpc',
         'reference/fleet',
         'reference/builder',
+        'reference/observability',
       ],
     },
   ],

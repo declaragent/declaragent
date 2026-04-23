@@ -1,0 +1,120 @@
+---
+id: observability
+title: Observability — Prometheus, OTel, Grafana
+slug: /reference/observability
+sidebar_label: Observability
+sidebar_position: 10
+---
+
+# Observability
+
+Declaragent emits three signal families out of the box: **Prometheus metrics** (`/metrics` on `127.0.0.1:9464`), **OpenTelemetry traces + metrics** (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set), and a **hash-chained audit log** (SQLite, exportable to Splunk / Elastic / Datadog).
+
+This page is the counter-to-dashboard index. For the HTTP surface, see [`/reference/control-plane`](/reference/control-plane). For the trace story, see the [Grafana tracing recipe](/cookbook/grafana-tracing).
+
+## Prometheus metrics exposed by `declaragent up -d`
+
+Every metric below is available on the `/metrics` endpoint at `127.0.0.1:9464` whenever the CLI runs with `-d` (override the port with `DECLARAGENT_METRICS_PORT`; set to `0` to disable).
+
+### MCP supervisor
+
+| Metric | Kind | Labels | Source |
+| --- | --- | --- | --- |
+| `mcp_server_restarts_total` | counter | `server_id`, `reason` | `packages/core/src/mcp/supervisor.ts` |
+| `mcp_server_circuit_state` | gauge (0\|1\|2) | `server_id` | same |
+| `mcp_server_circuit_open_total` | counter | `server_id` | same |
+| `mcp_server_drain_duration_ms` | histogram | `server_id`, `outcome` | same |
+| `mcp_server_rate_limited_total` | counter | `server_id`, `reason` | same |
+
+### Audit + SIEM export
+
+| Metric | Kind | Labels | Source |
+| --- | --- | --- | --- |
+| `declaragent_audit_export_acked_total` | counter | `exporter`, `vendor` | `packages/core/src/audit/exporter-loop.ts` |
+| `declaragent_audit_export_failures_total` | counter | `exporter`, `vendor`, `retryable` | same |
+| `declaragent_audit_export_paused` | gauge | `exporter`, `vendor` | same |
+| `declaragent_audit_export_last_seq` | gauge | `exporter`, `vendor` | same |
+| `declaragent_audit_backpressure_active` | gauge | `exporter`, `vendor` | same |
+| `declaragent_audit_backpressure_paused_total` | counter | `exporter`, `vendor` | same |
+| `declaragent_audit_backpressure_drops_total` | counter | `exporter`, `vendor` | same |
+| `declaragent_audit_backpressure_backlog_ms` | gauge | `exporter`, `vendor` | same |
+| `declaragent_audit_batch_interval_ms` | gauge | `exporter`, `vendor` | same |
+| `declaragent_audit_batch_rows` | histogram | `exporter`, `vendor` | same |
+
+### Rate limits
+
+| Metric | Kind | Labels | Source |
+| --- | --- | --- | --- |
+| `declaragent_provider_rate_limit_waits` | counter | `provider` | `packages/cli/src/up-cli.ts` |
+| `declaragent_provider_rate_limit_wait_ms` | histogram | `provider` | same |
+| `declaragent_tool_rate_limit_waits_total` | counter | `agent`, `tool` | same |
+| `declaragent_tool_rate_limit_wait_ms` | counter | `agent`, `tool` | same |
+
+### Event sources + channels
+
+| Metric | Kind | Labels | Source |
+| --- | --- | --- | --- |
+| `source_messages_received` | counter | `id` | `packages/core/src/events/base-source.ts` |
+| `source_messages_processed` | counter | `id` | same |
+| `source_messages_failed` | counter | `id` | same |
+| `source_messages_dlq` | counter | `id` | same |
+| `source_connection_errors` | counter | `id` | same |
+| `source_inflight` | gauge | `id` | same |
+| `source_process_duration_ms` | histogram | `id` | same |
+| `channel_outbound_sent` | counter | `type`, `id` | `packages/core/src/channels/base-channel.ts` |
+| `channel_outbound_failed` | counter | `type`, `id`, `reason` | same |
+| `channel_outbound_latency_ms` | histogram | `type`, `id` | same |
+| `channel_inbound_received` | counter | `type`, `id` | same |
+
+### Naming note
+
+Internal metric keys use dotted identifiers (e.g. `declaragent.audit.export.acked_total`) for OTel compatibility. They are normalized to Prometheus-valid names (`[a-zA-Z_:][a-zA-Z0-9_:]*`) at scrape time — every `.` becomes `_`. The tables above show the wire names you'll see in Grafana.
+
+## Grafana dashboard
+
+Declaragent ships a ready-made Grafana dashboard that aggregates the key counters into three rows — **MCP health**, **Audit + SIEM**, **Rate limits + dispatch** — so you don't have to hand-author panels from scratch.
+
+- Dashboard JSON: [`docs/grafana/declaragent-fleet-dashboard.json`](https://github.com/declaragent/declaragent/blob/main/docs/grafana/declaragent-fleet-dashboard.json)
+- Full import guide + suggested alert thresholds: [`docs/grafana/README.md`](https://github.com/declaragent/declaragent/blob/main/docs/grafana/README.md)
+
+Quick import:
+
+```bash
+# Grafana UI → Dashboards → Import → Upload JSON file → pick the file above.
+# Pick your Prometheus data source when prompted for DS_PROMETHEUS.
+```
+
+Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: declaragent
+    static_configs:
+      - targets: ['your-host:9464']
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
+
+## Other shipped dashboards
+
+Per-signal dashboards under `packages/testkit/dashboards/`:
+
+- [`channels.json`](https://github.com/declaragent/declaragent/blob/main/packages/testkit/dashboards/channels.json) — per-channel outbound throughput + latency + idempotency.
+- [`declaragent-event-sources.json`](https://github.com/declaragent/declaragent/blob/main/packages/testkit/dashboards/declaragent-event-sources.json) — per-source throughput + p99 latency + DLQ.
+- [`whatsapp-windows.json`](https://github.com/declaragent/declaragent/blob/main/packages/testkit/dashboards/whatsapp-windows.json) — WhatsApp 24h service-window telemetry.
+
+## Alert rules
+
+Six rule files under `packages/testkit/alerts/` (channels, event-sources, daemon, security, WhatsApp windows, chaos-assertions). Every alert carries a `runbook_url` that points into the [runbook index](/troubleshooting/runbook-index).
+
+## OpenTelemetry
+
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, Declaragent exports spans + metrics over OTLP/HTTP. Key spans:
+
+- `channel.inbound.<platform>` — raw inbound decode.
+- `bus.dispatch` — envelope handed to the engine.
+- `engine.turn` — per-LLM-call turn (`turn_number`, `model`, `tokens_in`, `tokens_out`).
+- `tool.invoke` — per tool call.
+- `channel.outbound.<platform>` — outbound send + status code.
+
+Full env-var surface in [`docs/OTEL_SETUP.md`](https://github.com/declaragent/declaragent/blob/main/docs/OTEL_SETUP.md). Docker-compose bundle with Prometheus + Tempo + Grafana pre-wired: `packages/testkit/observability/`.
