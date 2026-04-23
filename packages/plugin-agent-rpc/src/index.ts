@@ -99,3 +99,14 @@ export type {
   JetStreamPublishAck,
   JetStreamReplayPolicy,
 } from './jetstream-transport.js';
+export { createSqsTransport, isFifoQueueUrl } from './sqs-transport.js';
+export type {
+  CreateSqsTransportOptions,
+  SqsClientFactory,
+  SqsClientFactoryOptions,
+  SqsClientLike,
+  SqsDecodeFailPolicy,
+  SqsIncomingMessageLike,
+  SqsReceiveRequest,
+  SqsSendRequest,
+} from './sqs-transport.js';
