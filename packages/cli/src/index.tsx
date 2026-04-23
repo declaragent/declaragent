@@ -30,6 +30,7 @@ import { eventsList, eventsReplay, eventsReplayRange, eventsShow } from './event
 import { eventsConfigValidate } from './events-config-cli.js';
 import { extensionsList } from './extensions-cli.js';
 import { fleetAdd } from './fleet-add-cli.js';
+import { fleetAuditRpc } from './fleet-audit-rpc-cli.js';
 import { fleetCapabilities, fleetList, fleetValidate } from './fleet-cli.js';
 import { fleetDeploy } from './fleet-deploy-cli.js';
 import { type GraphFormat, fleetGraph } from './fleet-graph-cli.js';
@@ -179,6 +180,7 @@ Usage:
   declaragent fleet list [--json]
   declaragent fleet validate [--json]
   declaragent fleet capabilities [--json]
+  declaragent fleet audit-rpc [--suggest-enable] [--strict] [--json]
 
   declaragent capabilities gen --peer <id> [--out <dir>]
   declaragent capabilities gen --capabilities <path> [--out <dir>] [--json]
@@ -1007,9 +1009,18 @@ async function runFleetSubcommand(
       ...(json && { json: true }),
     });
   }
+  if (action === 'audit-rpc') {
+    const suggestEnable = flagSet(rest, '--suggest-enable');
+    const strict = flagSet(rest, '--strict');
+    return fleetAuditRpc({
+      ...(suggestEnable && { suggestEnable: true }),
+      ...(strict && { strict: true }),
+      ...(json && { json: true }),
+    });
+  }
   process.stderr.write(`unknown fleet subcommand: ${action ?? '(none)'}\n`);
   process.stderr.write(
-    'usage: declaragent fleet <new|add|run|promote|demote|deploy|render|graph|peers|status|list|validate|capabilities> [options]\n',
+    'usage: declaragent fleet <new|add|run|promote|demote|deploy|render|graph|peers|status|list|validate|capabilities|audit-rpc> [options]\n',
   );
   return 1;
 }
