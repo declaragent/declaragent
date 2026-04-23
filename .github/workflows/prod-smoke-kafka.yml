@@ -6,6 +6,11 @@ name: prod smoke — kafka source end-to-end
 # 0.5.0/0.5.1 shipped three integration bugs because no CI lane
 # cross-checked discovery + adapter wiring against the published
 # tarball path.
+#
+# 0.7.3 (#47): the kafka config validator gained `delivery` + `limits`
+# as REQUIRED fields; the smoke's inline event-sources.yaml now
+# supplies them. Previously this workflow had been red on every
+# push-to-main because `up` exited 1 at validation time.
 
 on:
   push:
@@ -76,6 +81,12 @@ jobs:
           event-sources:
             - ./event-sources.yaml
           YAML
+          # `delivery` + `limits` became required fields on the kafka
+          # source config in 0.6.x (see packages/source-kafka/src/config.ts
+          # — "kafka config requires \"delivery\""). Without them the
+          # validator rejects event-sources.yaml at boot and the smoke
+          # assertion fails with "event never surfaced". Fix tracked in
+          # POST_ENTERPRISE_BACKLOG.md #47.
           cat > event-sources.yaml <<'YAML'
           - type: kafka
             config:
@@ -90,6 +101,18 @@ jobs:
                 format: json
                 kindSelector: { const: smoke.event }
                 targetSelector: { type: skill, name: noop }
+              delivery:
+                mode: at-least-once
+                ackStrategy: after-publish
+                maxRetries: 2
+                retryBackoff: { initialMs: 50, maxMs: 500, jitter: false }
+                idempotency:
+                  strategy: transport-natural
+                  ttlMs: 60000
+                  store: memory
+              limits:
+                concurrency: 2
+                maxInflight: 32
           YAML
           echo "scratch=${SCRATCH}" >> "${GITHUB_OUTPUT}"
 

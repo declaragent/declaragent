@@ -48,7 +48,6 @@ import {
   createCapabilityValidatorRegistry,
   createDefaultSecretResolver,
   createEventStore,
-  createSqliteAuditSink,
   createSqliteSessionStore,
   findFleetRoot,
   loadAgent,
@@ -66,6 +65,7 @@ import {
   createMemoryTransport,
   createRespondHook,
 } from '@declaragent/plugin-agent-rpc';
+import { acquireTenantAuditSink, releaseTenantAuditSink } from './audit-sink-singleton.js';
 import {
   type ResolvedCredentials,
   resolveCredentials as defaultResolveCredentials,
@@ -962,12 +962,19 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
 
   const needsAuditSink = anyAgentHasRpcAuth || anyCapabilityHasSchemas;
   let auditSink: TenantAuditSink | undefined;
+  // Shared via the ref-counted singleton so a co-resident `up`
+  // process (e.g. an in-process test runner holding both verbs at
+  // once) reuses the same SQLite handle rather than opening a
+  // second connection on the same file. The lease is dropped in
+  // `shutdownDaemon` — only the LAST release actually closes the
+  // underlying sink (POST_ENTERPRISE_BACKLOG.md #40).
+  const auditSinkPath = auditDbPath();
   if (needsAuditSink) {
     try {
-      auditSink = await createSqliteAuditSink({ path: auditDbPath() });
+      auditSink = await acquireTenantAuditSink({ path: auditSinkPath, owner: 'fleet-run' });
     } catch (err) {
       io.err(
-        `warning: audit sink at ${auditDbPath()} failed to open — ${err instanceof Error ? err.message : String(err)}. auth_check + capability_schema_violation records disabled.\n`,
+        `warning: audit sink at ${auditSinkPath} failed to open — ${err instanceof Error ? err.message : String(err)}. auth_check + capability_schema_violation records disabled.\n`,
       );
     }
   }
@@ -1109,8 +1116,11 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     await daemon.shutdown();
     sessionStore?.close();
     if (auditSink !== undefined) {
+      // Release our ref on the shared singleton rather than closing
+      // directly — another in-process caller (e.g. `up`) may still
+      // hold a lease on the same path.
       try {
-        await auditSink.close();
+        await releaseTenantAuditSink({ path: auditSinkPath, owner: 'fleet-run' });
       } catch {
         // best-effort
       }

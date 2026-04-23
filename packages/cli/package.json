@@ -25,6 +25,7 @@
     "typecheck": "bun scripts/write-version.ts && tsc --noEmit",
     "dev": "bun scripts/write-version.ts && bun run src/index.tsx",
     "clean": "rm -rf dist bin/declaragent-binary",
+    "regen-snapshots": "bun scripts/regen-k8s-snapshot.ts",
     "postinstall": "node ./bin/postinstall.js"
   },
   "dependencies": {

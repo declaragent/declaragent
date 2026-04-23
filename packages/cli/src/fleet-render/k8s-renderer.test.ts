@@ -124,7 +124,8 @@ describe('k8s-renderer YAML validity', () => {
     expect(doc.kind).toBe('Namespace');
   });
 
-  test('per-agent file contains ConfigMap, Deployment, Service, ServiceMonitor', async () => {
+  test('per-agent workload file contains ConfigMap, Deployment, Service', async () => {
+    // ServiceMonitor lives in its own file now — see below (#31, 0.7.3).
     const fleet = await loadStarter();
     const files = await renderK8s(fleet);
     for (const agent of fleet.agents) {
@@ -132,7 +133,19 @@ describe('k8s-renderer YAML validity', () => {
       expect(f, `no rendered file for agent ${agent.id}`).toBeDefined();
       const docs = parseAllDocs(f?.contents ?? '');
       const kinds = docs.map((d) => (d as { kind?: string }).kind);
-      expect(kinds).toEqual(['ConfigMap', 'Deployment', 'Service', 'ServiceMonitor']);
+      expect(kinds).toEqual(['ConfigMap', 'Deployment', 'Service']);
+    }
+  });
+
+  test('ServiceMonitor splits into its own file (#31) — default-on', async () => {
+    const fleet = await loadStarter();
+    const files = await renderK8s(fleet);
+    for (const agent of fleet.agents) {
+      const sm = files.find((x) => x.path === `agents/${agent.id}-servicemonitor.yaml`);
+      expect(sm, `no ServiceMonitor file for agent ${agent.id}`).toBeDefined();
+      const docs = parseAllDocs(sm?.contents ?? '');
+      expect(docs.length).toBe(1);
+      expect((docs[0] as { kind?: string }).kind).toBe('ServiceMonitor');
     }
   });
 
@@ -155,7 +168,7 @@ describe('k8s-renderer YAML validity', () => {
     }
   });
 
-  test('ServiceMonitor is omitted when serviceMonitor=false', async () => {
+  test('ServiceMonitor is omitted entirely when serviceMonitor=false', async () => {
     const fleet = await loadStarter();
     const files = await renderK8s(fleet, { serviceMonitor: false });
     for (const agent of fleet.agents) {
@@ -163,6 +176,9 @@ describe('k8s-renderer YAML validity', () => {
       const docs = parseAllDocs(f?.contents ?? '');
       const kinds = docs.map((d) => (d as { kind?: string }).kind);
       expect(kinds).toEqual(['ConfigMap', 'Deployment', 'Service']);
+      // No separate ServiceMonitor file either.
+      const sm = files.find((x) => x.path === `agents/${agent.id}-servicemonitor.yaml`);
+      expect(sm, `ServiceMonitor file should not exist for ${agent.id}`).toBeUndefined();
     }
   });
 });

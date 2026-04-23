@@ -140,6 +140,31 @@ describe('fleet render CLI', () => {
       expect(code).toBe(0);
       const body = readFileSync(join(outDir.path, 'agents/concierge.yaml'), 'utf-8');
       expect(body).not.toContain('kind: ServiceMonitor');
+      // ServiceMonitor file must NOT exist when opted out (#31).
+      expect(() =>
+        readFileSync(join(outDir.path, 'agents/concierge-servicemonitor.yaml'), 'utf-8'),
+      ).toThrow();
+    } finally {
+      outDir.cleanup();
+    }
+  });
+
+  test('ServiceMonitor ships in its own file by default (#31)', async () => {
+    const { io } = captureIo();
+    const outDir = mkTempDir();
+    try {
+      const code = await fleetRender(
+        { target: 'k8s', out: outDir.path },
+        { io, root: FLEET_STARTER, cwd: FLEET_STARTER },
+      );
+      expect(code).toBe(0);
+      const workload = readFileSync(join(outDir.path, 'agents/concierge.yaml'), 'utf-8');
+      // No ServiceMonitor bundled into the main workload manifest anymore.
+      expect(workload).not.toContain('kind: ServiceMonitor');
+      // Separate file exists + contains exactly one ServiceMonitor doc.
+      const sm = readFileSync(join(outDir.path, 'agents/concierge-servicemonitor.yaml'), 'utf-8');
+      expect(sm).toContain('kind: ServiceMonitor');
+      expect(sm).toContain('apiVersion: monitoring.coreos.com/v1');
     } finally {
       outDir.cleanup();
     }
