@@ -1,0 +1,61 @@
+version: 1
+# Declan's only auto-outbound channel is the internal Slack review
+# thread. All external publishing (X, LinkedIn, Bluesky, blog merge,
+# newsletter send) is human-gated: Declan writes a file to
+# ./marketing-drafts/, posts a summary + link to #marketing-review,
+# and waits for a 👍 before anything else happens.
+channels:
+  - id: marketing-review
+    type: slack
+    transport:
+      mode: socket
+      botToken: ${env:SLACK_BOT_TOKEN}
+      appToken: ${env:SLACK_APP_TOKEN}
+    routing:
+      format: json
+      kindSelector:
+        const: chat.message
+      targetSelector:
+        type: static
+        conversationId: ${env:SLACK_MARKETING_REVIEW_CHANNEL_ID}
+    delivery:
+      mode: at-least-once
+      ackStrategy: after-publish
+      maxRetries: 3
+      retryBackoff:
+        initialMs: 200
+        maxMs: 5000
+        jitter: true
+      idempotency:
+        strategy: natural-key
+        ttlMs: 300000
+        store: memory
+    limits:
+      concurrency: 2
+      maxInflight: 64
+
+  # Optional: if you want Declan to also answer ad-hoc marketing
+  # questions from the team in a dedicated channel, uncomment this.
+  # Uses the same app credentials; scoped to one channel by events.
+  # - id: marketing-qa
+  #   type: slack
+  #   transport:
+  #     mode: socket
+  #     botToken: ${env:SLACK_BOT_TOKEN}
+  #     appToken: ${env:SLACK_APP_TOKEN}
+  #   threadOnMention: auto
+  #   events:
+  #     - app_mention
+  #   routing:
+  #     format: json
+  #     kindSelector:
+  #       const: chat.message
+  #     targetSelector:
+  #       type: broadcast
+  #   delivery:
+  #     mode: at-least-once
+  #     ackStrategy: after-publish
+  #     maxRetries: 2
+  #   limits:
+  #     concurrency: 2
+  #     maxInflight: 32

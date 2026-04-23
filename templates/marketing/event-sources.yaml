@@ -1,0 +1,52 @@
+# Declan's triggers.
+#
+# 1. Weekly KPI cron — every Monday 09:00 local time, generate the weekly
+#    ops report (stars, npm downloads, docs-site sessions, activation funnel,
+#    issue velocity) and drop it in #marketing-review for the team.
+- type: cron
+  config:
+    id: weekly-kpi
+    schedule: "0 9 * * 1"   # Mon 09:00
+    target:
+      type: skill
+      name: weekly-ops-report
+
+# 2. Release-comms trigger — fires when a GitHub Release is published on
+#    the declaragent/declaragent repo. Declan drafts a blog post, X thread,
+#    LinkedIn post, and newsletter blurb to ./marketing-drafts/<release>/
+#    and posts review links to Slack. Nothing is published automatically.
+- type: webhook
+  config:
+    id: github-release
+    path: /webhook/github-release
+    auth:
+      kind: hmac
+      algorithm: sha256
+      secretEnv: GITHUB_WEBHOOK_SECRET
+      headerName: X-Hub-Signature-256
+      replayWindowSec: 300
+    bodyAs: json
+    # GitHub delivers an X-GitHub-Delivery header; use it as the idempotency
+    # key so a retried release-published event doesn't re-draft.
+    idempotencyKeyHeader: X-GitHub-Delivery
+    rateLimit:
+      max: 30
+      windowMs: 60000
+    target:
+      type: skill
+      name: release-comms
+
+# 3. Brand-mention digest — polls search feeds for "Declaragent",
+#    "d9t.dev", "@declaragent/cli" three times a day and summarizes new
+#    mentions into #marketing-review. Uses a file-watch on a rolling
+#    JSON dump produced by an external mention scraper (or wire to the
+#    MCP brave-search server directly from the weekly-ops-report skill
+#    if you don't want a separate pipeline yet).
+- type: cron
+  config:
+    id: mention-digest
+    schedule: "0 8,13,18 * * *"
+    target:
+      type: skill
+      name: weekly-ops-report
+      # Skill reads a `mode: mentions` hint from event payload; see skill doc.
