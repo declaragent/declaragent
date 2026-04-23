@@ -418,13 +418,66 @@ Per-endpoint request cap (default 60/min) keeps a malicious client from burning 
 
 **Acceptance:** curl against a remote-bound `up` with a bad token gets 401 + no leak; with a good token gets 200; without any auth config the bind is refused with a clear error.
 
-### Slice 3 · `control-plane.yaml` loader (3 days)
+### Slice 3 · Cross-host fan-out CLI (shipped 0.7.4 — #50)
 
-**PR 3.1** · Loader in `packages/cli/src/control-plane-config.ts` — YAML parsing, env/file substitution via existing resolver, per-host auth config normalization, cluster-membership expansion. Unit tests covering malformed YAML + bad auth shapes.
+**What shipped:**
 
-**PR 3.2** · `declaragent fleet control-plane init` verb — scaffold + token generation + per-host config fragment emission.
+- **Config surface:** `fleet.yaml` grows an optional top-level `hosts:` block
+  (validated by `fleetHostSchema` in
+  `packages/core/src/fleet/manifest-schema.ts`). Each entry is
+  `{name, url, auth?: {bearer: "env:X" | "file:/path" | "literal"},
+  timeoutMs?}`. Back-compat: no `hosts:` block ⇒ single-host behaviour
+  (no verb change).
+- **Client:** `packages/cli/src/cross-host-control-plane-client.ts` —
+  `createCrossHostControlPlaneClient({fetchImpl, env})` exposes
+  `getStatus / getEvents / getDlq`; bearer resolution via
+  `resolveBearerToken`; `fanOut(hosts, call)` returns
+  `{host, result: {ok} | {err: HostError}}[]`. One host failure is
+  isolated to its slot; survivors keep flowing.
+- **CLI verbs** (new in 0.7.4, all under `declaragent fleet`):
+  - `fleet ps [--host <name>] [--json]` — aggregated status table.
+  - `fleet events [--host] [--kind] [--since] [--state circuit-open]
+    [--outcome] [--correlation] [--limit] [--all] [--json]` —
+    merge-sorted DESC by `(ts, id)`.
+  - `fleet dlq [--host] [--reason] [--min-attempts] [--since]
+    [--limit] [--all] [--json]` — merge-sorted DESC by `lastSeenMs`.
+    Read-only — `dlq drop/requeue` fan-out deferred (needs write-scope
+    guard).
+  - `fleet logs [--host] [--agent] [--max-lines] [--json]` —
+    snapshot-only; pulls a short SSE burst per host, terminates on
+    `maxLinesPerHost` (default 100) or `timeoutMsPerHost` (3 s).
 
-**Acceptance:** `init` in an empty home dir produces a working `control-plane.yaml` + tokens that validate at boot.
+**Deferred to Slice 6:**
+
+- `fleet logs -f` — live multi-host SSE multiplex. Needs a per-stream
+  interleaver + SIGINT cleanup across N connections; out of scope for
+  the snapshot fan-out. The verb accepts `-f` today and prints a one-
+  line pointer to the deferral.
+- `~/.declaragent/control-plane.yaml` as a second config source. 0.7.4
+  uses `fleet.yaml#hosts[]` exclusively; the home-dir file adds value
+  only for operators who manage multiple fleets and is not blocking.
+- `fleet control-plane init` scaffold verb (token minting). Follow-up
+  once there's a second operator asking for it.
+
+**Auth mental model:** one bearer per host lives in
+`fleet.yaml#hosts[].auth.bearer`. That is the token the CLI sends OUT
+to a remote host's HTTP endpoints. It is orthogonal to the per-agent
+RPC envelope registry (see AGENT_RPC_PLAN.md / #18), which gates
+incoming RPC AT each host. Cross-host fan-out uses per-host auth;
+per-agent auth governs mailbox traffic. Do not conflate them.
+
+**Error-isolation semantics:** every verb returns a trailer listing
+unreachable hosts (HTTP status when available, connect/abort message
+otherwise). Exit code is 1 on partial failure, 0 only when every host
+responded 200. `--json` emits a stable shape:
+`{hosts|events|rejections|logs: [...], failures: [{host, message, status?}]}`.
+
+**Acceptance:** 24 new unit tests (`manifest-schema` host block,
+`cross-host-control-plane-client` × 13, `fleet-cross-host-cli` × 6).
+Integration harness (two `up` processes on 19001/19002 + a fleet.yaml
+pointing at both) is the Slice-5 ship gate per the existing
+`packages/testkit/src/control-plane-integration/` pattern —
+tracked as #50-follow-up.
 
 ### Slice 4 · `declaragent fleet ps` (1 week)
 

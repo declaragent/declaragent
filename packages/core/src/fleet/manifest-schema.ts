@@ -142,6 +142,51 @@ const runtimeSchema = z
   })
   .strict();
 
+// ── Hosts (CONTROL_PLANE_PLAN.md Slice 3) ──────────────────────────────
+
+/**
+ * One remote `up` host's HTTP control-plane endpoint. When a fleet has
+ * one or more `hosts[]`, the CLI verbs `fleet ps / events / dlq / logs`
+ * fan out across every host's `/status`, `/events`, `/dlq`, `/logs`
+ * endpoints and merge results. Back-compat: no `hosts:` block → local
+ * single-host behaviour (unchanged).
+ *
+ * Secret references use the same `env:NAME` / `file:/path` syntax as
+ * the rest of the control-plane config. Plain strings are treated as
+ * literal tokens — fine for dev, discouraged for checked-in manifests.
+ *
+ * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #50
+ */
+const fleetHostAuthSchema = z
+  .object({
+    /**
+     * Bearer token for the `Authorization: Bearer <token>` header.
+     * Supports `env:NAME`, `file:/abs/path`, or a literal string.
+     */
+    bearer: z.string().min(1),
+  })
+  .strict();
+
+const fleetHostSchema = z
+  .object({
+    /** Operator-chosen host identifier. Must be URL-safe — used in `--host <name>`. */
+    name: z.string().min(1).regex(agentIdPattern, 'host name must be URL-safe'),
+    /**
+     * Base URL of the remote `up` process's control-plane HTTP listener
+     * (the port bound by `observability.metricsPort`, default 9464).
+     * Include scheme — `http://` for loopback or behind a trusted proxy,
+     * `https://` when the remote is TLS-terminated.
+     */
+    url: z.string().url(),
+    auth: fleetHostAuthSchema.optional(),
+    /** Per-request timeout in ms. Default 5000. */
+    timeoutMs: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export type FleetHost = z.infer<typeof fleetHostSchema>;
+export type FleetHostAuth = z.infer<typeof fleetHostAuthSchema>;
+
 // ── Top level ──────────────────────────────────────────────────────────
 
 export const fleetManifestSchema = z
@@ -160,6 +205,31 @@ export const fleetManifestSchema = z
     environments: z.record(z.string(), environmentSchema).optional(),
     deploy: deploySchema.optional(),
     rpc: rpcSchema.optional(),
+    /**
+     * Optional list of remote `up` hosts — populated when the fleet is
+     * deployed across multiple machines. Drives the cross-host fan-out
+     * for `declaragent fleet ps / events / dlq / logs`. See Slice 3 of
+     * `docs/CONTROL_PLANE_PLAN.md` (#50).
+     *
+     * Names must be unique.
+     *
+     * @since 0.7.4
+     */
+    hosts: z
+      .array(fleetHostSchema)
+      .optional()
+      .refine(
+        (hosts) => {
+          if (!hosts) return true;
+          const names = new Set<string>();
+          for (const h of hosts) {
+            if (names.has(h.name)) return false;
+            names.add(h.name);
+          }
+          return true;
+        },
+        { message: 'fleet.hosts[].name must be unique' },
+      ),
   })
   .strict();
 
