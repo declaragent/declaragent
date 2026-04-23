@@ -9,9 +9,9 @@ This is the **tracking doc**. Keep the status board (§1) accurate. Detailed spe
 ## 0 · Summary banner
 
 ```
-Enterprise pillars status:  ▓▓▓▓▓  ( 4 / 12 items complete; slice 1 of #5 partially landed; 7 items remain )
-Latest release:             @declaragent/cli@0.6.0 (items #1/#2/#3/#6 + #5-slice-1 merged 2026-04-22; unreleased)
-Next milestone:             M2 · OIDC/OAuth2 + M5 hardening (#4, #7, #8)
+Enterprise pillars status:  ▓▓▓▓▓▓▓  ( 6 / 12 items complete; #5 slice 1 fully landed; 5 items remain )
+Latest release:             @declaragent/cli@0.6.0 (items #1/#2/#3/#4/#6/#7 + #5-slice-1 all merged 2026-04-23; unreleased)
+Next milestone:             Round 4 — #8 MCP auto-recovery · #9 GitOps render · #10 SIEM export
 Active blocker:             none
 ```
 
@@ -28,10 +28,10 @@ Tick checkboxes as work lands. One line per item. If the scope changes, **edit t
 | 1 | [x] Finish Kafka soak — cross-host `fleet run` + 24h drift alarm | M1 | 1 wk | Shipped | Eng-A | [PR #10](https://github.com/declaragent/declaragent/pull/10) · `20c6e35` — pillar flip pending first green weekly run |
 | 2 | [x] NATS RPC transport factory | M1 | 3 d | Shipped | Eng-A | [PR #13](https://github.com/declaragent/declaragent/pull/13) · `e233ac6` |
 | 3 | [x] Dispatch-DLQ active requeue | M1 | 1 d | Shipped | Eng-B | [PR #14](https://github.com/declaragent/declaragent/pull/14) · `757b71d` |
-| 4 | [ ] OIDC / OAuth2 on RPC envelopes | M2 | 1 wk | Not started | — | — |
-| 5 | [~] Managed control plane (aggregator over N `up`) | M4 | 4 wk | In-progress (Slice 1a + 1b shipped; 1c `/logs` SSE + Slice 2 auth pending) | Eng-C | [PR #12](https://github.com/declaragent/declaragent/pull/12) · `95dbc4c` (1a) · [PR #15](https://github.com/declaragent/declaragent/pull/15) · `8a39ade` (1b) |
+| 4 | [x] OIDC / OAuth2 on RPC envelopes | M2 | 1 wk | Shipped | Eng-A | [PR #17](https://github.com/declaragent/declaragent/pull/17) · `71b752e` — follow-ups: wire `clientSecretRef` resolver + `AuthVerifyRegistry` factory into `up` boot |
+| 5 | [~] Managed control plane (aggregator over N `up`) | M4 | 4 wk | In-progress (Slice 1 fully shipped — 1a + 1b + 1c; Slice 2 auth next) | Eng-C | [PR #12](https://github.com/declaragent/declaragent/pull/12) · `3cafaaa` (1a) · [PR #15](https://github.com/declaragent/declaragent/pull/15) · `af684cf` (1b) · [PR #19](https://github.com/declaragent/declaragent/pull/19) · `06dc6e3` (1c /logs SSE) |
 | 6 | [x] Control socket on `up` daemon | M5 | 2 d | Shipped | Eng-B | [PR #11](https://github.com/declaragent/declaragent/pull/11) · `d53baed` — `reload` op still stubbed as `unsupported` |
-| 7 | [ ] Per-tool rate limit | M5 | 3 d | Not started | — | — |
+| 7 | [x] Per-tool rate limit | M5 | 3 d | Shipped | Eng-B | [PR #18](https://github.com/declaragent/declaragent/pull/18) · `10da017` — follow-up: wire `TenantAuditSink` into `up-cli` so `rate_limited` records land |
 | 8 | [ ] Auto-recovery for crashed MCP servers | M5 | 4 d | Not started | — | — |
 | 9 | [ ] GitOps `fleet render` — k8s manifests + Helm | M3 | 1 wk | Not started | — | — |
 | 10 | [ ] SIEM audit export — Splunk / Elastic / Datadog adapter | M3 | 1 wk | Not started | — | — |
