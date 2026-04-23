@@ -378,6 +378,9 @@ describe('createMCPSupervisor — crash loop → circuit opens', () => {
     const scrape = registry.scrape();
     expect(scrape).toMatch(/mcp_server_circuit_state\{[^}]*server_id="crash-loop"[^}]*\} 2/);
     expect(scrape).toContain('mcp_server_restarts_total');
+    // And the dedicated circuit-open counter incremented exactly once on
+    // the `closed → open` transition (backlog #14).
+    expect(scrape).toMatch(/mcp_server_circuit_open_total\{[^}]*server_id="crash-loop"[^}]*\} 1/);
 
     // Subsequent tool calls fail fast with a typed error.
     let threw: unknown = null;
@@ -446,6 +449,56 @@ describe('createMCPSupervisor — crash loop → circuit opens', () => {
     await flushMicrotasks(50);
     expect(sup.snapshot().state).toBe('ready');
     expect(sup.snapshot().circuit).toBe('closed');
+    await sup.stop();
+  });
+
+  test('mcp_server_circuit_open_total increments on closed → open transition (backlog #14)', async () => {
+    const clock = makeFakeClock();
+    const factory: MCPClientFactory = (lifecycle) => {
+      return makeFakeClient({
+        lifecycle,
+        failInitialize: () => new Error('init boom'),
+      });
+    };
+    const transitions: Array<{ from: string; to: string }> = [];
+    const registry = createPrometheusRegistry();
+    const sup = createMCPSupervisor({
+      serverId: 'counter-srv',
+      protocolVersion: '2024-11-05',
+      factory,
+      metrics: registry,
+      circuitThreshold: 2,
+      circuitResetMs: 24 * 3600 * 1000,
+      now: clock.now,
+      sleep: clock.sleep,
+      setTimer: clock.setTimer,
+      onCircuitTransition: (e) => {
+        transitions.push({ from: e.from, to: e.to });
+      },
+    });
+
+    // Before any transition, the counter is absent (or at 0 after
+    // registration happens on first boot failure).
+    const initialScrape = registry.scrape();
+    expect(initialScrape).not.toMatch(
+      /mcp_server_circuit_open_total\{[^}]*server_id="counter-srv"[^}]*\} [1-9]/,
+    );
+
+    void sup.start();
+    // Drive enough simulated time to exhaust backoff + open the circuit.
+    for (let i = 0; i < 6; i += 1) {
+      await clock.advance(5_000);
+      await flushMicrotasks(20);
+    }
+    expect(sup.snapshot().state).toBe('circuit-open');
+    expect(transitions.filter((t) => t.to === 'open')).toHaveLength(1);
+
+    // Counter must have incremented exactly once (label stays server-scoped).
+    const scrape = registry.scrape();
+    expect(scrape).toMatch(/mcp_server_circuit_open_total\{[^}]*server_id="counter-srv"[^}]*\} 1/);
+    // And the gauge still reflects the current state.
+    expect(scrape).toMatch(/mcp_server_circuit_state\{[^}]*server_id="counter-srv"[^}]*\} 2/);
+
     await sup.stop();
   });
 });

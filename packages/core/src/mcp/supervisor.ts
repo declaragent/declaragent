@@ -23,11 +23,18 @@
  * sleep, and asks the factory for a fresh one. On success it re-issues
  * `initialize` + `listTools` and notifies the caller.
  *
- * Metrics: two Prometheus series, registered through the shared
+ * Metrics: three Prometheus series, registered through the shared
  * {@link MetricsRegistry}:
  *
  *   - `mcp_server_restarts_total{server_id, reason}`  counter
  *   - `mcp_server_circuit_state{server_id}`           gauge (0/1/2)
+ *   - `mcp_server_circuit_open_total{server_id}`      counter
+ *
+ * The `circuit_open_total` counter is a dedicated companion to the
+ * labeled `circuit_state` gauge: alertmanager rules stay simple
+ * (`increase(mcp_server_circuit_open_total[5m]) > 0`) without having
+ * to compare a gauge against a constant label value. It increments
+ * exactly once per `closed|half-open → open` transition.
  *
  * @since 0.7.0
  */
@@ -271,6 +278,15 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
         inc() {},
         dec() {},
       };
+  // Dedicated counter for circuit-open transitions. Alertmanager rules
+  // are much simpler with a counter (`increase(...[5m]) > 0`) than a
+  // gauge-plus-label comparison — see Post-Enterprise Backlog #14.
+  const circuitOpenCounter: Counter = opts.metrics
+    ? opts.metrics.counter(
+        'mcp_server_circuit_open_total',
+        'Count of MCP supervisor circuit-open transitions per server.',
+      )
+    : { inc() {} };
 
   const serverLabels: Readonly<Record<string, string>> = { server_id: opts.serverId };
 
@@ -320,6 +336,9 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
 
   circuit.onTransition(({ from, to }) => {
     circuitGauge.set(CIRCUIT_GAUGE_VALUE[to], serverLabels);
+    if (to === 'open') {
+      circuitOpenCounter.inc(1, serverLabels);
+    }
     logger.warn('mcp.supervisor.circuit.transition', {
       serverId: opts.serverId,
       from,

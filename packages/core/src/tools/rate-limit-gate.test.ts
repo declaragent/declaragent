@@ -111,11 +111,11 @@ describe('ToolRateLimitGate', () => {
     expect(sleep.waits).toEqual([waited]);
   });
 
-  test('acceptance #1: Bash capped at 1rps, 10 calls take ≥ 9s (deterministic clock)', async () => {
+  test('acceptance #1: Bash capped at 1rps, 10 calls take ≥ 8s (deterministic clock)', async () => {
     const clock = makeFakeClock();
     const sleep = makeFakeSleep(clock);
     const gate = createToolRateLimitGate({
-      limits: { Bash: { rps: 1 } }, // burst defaults to rps (=1)
+      limits: { Bash: { rps: 1 } }, // burst defaults to 2 × rps (=2)
       now: clock.now,
       sleep: sleep.sleep,
     });
@@ -126,13 +126,13 @@ describe('ToolRateLimitGate', () => {
     }
     const elapsedMs = clock.now() - start;
 
-    // First call consumes the burst; each of the remaining 9 waits
-    // ~1000 ms. Expected total ≈ 9000 ms.
-    expect(elapsedMs).toBeGreaterThanOrEqual(9_000);
-    expect(sleep.waits).toHaveLength(9);
+    // First 2 calls consume the burst; each of the remaining 8 waits
+    // ~1000 ms. Expected total ≈ 8000 ms.
+    expect(elapsedMs).toBeGreaterThanOrEqual(8_000);
+    expect(sleep.waits).toHaveLength(8);
   });
 
-  test('acceptance #1 (wall-clock variant): real timers, 1rps × 10 takes ≥ 9s', async () => {
+  test('acceptance #1 (wall-clock variant): real timers, 1rps × 10 takes ≥ 8s', async () => {
     const gate = createToolRateLimitGate({
       limits: { Bash: { rps: 1 } },
     });
@@ -143,9 +143,9 @@ describe('ToolRateLimitGate', () => {
     }
     const elapsedMs = performance.now() - started;
 
-    // Token bucket: 1 burst + 9 refill waits at ~1000 ms each.
-    // Allow a tiny floor of 8900 ms to absorb setTimeout slop on CI.
-    expect(elapsedMs).toBeGreaterThanOrEqual(8_900);
+    // Token bucket: 2 burst + 8 refill waits at ~1000 ms each.
+    // Allow a tiny floor of 7900 ms to absorb setTimeout slop on CI.
+    expect(elapsedMs).toBeGreaterThanOrEqual(7_900);
   }, 15_000);
 
   test('audit record fires only when wait > auditThresholdMs (default 1s)', async () => {
@@ -257,7 +257,7 @@ describe('ToolRateLimitGate', () => {
     );
   });
 
-  test('burst defaults to rps when omitted', async () => {
+  test('burst defaults to 2 × rps when omitted (classic token-bucket wisdom)', async () => {
     const clock = makeFakeClock();
     const sleep = makeFakeSleep(clock);
     const gate = createToolRateLimitGate({
@@ -265,10 +265,38 @@ describe('ToolRateLimitGate', () => {
       now: clock.now,
       sleep: sleep.sleep,
     });
-    // Without explicit burst, bucket should absorb 3 immediate calls.
-    for (let i = 0; i < 3; i += 1) {
+    // Without explicit burst, bucket should absorb 2 × 3 = 6 immediate calls.
+    for (let i = 0; i < 6; i += 1) {
       expect(await gate.acquire('Bash', { tenantId: 't1' })).toBe(0);
     }
     expect(sleep.waits).toHaveLength(0);
+    // The 7th call must wait (burst is exhausted).
+    const waited = await gate.acquire('Bash', { tenantId: 't1' });
+    expect(waited).toBeGreaterThan(0);
+  });
+
+  test('rps=1 sits exactly on the 1s audit threshold and still records (Item #29: `>=` boundary)', async () => {
+    const clock = makeFakeClock();
+    const sleep = makeFakeSleep(clock);
+    const { sink, recorded } = makeRecordingSink();
+    // rps=1, burst=1 → second call waits exactly 1000 ms, which under
+    // the previous strict `>` comparator sat silently on the boundary.
+    // With `>=` we now record it.
+    const gate = createToolRateLimitGate({
+      limits: { Bash: { rps: 1, burst: 1 } },
+      auditSink: sink,
+      now: clock.now,
+      sleep: sleep.sleep,
+    });
+
+    await gate.acquire('Bash', { tenantId: 't1' }); // burst → 0 ms wait
+    expect(recorded).toHaveLength(0);
+
+    await gate.acquire('Bash', { tenantId: 't1' }); // waits exactly 1000 ms
+    expect(recorded).toHaveLength(1);
+    const rec = recorded[0] as RateLimitedAuditRecord;
+    expect(rec.kind).toBe('rate_limited');
+    expect(rec.tool).toBe('Bash');
+    expect(rec.waitMs).toBe(1_000);
   });
 });
