@@ -85,7 +85,7 @@ import {
 } from '@declaragent/core';
 import type { ResolveLogPaths } from '@declaragent/core';
 import { type AuthVerifyRegistry, buildAuthVerifyRegistry } from '@declaragent/plugin-agent-rpc';
-import { getOrOpenSharedAuditSink, releaseSharedAuditSink } from './audit-sink-singleton.js';
+import { acquireTenantAuditSink, releaseTenantAuditSink } from './audit-sink-singleton.js';
 import { resolveCredentials } from './auth.js';
 import { buildRuntimeTools } from './builtin-tools.js';
 import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
@@ -434,10 +434,12 @@ async function runForeground(
   //   - `/audit` route serves reads.
   //   - `startAuditExportLoop` tails the same file for SIEM export.
   //
-  // Routed through {@link getOrOpenSharedAuditSink} so future callers
+  // Routed through {@link acquireTenantAuditSink} so future callers
   // that target the same SQLite file transparently reuse this handle
-  // rather than opening a second connection (backlog #52). The
-  // singleton's module-scoped cache is released in `doShutdown()`.
+  // rather than opening a second connection (backlog #52 + #40). The
+  // singleton's module-scoped cache is released in `doShutdown()`;
+  // the underlying sink is closed only after every ref-counted owner
+  // has released.
   //
   // Best-effort open: a failure here leaves `sharedAuditSink` null and
   // each consumer silently no-ops — daemon still boots. We only log
@@ -445,7 +447,7 @@ async function runForeground(
   const auditSinkPath = auditDbPath();
   let sharedAuditSink: TenantAuditSink | null = null;
   try {
-    sharedAuditSink = await getOrOpenSharedAuditSink({ path: auditSinkPath });
+    sharedAuditSink = await acquireTenantAuditSink({ path: auditSinkPath, owner: 'up-cli' });
   } catch (err) {
     io.err(
       `⚠ audit sink at ${auditSinkPath} failed to open — ${err instanceof Error ? err.message : String(err)}. Rate-limit + /audit + SIEM export disabled.\n`,
@@ -491,7 +493,7 @@ async function runForeground(
     // Release the shared audit sink so a retry opens a fresh handle
     // (the singleton cache is module-level).
     if (sharedAuditSink) {
-      await releaseSharedAuditSink(auditSinkPath);
+      await releaseTenantAuditSink({ path: auditSinkPath, owner: 'up-cli' });
     }
     return 1;
   }
@@ -723,7 +725,9 @@ async function runForeground(
   // closes.
   //
   // @since 0.6.x — sink dedup hardened 0.7.2 via
-  //                {@link getOrOpenSharedAuditSink}.
+  //                {@link acquireTenantAuditSink}. Ref-counted multi-
+  //                owner support added 0.7.3 (backlog #40) so `fleet
+  //                run` + `up` can co-exist in the same process.
   const auditExports = running
     .map((r) => ({ id: r.summary.id, cfg: r.auditExport }))
     .filter((x): x is { id: string; cfg: LoadedAuditExport } => x.cfg !== undefined);
@@ -791,7 +795,7 @@ async function runForeground(
       // cleared; otherwise a subsequent `up` in the same process
       // (test runner, nested spawn) would hand out a closed handle.
       if (sharedAuditSink) {
-        await releaseSharedAuditSink(auditSinkPath);
+        await releaseTenantAuditSink({ path: auditSinkPath, owner: 'up-cli' });
       }
       clearUpState();
       io.out('✓ down\n');

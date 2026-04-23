@@ -173,7 +173,7 @@ Usage:
   declaragent fleet run [--agent <id>...]
   declaragent fleet deploy [--target <name>] [--agent <id>...] [--strategy <rolling|all-or-nothing|per-agent>]
   declaragent fleet deploy --dry-run | --rollback | --target-config <path>
-  declaragent fleet render --target <k8s|helm> [--out <dir>] [--image <ref>] [--replicas <n>] [--namespace <ns>] [--no-servicemonitor]
+  declaragent fleet render --target <k8s|helm> [--out <dir>] [--image <ref>] [--replicas <n>] [--namespace <ns>] [--with-servicemonitor|--no-servicemonitor]
   declaragent fleet graph [--format <mermaid|dot|json>]
   declaragent fleet peers [--verify] [--json]
   declaragent fleet status [--history] [--limit <n>] [--json]
@@ -981,7 +981,14 @@ async function runFleetSubcommand(
     const namespace = flagValue(rest, '--namespace');
     const replicasRaw = flagValue(rest, '--replicas');
     const replicas = replicasRaw !== undefined ? Number.parseInt(replicasRaw, 10) : undefined;
-    const noServiceMonitor = flagSet(rest, '--no-servicemonitor', '--no-service-monitor');
+    // ServiceMonitor is emitted by default (assumes Prometheus
+    // Operator is installed). `--no-servicemonitor` / `--no-service-monitor`
+    // opts out. `--with-servicemonitor` is the explicit positive form
+    // — currently a no-op (same as the default) but documented for
+    // symmetry so operators can be explicit in scripts (#31, 0.7.3).
+    const withServiceMonitor = flagSet(rest, '--with-servicemonitor', '--with-service-monitor');
+    const noServiceMonitor =
+      flagSet(rest, '--no-servicemonitor', '--no-service-monitor') && !withServiceMonitor;
     return fleetRender({
       ...(target !== undefined && { target }),
       ...(out !== undefined && { out }),

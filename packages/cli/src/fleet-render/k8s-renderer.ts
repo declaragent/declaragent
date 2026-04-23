@@ -5,8 +5,12 @@
  *
  *   - One `Namespace` for the whole fleet.
  *   - Per agent: `ConfigMap` (inline `agent.yaml`), `Deployment`,
- *     `Service`, and optionally `ServiceMonitor` (Prometheus Operator
- *     CRD — gated on {@link ResolvedRenderOptions.serviceMonitor}).
+ *     `Service` in `agents/<id>.yaml`, plus an optional
+ *     `ServiceMonitor` (Prometheus Operator CRD — gated on
+ *     {@link ResolvedRenderOptions.serviceMonitor}) emitted into a
+ *     SEPARATE `agents/<id>-servicemonitor.yaml` file so operators on
+ *     vanilla Prometheus can delete the monitor without touching the
+ *     core workload manifests (#31, 0.7.3).
  *   - Per unique `${secret:<ref>}` discovered across every agent.yaml,
  *     a stub `Secret` manifest with **key-only** stringData — the
  *     operator fills in the values (§3 #9 Secret refs, not values).
@@ -128,21 +132,28 @@ export function renderK8sFromSources(
 
   // 3. Per-agent resources. Agents iterate in manifest order (already
   //    stable because `loadFleet` preserves array order), and each
-  //    agent's resources sort as ConfigMap → Deployment → Service →
-  //    ServiceMonitor within its own file.
+  //    agent's resources sort as ConfigMap → Deployment → Service
+  //    within its own file. ServiceMonitor is emitted into a SEPARATE
+  //    `agents/<id>-servicemonitor.yaml` file so operators running
+  //    vanilla Prometheus (no Operator CRD) can `rm` it without
+  //    touching the core workload manifests. (#31)
   for (const src of agents) {
     const docs: string[] = [];
     docs.push(renderConfigMap(src, fleetName, resolved));
     docs.push(renderDeployment(src, fleetName, resolved, secretRefs));
     docs.push(renderService(src, fleetName, resolved));
-    if (resolved.serviceMonitor) {
-      docs.push(renderServiceMonitor(src, fleetName, resolved));
-    }
-    const agentFile = `agents/${sanitizeDns1123Label(src.agent.id)}.yaml`;
+    const safeId = sanitizeDns1123Label(src.agent.id);
+    const agentFile = `agents/${safeId}.yaml`;
     files.push({
       path: agentFile,
       contents: docs.join(DOC_SEPARATOR),
     });
+    if (resolved.serviceMonitor) {
+      files.push({
+        path: `agents/${safeId}-servicemonitor.yaml`,
+        contents: renderServiceMonitor(src, fleetName, resolved),
+      });
+    }
   }
 
   // Deterministic file order — every caller can `diff` across renders.
