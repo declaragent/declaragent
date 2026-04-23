@@ -23,8 +23,11 @@ import { Banner } from './banner.js';
 import {
   DEFAULT_DEPLOY_DENY_RULES,
   ProposalRegistry,
+  createRecordingProvider,
+  defaultRecordingPath,
   formatLeakWarning,
   getBuilderTools,
+  recordingEnabled,
   redactSecrets,
   renderHistory,
   renderProposal,
@@ -33,7 +36,7 @@ import {
   runHistory,
   runUndo,
 } from './builder/index.js';
-import type { Proposal, ProposalEvent } from './builder/index.js';
+import type { Proposal, ProposalEvent, RecordingProviderHandle } from './builder/index.js';
 import { BUILTIN_TOOLS } from './builtin-tools.js';
 import { expandFileRefs } from './file-refs.js';
 import { fleetGraph } from './fleet-graph-cli.js';
@@ -521,6 +524,11 @@ export function App(props: AppProps): JSX.Element {
   const [auditSink, setAuditSink] = useState<TenantAuditSink | null>(null);
 
   const engineRef = useRef<Engine | null>(null);
+  // Recording handle — set on first engine build when `BUILDER_RECORD=1`
+  // is in the environment. The same handle is reused across engine
+  // rebuilds (mode/model changes) so every turn in the session lands in
+  // the same JSONL file. `null` means recording is off.
+  const recordingRef = useRef<RecordingProviderHandle | null>(null);
   // Rebuild engine when mode changes (gate is captured by closure).
   useEffect(() => {
     const creds = resolveCredentials();
@@ -534,7 +542,30 @@ export function App(props: AppProps): JSX.Element {
     // Provider selection factored into `createProviderFromCreds` so
     // `declaragent run` and `declaragent fleet run` share the same
     // credentials → provider translation.
-    const provider: LLMProvider = createProviderFromCreds({ creds: creds ?? null });
+    let provider: LLMProvider = createProviderFromCreds({ creds: creds ?? null });
+    // BUILDER_RECORD=1 wraps the live provider so every `complete()`
+    // response lands in a JSONL file replayable by the existing
+    // fixture harness. Initialised once per session; reused on engine
+    // rebuilds (mode / model / auditSink changes) so one session =
+    // one fixture, not one-per-rebuild.
+    if (recordingEnabled(process.env)) {
+      if (recordingRef.current === null) {
+        const outputPath = process.env.BUILDER_RECORD_OUT ?? defaultRecordingPath(process.cwd());
+        recordingRef.current = createRecordingProvider({ inner: provider, outputPath });
+        append({
+          kind: 'system',
+          text: `recording conversation to ${outputPath} (BUILDER_RECORD=1)`,
+        });
+      } else {
+        // Re-wrap the *new* inner provider when the engine rebuilds.
+        // Reuse the same output path so the JSONL stays contiguous.
+        recordingRef.current = createRecordingProvider({
+          inner: provider,
+          outputPath: recordingRef.current.outputPath,
+        });
+      }
+      provider = recordingRef.current;
+    }
     // Phase-6 safety floor: deploy verbs are denied by default so a
     // model that Bash-shells `declaragent deploy ...` straight to prod
     // trips the gate rather than the live site. Users who *intend* to
@@ -665,6 +696,15 @@ export function App(props: AppProps): JSX.Element {
       return;
     }
 
+    // BUILDER_RECORD=1 — append the user turn to the fixture BEFORE
+    // file-ref expansion. Fixtures capture what the user typed, not
+    // the expanded prompt the model sees; that keeps recordings
+    // compact and human-editable. The recorder re-runs this through
+    // the secret redactor as defence in depth (the REPL's handleSubmit
+    // already redacted once, but future refactors shouldn't be able
+    // to leak a token by moving redaction around).
+    recordingRef.current?.recordUserTurn(text);
+
     // `@<path>` file-ref expansion. Rendered user line keeps the raw
     // token (that's what the user typed); the model sees the expanded
     // form with inlined file bodies.
@@ -723,6 +763,22 @@ export function App(props: AppProps): JSX.Element {
     }
   }
 
+  /**
+   * Print the BUILDER_RECORD output path (if recording is on) just
+   * before `exit()` runs. Best-effort: a broken recording must not
+   * block the REPL from closing, so we swallow any write errors.
+   */
+  function finalizeRecording(): void {
+    const handle = recordingRef.current;
+    if (handle) {
+      try {
+        process.stderr.write(`[BUILDER_RECORD] transcript saved to ${handle.outputPath}\n`);
+      } catch {
+        // stderr may already be closed during final teardown.
+      }
+    }
+  }
+
   function handleSlash(cmd: SlashCommand): void {
     switch (cmd.kind) {
       case 'help':
@@ -731,6 +787,7 @@ export function App(props: AppProps): JSX.Element {
         }
         return;
       case 'exit':
+        finalizeRecording();
         store.close();
         exit();
         return;
@@ -1240,6 +1297,7 @@ export function App(props: AppProps): JSX.Element {
       for (let p = registry.active(); p !== undefined; p = registry.active()) {
         registry.reject(p.id);
       }
+      finalizeRecording();
       store.close();
       exit();
       return;
