@@ -124,7 +124,12 @@ export function renderHelmFromSources(
     const id = sanitizeDns1123Label(src.agent.id);
     files.push({
       path: `templates/agents/${id}.yaml`,
-      contents: renderAgentTemplate(src.agent.id, src.agentYaml, resolved.serviceMonitor),
+      contents: renderAgentTemplate(
+        src.agent.id,
+        src.agentYaml,
+        resolved.serviceMonitor,
+        resolved.configSplit ? detectAgentSections(src.agentYaml) : [],
+      ),
     });
   }
 
@@ -169,6 +174,14 @@ function renderValuesYaml(
       additionalLabels: {
         prometheus: 'kube-prometheus',
       },
+    },
+    // Post-enterprise backlog #32: split channel / source / plugin
+    // config into dedicated ConfigMaps that envFrom into the
+    // Deployment, so operators can rotate per-section config without
+    // rebuilding the image. Default-off at 0.7.5; toggle enabled here
+    // to flip the behaviour without re-rendering the chart.
+    configSplit: {
+      enabled: resolved.configSplit,
     },
     // Key-only. Values MUST be supplied at `helm install` time via
     // `--set-string secrets.SLACK_BOT_TOKEN=…` or a sealed-secrets flow.
@@ -266,7 +279,75 @@ stringData:
 
 // ── Per-agent template ─────────────────────────────────────────────────
 
-function renderAgentTemplate(agentId: string, agentYaml: string, serviceMonitor: boolean): string {
+/**
+ * Sections we fan into dedicated ConfigMaps under `--config-split` (#32).
+ * Must stay aligned with `SPLIT_SECTIONS` in `k8s-renderer.ts`.
+ */
+interface HelmSplitSection {
+  readonly suffix: 'channels-config' | 'sources-config' | 'plugins-config';
+  readonly envKey: 'CHANNELS_YAML' | 'SOURCES_YAML' | 'PLUGINS_YAML';
+  readonly sectionTag: 'channels' | 'sources' | 'plugins';
+  /** Raw YAML text of the section, already indented for embedding. */
+  readonly yaml: string;
+}
+
+function detectAgentSections(agentYaml: string): HelmSplitSection[] {
+  let parsed: Record<string, unknown> | undefined;
+  try {
+    const raw = parseYaml(agentYaml);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      parsed = raw as Record<string, unknown>;
+    }
+  } catch {
+    return [];
+  }
+  if (!parsed) return [];
+  const specs: Array<{
+    suffix: HelmSplitSection['suffix'];
+    envKey: HelmSplitSection['envKey'];
+    sectionTag: HelmSplitSection['sectionTag'];
+    yamlKeys: readonly string[];
+  }> = [
+    {
+      suffix: 'channels-config',
+      envKey: 'CHANNELS_YAML',
+      sectionTag: 'channels',
+      yamlKeys: ['channels'],
+    },
+    {
+      suffix: 'sources-config',
+      envKey: 'SOURCES_YAML',
+      sectionTag: 'sources',
+      yamlKeys: ['event-sources', 'sources'],
+    },
+    {
+      suffix: 'plugins-config',
+      envKey: 'PLUGINS_YAML',
+      sectionTag: 'plugins',
+      yamlKeys: ['plugins'],
+    },
+  ];
+  const out: HelmSplitSection[] = [];
+  for (const spec of specs) {
+    const matchedKey = spec.yamlKeys.find((k) => parsed?.[k] !== undefined);
+    if (!matchedKey) continue;
+    const text = stringifyYaml(parsed[matchedKey], YAML_OPTS).replace(/\n$/, '');
+    out.push({
+      suffix: spec.suffix,
+      envKey: spec.envKey,
+      sectionTag: spec.sectionTag,
+      yaml: text,
+    });
+  }
+  return out;
+}
+
+function renderAgentTemplate(
+  agentId: string,
+  agentYaml: string,
+  serviceMonitor: boolean,
+  splitSections: readonly HelmSplitSection[] = [],
+): string {
   const safeId = sanitizeDns1123Label(agentId);
   // Embed the agent.yaml content. Helm passes template strings through
   // Go templating, so any literal `{{ }}` in the agent.yaml would be
@@ -274,6 +355,54 @@ function renderAgentTemplate(agentId: string, agentYaml: string, serviceMonitor:
   // `{{ "{{" }}` trick — at render time Go emits a literal `{{` into
   // the output, preserving the agent.yaml content byte-for-byte.
   const safeAgentYaml = agentYaml.replace(/\{\{/g, '{{ "{{" }}').replace(/\}\}/g, '{{ "}}" }}');
+
+  // Build the split-ConfigMap blocks (one per matching section). Gated
+  // on `.Values.configSplit.enabled` so operators can toggle without
+  // re-rendering. Section values are embedded at chart-render time —
+  // the template escapes any `{{`/`}}` tokens the same way we do for
+  // `agent.yaml` above, so verbatim YAML round-trips safely.
+  const splitConfigBlocks: string[] = [];
+  const splitEnvFromEntries: string[] = [];
+  for (const s of splitSections) {
+    const cmName = `${safeId}-${s.suffix}`;
+    const safeYaml = s.yaml.replace(/\{\{/g, '{{ "{{" }}').replace(/\}\}/g, '{{ "}}" }}');
+    splitConfigBlocks.push(`{{- if .Values.configSplit.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${cmName}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+    declaragent.io/config-section: ${s.sectionTag}
+data:
+  ${s.envKey}: |
+${indent(safeYaml, 4)}
+{{- end }}`);
+    splitEnvFromEntries.push(`            - configMapRef:
+                name: ${cmName}`);
+  }
+  const splitConfigDocs = splitConfigBlocks.join('\n');
+  const splitEnvFromBlock =
+    splitEnvFromEntries.length > 0
+      ? `          {{- if .Values.configSplit.enabled }}
+          envFrom:
+${splitEnvFromEntries.join('\n')}
+          {{- if gt (len .Values.secrets) 0 }}
+            - secretRef:
+                name: {{ include "declaragent.fullname" . }}-secrets
+          {{- end }}
+          {{- else if gt (len .Values.secrets) 0 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "declaragent.fullname" . }}-secrets
+          {{- end }}`
+      : `          {{- if gt (len .Values.secrets) 0 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "declaragent.fullname" . }}-secrets
+          {{- end }}`;
 
   const serviceMonitorBlock = serviceMonitor
     ? `{{- if .Values.serviceMonitor.enabled }}
@@ -300,6 +429,8 @@ spec:
 `
     : '';
 
+  const splitConfigBlock = splitConfigDocs.length > 0 ? `\n${splitConfigDocs}\n` : '';
+
   return `{{- $agentId := "${safeId}" -}}
 {{- $replicas := default .Values.replicas.default (index .Values.replicas $agentId) -}}
 apiVersion: v1
@@ -311,7 +442,7 @@ metadata:
     {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
 data:
   agent.yaml: |
-${indent(safeAgentYaml, 4)}
+${indent(safeAgentYaml, 4)}${splitConfigBlock}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -348,11 +479,7 @@ spec:
               value: ${safeId}
             - name: DECLARAGENT_FLEET_NAME
               value: {{ include "declaragent.name" . | quote }}
-          {{- if gt (len .Values.secrets) 0 }}
-          envFrom:
-            - secretRef:
-                name: {{ include "declaragent.fullname" . }}-secrets
-          {{- end }}
+${splitEnvFromBlock}
           readinessProbe:
             httpGet:
               path: {{ .Values.healthProbePath }}

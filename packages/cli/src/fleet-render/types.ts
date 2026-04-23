@@ -20,6 +20,16 @@
 
 export type RenderTarget = 'k8s' | 'helm';
 
+/**
+ * Output format for the `kubernetes` render target. `helm` (default)
+ * emits a Helm chart; `kustomize` emits a Kustomize base + per-env
+ * overlays. Both produce byte-identical ConfigMaps / Deployments —
+ * the format only changes the packaging wrapper.
+ *
+ * @since 0.7.5 (post-enterprise backlog #33)
+ */
+export type RenderFormat = 'helm' | 'kustomize';
+
 export interface RenderedFile {
   /** Path relative to the `--out` dir. Always POSIX-style `/`-separated. */
   readonly path: string;
@@ -59,6 +69,18 @@ export interface RenderOptions {
   readonly metricsPort?: number;
   /** HTTP probe path. Defaults to `/healthz`. */
   readonly healthProbePath?: string;
+  /**
+   * Split per-agent config into dedicated ConfigMaps (`<agent>-channels-config`,
+   * `<agent>-sources-config`, `<agent>-plugins-config`) mounted via
+   * `envFrom`. Defaults to `false` — today's monolithic ConfigMap that
+   * embeds the entire `agent.yaml` is preserved so pre-0.7.5 GitOps
+   * repos don't churn. Operators opt in via `--config-split` when they
+   * want to rotate channel/source/plugin config without rebuilding the
+   * image. A future minor may flip the default.
+   *
+   * @since 0.7.5 (post-enterprise backlog #32)
+   */
+  readonly configSplit?: boolean;
 }
 
 /**
@@ -72,6 +94,7 @@ export interface ResolvedRenderOptions {
   readonly serviceMonitor: boolean;
   readonly metricsPort: number;
   readonly healthProbePath: string;
+  readonly configSplit: boolean;
 }
 
 export function resolveRenderOptions(
@@ -85,6 +108,7 @@ export function resolveRenderOptions(
     serviceMonitor: opts.serviceMonitor ?? true,
     metricsPort: opts.metricsPort ?? 9464,
     healthProbePath: opts.healthProbePath ?? '/healthz',
+    configSplit: opts.configSplit ?? false,
   };
 }
 

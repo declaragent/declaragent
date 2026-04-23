@@ -1,0 +1,10 @@
+apiVersion: v2
+name: fleet-starter
+description: Two-agent starter fleet pairing a concierge (RPC producer) with a pr-reviewer (RPC consumer). Run in one process via `declaragent fleet run`, or split across hosts via `fleet deploy` + a broker swap in `rpc-peers.yaml`.
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+keywords:
+  - declaragent
+  - agents
+  - ai

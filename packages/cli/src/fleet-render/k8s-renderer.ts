@@ -132,15 +132,32 @@ export function renderK8sFromSources(
 
   // 3. Per-agent resources. Agents iterate in manifest order (already
   //    stable because `loadFleet` preserves array order), and each
-  //    agent's resources sort as ConfigMap → Deployment → Service
-  //    within its own file. ServiceMonitor is emitted into a SEPARATE
-  //    `agents/<id>-servicemonitor.yaml` file so operators running
-  //    vanilla Prometheus (no Operator CRD) can `rm` it without
-  //    touching the core workload manifests. (#31)
+  //    agent's resources sort as ConfigMap → (optional split config
+  //    maps) → Deployment → Service within its own file. ServiceMonitor
+  //    is emitted into a SEPARATE `agents/<id>-servicemonitor.yaml`
+  //    file so operators running vanilla Prometheus (no Operator CRD)
+  //    can `rm` it without touching the core workload manifests. (#31)
+  //    When `configSplit` is enabled (#32) each agent additionally
+  //    emits `<agent>-channels-config`, `<agent>-sources-config`,
+  //    `<agent>-plugins-config` ConfigMaps holding the corresponding
+  //    `agent.yaml` section as YAML (skipped if the agent declares no
+  //    such section), and the Deployment `envFrom` mounts each one —
+  //    so operators can rotate channel / source / plugin settings via
+  //    `kubectl edit configmap` without rebuilding the image.
   for (const src of agents) {
     const docs: string[] = [];
     docs.push(renderConfigMap(src, fleetName, resolved));
-    docs.push(renderDeployment(src, fleetName, resolved, secretRefs));
+    const splitMaps = resolved.configSplit ? renderSplitConfigMaps(src, fleetName, resolved) : [];
+    for (const m of splitMaps) docs.push(m.yaml);
+    docs.push(
+      renderDeployment(
+        src,
+        fleetName,
+        resolved,
+        secretRefs,
+        splitMaps.map((m) => m.name),
+      ),
+    );
     docs.push(renderService(src, fleetName, resolved));
     const safeId = sanitizeDns1123Label(src.agent.id);
     const agentFile = `agents/${safeId}.yaml`;
@@ -191,6 +208,7 @@ function renderDeployment(
   fleetName: string,
   resolved: ResolvedRenderOptions,
   fleetSecretRefs: readonly string[],
+  splitConfigMapNames: readonly string[] = [],
 ): string {
   const name = sanitizeDns1123Label(src.agent.id);
   const labels = labelsFor(src.agent.id, fleetName);
@@ -228,10 +246,21 @@ function renderDeployment(
     },
   };
 
-  // Only emit envFrom when there is at least one secret, so manifests
-  // stay minimal for fleets that don't reference `${secret:...}`.
+  // `envFrom` composition order (stable across renders): each split
+  // ConfigMap first (in emission order: channels → sources → plugins),
+  // then the fleet-wide Secret last. Kubernetes resolves `envFrom`
+  // left-to-right — a later entry wins on key collision. Putting the
+  // Secret last means `${secret:...}` values override any stray config
+  // key of the same name, which is the intuition operators expect.
+  const envFrom: Array<Record<string, unknown>> = [];
+  for (const cmName of splitConfigMapNames) {
+    envFrom.push({ configMapRef: { name: cmName } });
+  }
   if (fleetSecretRefs.length > 0) {
-    container.envFrom = [{ secretRef: { name: `${fleetName}-secrets` } }];
+    envFrom.push({ secretRef: { name: `${fleetName}-secrets` } });
+  }
+  if (envFrom.length > 0) {
+    container.envFrom = envFrom;
   }
 
   return stringifyYaml(
@@ -329,6 +358,94 @@ function renderServiceMonitor(
   );
 }
 
+// ── Split ConfigMaps (#32) ─────────────────────────────────────────────
+
+/**
+ * Sections of `agent.yaml` that we fan out into dedicated ConfigMaps
+ * when `configSplit` is enabled. Order is deterministic + matches the
+ * order they're appended to `envFrom`. We support both `event-sources`
+ * (canonical, as shipped in the fleet-starter templates) and `sources`
+ * (seen in some docs) — the first match wins.
+ *
+ * @since 0.7.5 (#32)
+ */
+interface SplitSectionSpec {
+  readonly suffix: 'channels-config' | 'sources-config' | 'plugins-config';
+  readonly envKey: 'CHANNELS_YAML' | 'SOURCES_YAML' | 'PLUGINS_YAML';
+  readonly yamlKeys: readonly string[];
+}
+
+const SPLIT_SECTIONS: readonly SplitSectionSpec[] = [
+  { suffix: 'channels-config', envKey: 'CHANNELS_YAML', yamlKeys: ['channels'] },
+  {
+    suffix: 'sources-config',
+    envKey: 'SOURCES_YAML',
+    yamlKeys: ['event-sources', 'sources'],
+  },
+  { suffix: 'plugins-config', envKey: 'PLUGINS_YAML', yamlKeys: ['plugins'] },
+];
+
+interface SplitConfigMap {
+  readonly name: string;
+  readonly yaml: string;
+}
+
+function renderSplitConfigMaps(
+  src: AgentSource,
+  fleetName: string,
+  resolved: ResolvedRenderOptions,
+): SplitConfigMap[] {
+  let parsed: Record<string, unknown> | undefined;
+  try {
+    const raw = parseYaml(src.agentYaml);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      parsed = raw as Record<string, unknown>;
+    }
+  } catch {
+    // Unparseable — nothing to split. Caller still gets the monolithic
+    // `<agent>-config` ConfigMap with the raw string, so deploys don't
+    // regress just because an agent.yaml has non-standard syntax.
+    return [];
+  }
+  if (!parsed) return [];
+
+  const safeId = sanitizeDns1123Label(src.agent.id);
+  const out: SplitConfigMap[] = [];
+  for (const spec of SPLIT_SECTIONS) {
+    const matchedKey = spec.yamlKeys.find((k) => parsed?.[k] !== undefined);
+    if (!matchedKey) continue;
+    const section = parsed[matchedKey];
+    const cmName = `${safeId}-${spec.suffix}`;
+    // Serialize the section value via the YAML library so complex
+    // shapes (maps, arrays) round-trip deterministically. Trailing
+    // newline stripped so the ConfigMap data value matches typical
+    // `|-` block style rather than `|` (trailing-newline).
+    const value = stringifyYaml(section, YAML_OPTS).replace(/\n$/, '');
+    out.push({
+      name: cmName,
+      yaml: stringifyYaml(
+        {
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: {
+            name: cmName,
+            namespace: resolved.namespace,
+            labels: {
+              ...labelsFor(src.agent.id, fleetName),
+              'declaragent.io/config-section': spec.suffix.replace(/-config$/, ''),
+            },
+          },
+          data: {
+            [spec.envKey]: value,
+          },
+        },
+        YAML_OPTS,
+      ),
+    });
+  }
+  return out;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function configMapName(agentId: string): string {
@@ -382,6 +499,7 @@ function isResolved(v: ResolvedRenderOptions | RenderOptions): v is ResolvedRend
     typeof (v as ResolvedRenderOptions).namespace === 'string' &&
     typeof (v as ResolvedRenderOptions).serviceMonitor === 'boolean' &&
     typeof (v as ResolvedRenderOptions).metricsPort === 'number' &&
-    typeof (v as ResolvedRenderOptions).healthProbePath === 'string'
+    typeof (v as ResolvedRenderOptions).healthProbePath === 'string' &&
+    typeof (v as ResolvedRenderOptions).configSplit === 'boolean'
   );
 }
