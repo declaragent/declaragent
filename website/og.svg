@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <!--
+    declaragent.dev — social share card (1200×630).
+
+    Design thesis: "receipts-first." The card is built like a terminal
+    window surfacing the product's unique move — publicly graded ✓ / ◐
+    status chips. No stock illustration, no generic "AI gradient." Every
+    element exists in the product.
+
+    Fonts: JetBrains Mono + Inter. Downstream systems that unfurl this
+    SVG either embed it as-is (Discord, GitHub) or rasterize it
+    server-side (Twitter, Slack, LinkedIn). Text is selectable; glyphs
+    render from system-available fallbacks when the webfonts aren't
+    present at rasterization time.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0e1320" />
+      <stop offset="100%" stop-color="#0b0e14" />
+    </linearGradient>
+    <linearGradient id="accent-grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5eead4" />
+      <stop offset="60%" stop-color="#2dd4bf" />
+      <stop offset="100%" stop-color="#93c5fd" />
+    </linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#5eead4" stroke-opacity="0.05" stroke-width="1" />
+    </pattern>
+    <radialGradient id="glow" cx="50%" cy="20%" r="60%">
+      <stop offset="0%" stop-color="#5eead4" stop-opacity="0.14" />
+      <stop offset="100%" stop-color="#5eead4" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Canvas -->
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <rect width="1200" height="630" fill="url(#grid)" />
+  <rect width="1200" height="630" fill="url(#glow)" />
+
+  <!-- Brand lockup — mark + wordmark + d9t alias -->
+  <g transform="translate(72 72)">
+    <rect x="0" y="0" width="44" height="44" rx="10" fill="#5eead4" />
+    <text
+      x="22"
+      y="32"
+      text-anchor="middle"
+      font-family="JetBrains Mono, ui-monospace, Menlo, monospace"
+      font-weight="700"
+      font-size="28"
+      fill="#0b0e14"
+    >d</text>
+    <text
+      x="60"
+      y="30"
+      font-family="Inter, system-ui, sans-serif"
+      font-weight="700"
+      font-size="22"
+      fill="#e6eaf3"
+      letter-spacing="-0.3"
+    >declaragent</text>
+    <line x1="196" y1="14" x2="196" y2="36" stroke="#323a4d" stroke-width="1" />
+    <text
+      x="210"
+      y="30"
+      font-family="JetBrains Mono, monospace"
+      font-weight="500"
+      font-size="15"
+      fill="#6b7486"
+      letter-spacing="0.3"
+    >d9t</text>
+  </g>
+
+  <!-- Version pill (top-right) -->
+  <g transform="translate(980 72)">
+    <rect
+      x="0"
+      y="0"
+      width="148"
+      height="38"
+      rx="6"
+      fill="#5eead4"
+      fill-opacity="0.1"
+      stroke="#5eead4"
+      stroke-opacity="0.3"
+      stroke-width="1"
+    />
+    <text
+      x="74"
+      y="25"
+      text-anchor="middle"
+      font-family="JetBrains Mono, monospace"
+      font-weight="600"
+      font-size="14"
+      fill="#5eead4"
+      letter-spacing="0.8"
+    >v0.7.1 · SHIPPED</text>
+  </g>
+
+  <!-- Headline -->
+  <g transform="translate(72 220)">
+    <text
+      font-family="Inter, system-ui, sans-serif"
+      font-weight="800"
+      font-size="76"
+      fill="#e6eaf3"
+      letter-spacing="-2"
+    >
+      <tspan x="0" y="0">Stop shipping agent</tspan>
+      <tspan x="0" y="88" fill="url(#accent-grad)">prototypes.</tspan>
+    </text>
+
+    <text
+      x="0"
+      y="188"
+      font-family="Inter, system-ui, sans-serif"
+      font-weight="500"
+      font-size="26"
+      fill="#9aa3b5"
+      letter-spacing="-0.2"
+    >
+      <tspan x="0" y="188">The declarative runtime for AI agent fleets.</tspan>
+      <tspan x="0" y="224">One </tspan>
+      <tspan font-family="JetBrains Mono, monospace" fill="#5eead4">agent.yaml</tspan>
+      <tspan>. </tspan>
+      <tspan font-family="JetBrains Mono, monospace" fill="#5eead4">git log</tspan>
+      <tspan>. Production.</tspan>
+    </text>
+  </g>
+
+  <!-- Receipt row — the brand signature -->
+  <g transform="translate(72 510)">
+    <!-- ✓ chip 1 — single-machine -->
+    <g>
+      <rect x="0" y="0" width="220" height="40" rx="6" fill="#4ade80" fill-opacity="0.1" stroke="#4ade80" stroke-opacity="0.3" stroke-width="1" />
+      <text
+        x="14"
+        y="26"
+        font-family="JetBrains Mono, monospace"
+        font-weight="700"
+        font-size="14"
+        fill="#4ade80"
+      >✓</text>
+      <text
+        x="34"
+        y="26"
+        font-family="JetBrains Mono, monospace"
+        font-weight="500"
+        font-size="13"
+        fill="#4ade80"
+      >single-machine production</text>
+    </g>
+
+    <!-- ✓ chip 2 — enterprise (shipped 0.7.1) -->
+    <g transform="translate(236 0)">
+      <rect x="0" y="0" width="220" height="40" rx="6" fill="#4ade80" fill-opacity="0.1" stroke="#4ade80" stroke-opacity="0.3" stroke-width="1" />
+      <text
+        x="14"
+        y="26"
+        font-family="JetBrains Mono, monospace"
+        font-weight="700"
+        font-size="14"
+        fill="#4ade80"
+      >✓</text>
+      <text
+        x="34"
+        y="26"
+        font-family="JetBrains Mono, monospace"
+        font-weight="500"
+        font-size="13"
+        fill="#4ade80"
+      >enterprise · 12/12 shipped</text>
+    </g>
+
+    <!-- receipt — AGENTS.md -->
+    <g transform="translate(452 0)">
+      <rect x="0" y="0" width="240" height="40" rx="6" fill="#12161f" stroke="#242b3a" stroke-width="1" />
+      <text
+        x="14"
+        y="26"
+        font-family="JetBrains Mono, monospace"
+        font-weight="500"
+        font-size="13"
+        fill="#9aa3b5"
+      >receipts: AGENTS.md · file:line</text>
+    </g>
+  </g>
+
+  <!-- Footer strip -->
+  <g transform="translate(72 580)">
+    <text
+      font-family="JetBrains Mono, monospace"
+      font-weight="500"
+      font-size="14"
+      fill="#6b7486"
+      letter-spacing="0.3"
+    >
+      <tspan>declaragent.dev</tspan>
+      <tspan dx="16" fill="#323a4d">·</tspan>
+      <tspan dx="16">npm i -g @declaragent/cli</tspan>
+      <tspan dx="16" fill="#323a4d">·</tspan>
+      <tspan dx="16">Apache-2.0</tspan>
+    </text>
+  </g>
+</svg>

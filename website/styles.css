@@ -917,11 +917,722 @@ kbd {
   color: var(--fg-dim);
 }
 
-/* ───────────────────────── responsive ───────────────────────── */
+/* ──────────────────────────────────────────────────────────────────
+   DESIGN SYSTEM v2 — "Receipts-first"
+   ──────────────────────────────────────────────────────────────────
+   Thesis: evidence-based honesty is the brand. Status chips (✓ / ◐ /
+   ○) and receipt pills (file:line refs, commit SHAs) are first-class
+   visual elements. Every major claim carries a receipt.
+
+   Kept from v1: dark palette, teal accent, JetBrains Mono + Inter,
+   subtle grid bg, radius + shadow tokens. Extensions below.
+   ────────────────────────────────────────────────────────────────── */
+
+/* ───── brand alias pill (d9t) in nav ───── */
+.brand {
+  position: relative;
+}
+.brand__alias {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-dim);
+  padding-left: 10px;
+  margin-left: 2px;
+  letter-spacing: 0.02em;
+  border-left: 1px solid var(--border);
+  transition: color 0.2s;
+}
+.brand:hover .brand__alias {
+  color: var(--accent);
+}
+.brand__alias-dot {
+  display: none;
+}
+.brand__alias-inline {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-right: 4px;
+  vertical-align: 1px;
+}
+
+/* ───── star pill in nav ───── */
+.star-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: 0.02em;
+  transition: border-color 0.15s, background 0.15s, color 0.15s, transform 0.15s;
+}
+.star-pill:hover {
+  border-color: var(--accent);
+  background: var(--bg-elev-2);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+.star-pill svg {
+  transition: transform 0.2s;
+}
+.star-pill:hover svg {
+  transform: rotate(-8deg) scale(1.08);
+}
+.star-pill__divider {
+  color: var(--fg-dim);
+}
+.star-pill__label {
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+
+/* ───── hero extensions ───── */
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.eyebrow__pill {
+  background: rgb(94 234 212 / 0.1);
+  border: 1px solid rgb(94 234 212 / 0.25);
+  padding: 2px 9px;
+  border-radius: 5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.eyebrow__sep {
+  color: var(--fg-dim);
+}
+.eyebrow__link {
+  color: var(--fg-muted);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+  transition: color 0.15s, text-decoration-color 0.15s;
+}
+.eyebrow__link:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
+.hero h1 .strike {
+  position: relative;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.hero h1 .strike::after {
+  content: "";
+  position: absolute;
+  left: -2%;
+  right: -2%;
+  top: 52%;
+  height: 3px;
+  background: var(--accent);
+  transform: rotate(-3deg);
+  border-radius: 2px;
+  opacity: 0.9;
+}
+.h1-code {
+  font-size: 0.78em;
+  padding: 0.06em 0.32em 0.1em !important;
+  vertical-align: 0.08em;
+  background: rgb(94 234 212 / 0.14) !important;
+  border: 1px solid rgb(94 234 212 / 0.35) !important;
+  color: var(--accent) !important;
+  -webkit-text-fill-color: var(--accent);
+}
+
+.hero__short {
+  margin: 14px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg-dim);
+}
+
+/* ───── stat row (receipts under hero) ───── */
+.stat-row {
+  list-style: none;
+  margin: 28px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.stat {
+  flex: 1 1 0;
+  min-width: 120px;
+  padding: 14px 18px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.stat:last-child {
+  border-right: none;
+}
+.stat__value {
+  font-family: var(--font-mono);
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.stat__label {
+  font-size: 12px;
+  color: var(--fg-dim);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.stat__mark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.85em;
+}
+.stat__mark--ok {
+  color: var(--ok);
+}
+
+/* ───── terminal: skip button ───── */
+.term__chrome {
+  position: relative;
+}
+.term__skip {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  transition: color 0.15s, border-color 0.15s;
+  letter-spacing: 0.04em;
+}
+.term__skip:hover {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+.term__skip[hidden] {
+  display: none;
+}
+
+/* ───── receipts + status chips — the brand's visual signature ───── */
+.receipt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: rgb(74 222 128 / 0.08);
+  border: 1px solid rgb(74 222 128 / 0.22);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  margin-right: 10px;
+  vertical-align: 2px;
+}
+.receipt__ok {
+  color: var(--ok);
+  font-weight: 700;
+}
+.receipt code {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  font-size: inherit !important;
+  color: var(--fg-muted) !important;
+  -webkit-text-fill-color: var(--fg-muted);
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  white-space: nowrap;
+}
+.status--ok {
+  background: rgb(74 222 128 / 0.1);
+  border: 1px solid rgb(74 222 128 / 0.3);
+  color: var(--ok);
+}
+.status--wip {
+  background: rgb(251 191 36 / 0.08);
+  border: 1px solid rgb(251 191 36 / 0.28);
+  color: var(--warn);
+}
+.status--todo {
+  background: rgb(107 116 134 / 0.08);
+  border: 1px solid var(--border-strong);
+  color: var(--fg-muted);
+}
+.status-pair {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: 4px;
+  vertical-align: 4px;
+}
+.status-inline {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.92em;
+  padding: 0 2px;
+}
+.status-inline--ok {
+  color: var(--ok);
+}
+.status-inline--wip {
+  color: var(--warn);
+}
+
+.receipt-link {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+  transition: color 0.15s;
+}
+.receipt-link:hover {
+  color: var(--accent-strong);
+}
+
+/* ───── pillar cards (honest status) ───── */
+.pillar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+}
+.pillar__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.pillar__num {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+}
+.pillar__head h3 {
+  font-size: 17px;
+  color: var(--fg);
+  margin: 0;
+}
+.pillar p {
+  flex: 1;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+.pillar__foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.pillar__foot .receipt-link {
+  margin-left: auto;
+}
+.pillar--honesty {
+  background: linear-gradient(180deg, var(--bg-elev) 0%, var(--bg) 100%);
+  border-color: var(--accent-dim);
+}
+.pillar--honesty .pillar__num {
+  color: var(--ok);
+}
+
+/* ───── "not yet" rail — the award-winning move ───── */
+.notyet {
+  margin-top: 32px;
+  background: linear-gradient(180deg, rgb(251 191 36 / 0.04) 0%, rgb(11 14 20 / 0) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px 24px;
+  position: relative;
+  overflow: hidden;
+}
+.notyet::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 10px,
+    rgb(251 191 36 / 0.025) 10px 11px
+  );
+}
+.notyet__eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+  margin: 0 0 18px;
+  position: relative;
+}
+.notyet__list {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+}
+.notyet__item {
+  display: grid;
+  grid-template-columns: 24px 1.4fr 2fr auto;
+  gap: 14px;
+  align-items: baseline;
+  padding: 12px 4px;
+  border-bottom: 1px dashed var(--border);
+  font-size: 13.5px;
+}
+.notyet__item:last-child {
+  border-bottom: none;
+}
+.notyet__mark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--warn);
+  font-size: 15px;
+}
+.notyet__title {
+  font-weight: 600;
+  color: var(--fg);
+}
+.notyet__gap {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.notyet__gap code {
+  font-size: 0.9em;
+}
+.notyet__eta {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--warn);
+  background: rgb(251 191 36 / 0.1);
+  border: 1px solid rgb(251 191 36 / 0.25);
+  padding: 3px 9px;
+  border-radius: 5px;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+.notyet__foot {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg-dim);
+  position: relative;
+}
+.notyet__foot a {
+  color: var(--accent);
+  transition: color 0.15s;
+}
+.notyet__foot a:hover {
+  color: var(--accent-strong);
+}
+
+/* ───── "just shipped" rail — the inverse of the old notyet rail.
+       Same grid + column shape so anyone comparing Wayback snapshots
+       sees we walked the talk. Green accent, ✓ marks, PR refs in
+       place of ETAs. ───── */
+.shipped {
+  margin-top: 32px;
+  background: linear-gradient(180deg, rgb(74 222 128 / 0.05) 0%, rgb(11 14 20 / 0) 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px 24px;
+  position: relative;
+  overflow: hidden;
+}
+.shipped::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 10px,
+    rgb(74 222 128 / 0.03) 10px 11px
+  );
+}
+.shipped__eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ok);
+  margin: 0 0 18px;
+  position: relative;
+}
+.shipped__list {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+}
+.shipped__item {
+  display: grid;
+  grid-template-columns: 24px 1.4fr 2fr auto;
+  gap: 14px;
+  align-items: baseline;
+  padding: 12px 4px;
+  border-bottom: 1px dashed var(--border);
+  font-size: 13.5px;
+}
+.shipped__item:last-child {
+  border-bottom: none;
+}
+.shipped__mark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--ok);
+  font-size: 15px;
+}
+.shipped__title {
+  font-weight: 600;
+  color: var(--fg);
+}
+.shipped__title code {
+  font-size: 0.9em;
+}
+.shipped__gap {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.shipped__gap code {
+  font-size: 0.9em;
+}
+.shipped__pr {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ok);
+  background: rgb(74 222 128 / 0.1);
+  border: 1px solid rgb(74 222 128 / 0.3);
+  padding: 3px 9px;
+  border-radius: 5px;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+  transition: background 0.15s, border-color 0.15s;
+}
+.shipped__pr:hover {
+  background: rgb(74 222 128 / 0.18);
+  border-color: rgb(74 222 128 / 0.55);
+}
+.shipped__foot {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg-dim);
+  position: relative;
+}
+.shipped__foot a {
+  color: var(--accent);
+  transition: color 0.15s;
+}
+.shipped__foot a:hover {
+  color: var(--accent-strong);
+}
+.shipped__foot code {
+  font-size: 0.92em;
+}
+
+/* Responsive — matches notyet rail breakpoints exactly. */
+@media (max-width: 1080px) {
+  .shipped__item {
+    grid-template-columns: 20px 1fr auto;
+  }
+  .shipped__gap {
+    grid-column: 2 / 4;
+    grid-row: 2;
+    font-size: 12.5px;
+  }
+}
+@media (max-width: 640px) {
+  .shipped {
+    padding: 22px 20px 18px;
+  }
+  .shipped__item {
+    grid-template-columns: 18px 1fr;
+    row-gap: 4px;
+  }
+  .shipped__gap,
+  .shipped__pr {
+    grid-column: 2;
+  }
+  .shipped__pr {
+    justify-self: start;
+  }
+}
+
+/* ───── final star CTA section ───── */
+.star-cta {
+  padding: 88px 28px 100px;
+  background: radial-gradient(ellipse at 50% 0%, rgb(94 234 212 / 0.12) 0%, transparent 55%),
+    radial-gradient(ellipse at 50% 100%, rgb(147 197 253 / 0.06) 0%, transparent 50%);
+  position: relative;
+  overflow: hidden;
+}
+.star-cta::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle at 50% 30%, rgb(94 234 212 / 0.08) 0%, transparent 30%),
+    radial-gradient(circle at 20% 80%, rgb(94 234 212 / 0.04) 0%, transparent 20%),
+    radial-gradient(circle at 80% 80%, rgb(94 234 212 / 0.04) 0%, transparent 20%);
+  pointer-events: none;
+}
+.star-cta__inner {
+  max-width: 640px;
+  margin: 0 auto;
+  text-align: center;
+  position: relative;
+}
+.star-cta h2 {
+  font-size: clamp(36px, 4.8vw, 56px);
+  margin: 14px 0 18px;
+  letter-spacing: -0.025em;
+}
+.star-cta .lede {
+  max-width: 52ch;
+  margin-left: auto;
+  margin-right: auto;
+}
+.star-cta__actions {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 26px 0 16px;
+}
+.star-cta__foot {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg-dim);
+  margin-top: 18px;
+}
+
+/* ───── button variants ───── */
+.btn--compact {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+.btn--large {
+  padding: 16px 28px;
+  font-size: 15.5px;
+  gap: 10px;
+}
+.star-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.15s;
+}
+.star-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+.star-btn svg {
+  transition: transform 0.2s;
+}
+.star-btn:hover svg {
+  transform: rotate(-10deg) scale(1.1);
+}
+
+/* ───── install tab: "then" thin variant ───── */
+.install__then--thin {
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--fg-muted);
+  margin-top: 6px;
+}
+.install__then--thin a {
+  color: var(--accent);
+}
+.install__then--thin a:hover {
+  color: var(--accent-strong);
+}
+.install__block .dim {
+  color: var(--fg-dim);
+}
+
+/* ───── entrance animations (respects prefers-reduced-motion) ───── */
+@media (prefers-reduced-motion: no-preference) {
+  .fade-in {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity 0.7s cubic-bezier(0.2, 0.6, 0.2, 1), transform 0.7s
+      cubic-bezier(0.2, 0.6, 0.2, 1);
+  }
+  .fade-in.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ───── responsive ───── */
 @media (max-width: 1080px) {
   .caps__grid,
   .lifecycle__grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .ent__grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .notyet__item {
+    grid-template-columns: 20px 1fr auto;
+  }
+  .notyet__gap {
+    grid-column: 2 / 4;
+    grid-row: 2;
+    font-size: 12.5px;
   }
 }
 @media (max-width: 960px) {
@@ -936,16 +1647,40 @@ kbd {
   .validator__grid {
     grid-template-columns: 1fr;
   }
-  .ent__grid {
-    grid-template-columns: repeat(2, 1fr);
+  .stat-row {
+    flex-wrap: wrap;
+  }
+  .stat {
+    flex-basis: 50%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .stat:nth-child(odd) {
+    border-right: 1px solid var(--border);
+  }
+  .stat:nth-last-child(-n + 2) {
+    border-bottom: none;
   }
 }
 @media (max-width: 640px) {
   .site-header {
     padding: 22px 20px 8px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .brand__alias {
+    display: none;
   }
   .site-nav {
-    gap: 20px;
+    gap: 18px;
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .site-nav a:not(.star-pill) {
+    display: none;
+  }
+  .site-nav a:not(.star-pill)[href*="docs.declaragent.dev"] {
+    display: inline;
   }
   .hero,
   .meta,
@@ -953,7 +1688,8 @@ kbd {
   .lifecycle,
   .ent,
   .validator,
-  .install {
+  .install,
+  .star-cta {
     padding-left: 20px;
     padding-right: 20px;
   }
@@ -986,5 +1722,36 @@ kbd {
   }
   .btn {
     justify-content: center;
+  }
+  .notyet {
+    padding: 22px 20px 18px;
+  }
+  .notyet__item {
+    grid-template-columns: 18px 1fr;
+    row-gap: 4px;
+  }
+  .notyet__gap,
+  .notyet__eta {
+    grid-column: 2;
+  }
+  .notyet__eta {
+    justify-self: start;
+  }
+  .star-cta {
+    padding-top: 64px;
+    padding-bottom: 72px;
+  }
+  .star-cta__actions {
+    flex-direction: column;
+  }
+  .star-cta__actions .btn {
+    width: 100%;
+  }
+  .pillar__foot {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .pillar__foot .receipt-link {
+    margin-left: 0;
   }
 }

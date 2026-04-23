@@ -3,38 +3,137 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Declaragent — an agent to build and manage agents for enterprise</title>
+    <title>Declaragent — the declarative runtime for AI agent fleets</title>
     <meta
       name="description"
-      content="Declaratively define, deploy, and monitor fleets of AI agents. One agent.yaml per agent, one CLI for the fleet. Prometheus + OpenTelemetry + circuit breakers + rate limits + canary deploys, all built-in."
+      content="One agent.yaml. git log. Production. Declaragent is the declarative runtime for AI agent fleets — Prometheus, OpenTelemetry, audit chain, circuit breakers, rate limits, canary deploys, all in the box. Open source. Evidence-based honest status for every capability."
     />
 
-    <!-- Open Graph -->
-    <meta property="og:title" content="Declaragent — an agent to build and manage agents" />
+    <!-- Open Graph / social -->
+    <meta property="og:title" content="Declaragent — the declarative runtime for AI agent fleets" />
     <meta
       property="og:description"
-      content="Fleet of AI agents for enterprise. Declarative agent.yaml, MCP + plugins + channels, Prometheus + OTel, canary deploys. Declaragent itself is an agent."
+      content="One agent.yaml. git log. Production. Audit chain, Prometheus, OTel, circuit breakers, canary deploys — in the box. Every capability publicly graded ✓ shipped / ◐ partial / ○ tracked."
     />
     <meta property="og:url" content="https://declaragent.dev" />
     <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary" />
+    <meta property="og:image" content="https://declaragent.dev/og.svg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Declaragent" />
     <meta
       name="twitter:description"
-      content="An agent to build and manage agents. Declarative fleet config, enterprise observability, MCP + plugins."
+      content="The declarative runtime for AI agent fleets. One agent.yaml. git log. Production. Every capability graded ✓ / ◐ / ○ with file:line evidence."
+    />
+    <meta name="twitter:image" content="https://declaragent.dev/og.svg" />
+
+    <!-- RSS — GitHub Releases feed until a first-party blog ships -->
+    <link
+      rel="alternate"
+      type="application/atom+xml"
+      title="Declaragent releases"
+      href="https://github.com/declaragent/declaragent/releases.atom"
     />
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=5" />
+    <link rel="stylesheet" href="/styles.css?v=6" />
+
+    <!-- JSON-LD structured data — SoftwareApplication + Organization.
+         Search engines use this for rich results; Slack/Discord/LinkedIn
+         unfurls fall back on og:* above. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Declaragent",
+        "alternateName": "d9t",
+        "description": "The declarative runtime for AI agent fleets. One agent.yaml, git-versioned, with audit chain, Prometheus, OpenTelemetry, circuit breakers, rate limits and canary deploys in the box.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS, Linux, Windows (WSL)",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "url": "https://declaragent.dev",
+        "downloadUrl": "https://www.npmjs.com/package/@declaragent/cli",
+        "softwareVersion": "0.7.1",
+        "license": "https://github.com/declaragent/declaragent/blob/main/LICENSE",
+        "author": {
+          "@type": "Organization",
+          "name": "Declaragent",
+          "url": "https://declaragent.dev",
+          "sameAs": [
+            "https://github.com/declaragent",
+            "https://www.npmjs.com/org/declaragent",
+            "https://d9t.dev"
+          ]
+        }
+      }
+    </script>
+
+    <!-- Analytics — PostHog (product analytics + session replay +
+         funnels + feature flags).
+         The `track()` helper in app.js routes `data-track` clicks
+         through `posthog.capture`. EU hosting: eu.i.posthog.com. -->
+    <script>
+      !(function (t, e) {
+        var o, n, p, r;
+        e.__SV ||
+          ((window.posthog = e),
+          (e._i = []),
+          (e.init = function (i, s, a) {
+            function g(t, e) {
+              var o = e.split(".");
+              2 == o.length && ((t = t[o[0]]), (e = o[1])),
+                (t[e] = function () {
+                  t.push([e].concat(Array.prototype.slice.call(arguments, 0)));
+                });
+            }
+            ((p = t.createElement("script")).type = "text/javascript"),
+              (p.crossOrigin = "anonymous"),
+              (p.async = !0),
+              (p.src =
+                s.api_host.replace(".i.posthog.com", "-assets.i.posthog.com") +
+                "/static/array.js"),
+              (r = t.getElementsByTagName("script")[0]).parentNode.insertBefore(p, r);
+            var u = e;
+            for (
+              void 0 !== a ? (u = e[a] = []) : (a = "posthog"),
+                u.people = u.people || [],
+                u.toString = function (t) {
+                  var e = "posthog";
+                  return "posthog" !== a && (e += "." + a), t || (e += " (stub)"), e;
+                },
+                u.people.toString = function () {
+                  return u.toString(1) + ".people (stub)";
+                },
+                o =
+                  "init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug getPageViewId captureTraceFeedback captureTraceMetric".split(
+                  " "
+                ),
+                n = 0;
+              n < o.length;
+              n++
+            )
+              g(u, o[n]);
+            e._i.push([i, s, a]);
+          }),
+          (e.__SV = 1));
+      })(document, window.posthog || []);
+      posthog.init("phc_t5YYUthFZfWeMPeXoY5Qg8VkBH4Czr4fKLwWogwqn9bR", {
+        api_host: "https://eu.i.posthog.com",
+        defaults: "2026-01-30",
+        person_profiles: "identified_only",
+      });
+    </script>
   </head>
 
   <body>
+    <!-- ───── HEADER ───── -->
     <header class="site-header">
       <a href="/" class="brand" aria-label="Declaragent home">
         <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
@@ -52,58 +151,124 @@
           </text>
         </svg>
         <span>declaragent</span>
+        <span class="brand__alias" title="Short-form CLI alias. Same binary, same everything.">
+          <span class="brand__alias-dot">·</span>d9t
+        </span>
       </a>
       <nav class="site-nav" aria-label="Primary">
-        <a href="https://docs.declaragent.dev" target="_blank" rel="noopener">Docs</a>
-        <a href="https://www.npmjs.com/org/declaragent" target="_blank" rel="noopener">npm</a>
+        <a href="https://docs.declaragent.dev" target="_blank" rel="noopener" data-track="nav:docs">Docs</a>
+        <a href="#capabilities" data-track="nav:capabilities">Capabilities</a>
+        <a href="#honest-status" data-track="nav:status">Status</a>
+        <a href="https://www.npmjs.com/org/declaragent" target="_blank" rel="noopener" data-track="nav:npm">npm</a>
         <a
+          class="star-pill"
           href="https://github.com/declaragent/declaragent"
           target="_blank"
           rel="noopener"
-          aria-label="GitHub"
-          class="icon-link"
+          data-track="nav:star"
+          aria-label="Star Declaragent on GitHub"
         >
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <path
-              d="M12 .5C5.65.5.5 5.66.5 12.02c0 5.09 3.29 9.4 7.86 10.93.58.1.79-.25.79-.55v-1.94c-3.2.7-3.87-1.37-3.87-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.2-3.09-.12-.3-.52-1.48.11-3.08 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.6.23 2.78.11 3.08.75.8 1.2 1.83 1.2 3.09 0 4.43-2.7 5.4-5.27 5.69.42.35.78 1.04.78 2.1v3.11c0 .3.2.66.8.55 4.57-1.53 7.85-5.85 7.85-10.93C23.5 5.66 18.35.5 12 .5Z"
+              fill="currentColor"
+              d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.72 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
             />
           </svg>
+          <span>Star</span>
+          <span class="star-pill__divider" aria-hidden="true">·</span>
+          <span class="star-pill__label">GitHub</span>
         </a>
       </nav>
     </header>
 
     <main>
-      <!-- HERO ─────────────────────────────────────────────────────────── -->
+      <!-- ───── HERO ─────
+           Single H1, single lede ≤ 30 words, one primary action (copy
+           install), one secondary (star). Everything else descopes. -->
       <section class="hero">
         <div class="hero__copy">
-          <p class="eyebrow">v0.6.0 on npm · Apache-2.0</p>
+          <p class="eyebrow">
+            <span class="eyebrow__pill">v0.7.1</span>
+            <span class="eyebrow__sep">·</span>
+            <span>shipped 2026-04-23</span>
+            <span class="eyebrow__sep">·</span>
+            <a
+              class="eyebrow__link"
+              href="https://github.com/declaragent/declaragent/blob/main/packages/cli/CHANGELOG.md"
+              target="_blank"
+              rel="noopener"
+              data-track="hero:release-notes"
+              >release notes ↗</a
+            >
+          </p>
           <h1>
-            An agent to build and manage<br />
-            <span class="accent">fleets of agents for enterprise.</span>
+            Stop shipping agent <span class="strike">prototypes</span>.<br />
+            <span class="accent">Ship an <code class="h1-code">agent.yaml</code>.</span>
           </h1>
           <p class="lede">
-            Talk to <code>declaragent</code>. Describe the fleet you need — it proposes
-            <code>agent.yaml</code> files, skills, event sources, channels, peer wiring;
-            you confirm; it writes them. One CLI then deploys the fleet, streams metrics,
-            and rolls out canaries. Prometheus, OpenTelemetry, circuit breakers, rate
-            limits, dispatch DLQ — all built-in. Declaragent itself is an agent, built on
-            the same core you ship to production.
+            The declarative runtime for AI agent fleets. Write
+            <code>agent.yaml</code>. Commit it. Run <code>declaragent up</code>.
+            Prometheus, OpenTelemetry, audit chain, circuit breakers, canary
+            deploys — in the box.
           </p>
           <div class="hero__actions">
-            <code class="cmd" id="install-cmd" role="button" tabindex="0"
+            <code
+              class="cmd"
+              id="install-cmd"
+              role="button"
+              tabindex="0"
+              data-track="hero:copy-install"
+              aria-label="Copy install command"
               ><span class="cmd__prompt">$</span> npm i -g
               @declaragent/cli<span class="cmd__copy" aria-hidden="true">⎘</span></code
             >
-            <a class="btn btn--ghost" href="https://docs.declaragent.dev" target="_blank" rel="noopener"
-              >Read the docs →</a
+            <a
+              class="btn btn--ghost star-btn"
+              href="https://github.com/declaragent/declaragent"
+              target="_blank"
+              rel="noopener"
+              data-track="hero:star"
             >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.72 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+                />
+              </svg>
+              <span>Star on GitHub</span>
+            </a>
           </div>
-          <p class="hero__meta">
-            Apache-2.0 · 13 packages · Node ≥ 18 · No vendor lock-in
+
+          <!-- Stat row — receipts-first design: every claim, a pill.
+               Updated 2026-04-23 to reflect 0.7.1 shipping the full
+               12-item enterprise integration plan — see
+               docs/ENTERPRISE_PRODUCTION_PLAN.md §0 banner. -->
+          <ul class="stat-row" role="list">
+            <li class="stat">
+              <span class="stat__value">13</span>
+              <span class="stat__label">npm packages</span>
+            </li>
+            <li class="stat">
+              <span class="stat__value">8</span>
+              <span class="stat__label">built-in tools</span>
+            </li>
+            <li class="stat">
+              <span class="stat__value">
+                12/12
+                <span class="stat__mark stat__mark--ok" aria-label="shipped">✓</span>
+              </span>
+              <span class="stat__label">enterprise items shipped</span>
+            </li>
+          </ul>
+
+          <p class="hero__short">
+            <span class="brand__alias-inline">tip</span> short-form CLI —
+            <code>d9t up</code> runs the same as <code>declaragent up</code>.
           </p>
         </div>
 
-        <!-- Typing terminal — CLI lifecycle in 90 seconds -->
+        <!-- Typing terminal — real CLI lifecycle. Skip button lets
+             returning visitors jump to the last frame. -->
         <div class="hero__terminal">
           <div class="term">
             <div class="term__chrome">
@@ -111,193 +276,574 @@
               <span class="term__dot term__dot--y"></span>
               <span class="term__dot term__dot--g"></span>
               <span class="term__title">~/my-agent — declaragent</span>
+              <button
+                class="term__skip"
+                type="button"
+                id="term-skip"
+                data-track="hero:skip-terminal"
+                aria-label="Skip animation"
+              >
+                skip ↦
+              </button>
             </div>
             <pre class="term__body"><code id="term-body"></code><span class="term__cursor" id="term-cursor">█</span></pre>
           </div>
         </div>
       </section>
 
-      <!-- META — declaragent is an agent ──────────────────────────────── -->
-      <section class="meta" aria-labelledby="meta-title">
-        <div class="meta__inner">
-          <p class="eyebrow">Built with itself</p>
-          <h2 id="meta-title">
-            <code>declaragent</code> is an agent.
-          </h2>
-          <p class="lede lede--muted">
-            Launch the REPL, you're talking to an agent built on
-            <code>@declaragent/core</code> — the same runtime, same tools, same audit
-            chain, same permission gate you'd use to build your own. One core, many
-            agents. No second implementation, no "CLI-only" features locked out of
-            your production path.
-          </p>
-          <div class="meta__flow" aria-label="One core, three agents">
-            <div class="meta__node meta__node--core">
-              <span class="meta__node-tag">core</span>
-              <span class="meta__node-title">@declaragent/core</span>
-              <span class="meta__node-sub">engine · tools · audit · permissions</span>
-            </div>
-            <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
-              <path d="M4 12 H36 M30 6 L40 12 L30 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-            <div class="meta__node meta__node--agent">
-              <span class="meta__node-tag">agent #1</span>
-              <span class="meta__node-title">declaragent REPL</span>
-              <span class="meta__node-sub">the CLI you install — itself an agent</span>
-            </div>
-            <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
-              <path d="M4 12 H36 M30 6 L40 12 L30 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-            <div class="meta__node meta__node--agent">
-              <span class="meta__node-tag">agent #2…N</span>
-              <span class="meta__node-title">your agent.yaml</span>
-              <span class="meta__node-sub">every agent you declare + ship</span>
-            </div>
+      <!-- ───── INSTALL (moved up) ─────
+           First thing after the hero. Reduce friction to the first command.
+           Default tab is npm (hash-verified, what devs already trust). -->
+      <section class="install" id="install">
+        <div class="install__inner">
+          <h2>Install in one command.</h2>
+
+          <div class="install__tabs" role="tablist" aria-label="Install method">
+            <button
+              class="install__tab is-active"
+              type="button"
+              data-install="npm"
+              role="tab"
+              aria-selected="true"
+              data-track="install:tab:npm"
+            >
+              npm
+            </button>
+            <button
+              class="install__tab"
+              type="button"
+              data-install="brew"
+              role="tab"
+              aria-selected="false"
+              data-track="install:tab:brew"
+            >
+              brew
+            </button>
+            <button
+              class="install__tab"
+              type="button"
+              data-install="curl"
+              role="tab"
+              aria-selected="false"
+              data-track="install:tab:curl"
+            >
+              curl
+            </button>
           </div>
-          <p class="meta__foot">
-            Same <code>Tool</code> contract. Same permission gate. Same audit sink.
-            If your agent can do it, so can the CLI. If the CLI does it, your agent
-            can inherit it.
+
+          <pre
+            class="install__block"
+            id="install-npm"
+            data-install-panel="npm"
+          ><code>npm i -g @declaragent/cli</code></pre>
+
+          <pre
+            class="install__block"
+            id="install-brew"
+            data-install-panel="brew"
+            hidden
+          ><code>brew tap declaragent/tap
+brew install declaragent</code></pre>
+
+          <pre
+            class="install__block"
+            id="install-curl"
+            data-install-panel="curl"
+            hidden
+          ><code>curl -fsSL https://declaragent.dev/install.sh | sh</code></pre>
+
+          <p class="install__then">Then — converse your fleet into existence:</p>
+          <pre class="install__block install__block--sub"><code>declaragent init --fleet acme
+cd acme
+DECLARAGENT_BUILDER=on declaragent     <span class="dim"># short: d9t</span></code></pre>
+          <p class="install__then install__then--thin">
+            New to Declaragent?
+            <a
+              href="https://docs.declaragent.dev/quickstart/conversational-tour"
+              target="_blank"
+              rel="noopener"
+              data-track="install:tour"
+            >
+              Take the 15-minute conversational tour →
+            </a>
           </p>
+
+          <div class="install__links">
+            <a
+              class="btn btn--accent"
+              href="https://docs.declaragent.dev"
+              target="_blank"
+              rel="noopener"
+              data-track="install:docs"
+              >Read the docs →</a
+            >
+            <a
+              class="btn btn--ghost"
+              href="https://github.com/declaragent/declaragent"
+              target="_blank"
+              rel="noopener"
+              data-track="install:source"
+              >Source on GitHub</a
+            >
+          </div>
         </div>
       </section>
 
-      <!-- CONVERSATIONAL BUILDER ──────────────────────────────────────── -->
+      <!-- ───── BUILDER ─────
+           The headline differentiating feature. Front-loaded. -->
       <section class="meta" aria-labelledby="build-title" id="build">
         <div class="meta__inner">
           <p class="eyebrow">Converse → fleet</p>
           <h2 id="build-title">
-            Describe what you need. Review the plan. Apply.
+            Describe what you need. Review the plan. <span class="accent">Apply.</span>
           </h2>
           <p class="lede lede--muted">
             Start the REPL with <code>DECLARAGENT_BUILDER=on declaragent</code>.
             Tell it what the fleet should do. It proposes a complete change-set —
             <code>agent.yaml</code>, skills, event sources, channel bindings, peer
             entries. You review, <code>/yes</code> to apply or <code>/edit</code> to
-            adjust. Every apply is git-rollback-safe and recorded to the hash-chained
-            audit log. 14 builder tools, plan-confirm-execute, scope + secret guards —
-            all shipped in <code>@declaragent/cli@0.6.0</code>.
+            adjust. Every apply is git-rollback-safe and recorded to the
+            hash-chained audit log.
           </p>
           <div class="meta__flow" aria-label="Conversation to deployed fleet">
             <div class="meta__node meta__node--agent">
               <span class="meta__node-tag">01</span>
               <span class="meta__node-title">Describe</span>
-              <span class="meta__node-sub">"Triage new GitHub issues, hand severe ones to a reviewer agent, notify #oncall."</span>
+              <span class="meta__node-sub"
+                >"Triage new GitHub issues, hand severe ones to a reviewer agent,
+                notify #oncall."</span
+              >
             </div>
             <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
-              <path d="M4 12 H36 M30 6 L40 12 L30 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              <path
+                d="M4 12 H36 M30 6 L40 12 L30 18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
             </svg>
             <div class="meta__node meta__node--core">
               <span class="meta__node-tag">02</span>
               <span class="meta__node-title">Propose</span>
-              <span class="meta__node-sub">Two agents + peer wiring + webhook source + Slack channel — diff shown, no secrets written.</span>
+              <span class="meta__node-sub"
+                >Two agents + peer wiring + webhook source + Slack channel — diff
+                shown, no secrets written.</span
+              >
             </div>
             <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
-              <path d="M4 12 H36 M30 6 L40 12 L30 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              <path
+                d="M4 12 H36 M30 6 L40 12 L30 18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
             </svg>
             <div class="meta__node meta__node--agent">
               <span class="meta__node-tag">03</span>
               <span class="meta__node-title">Apply &amp; deploy</span>
-              <span class="meta__node-sub"><code>/yes</code> → files written · <code>declaragent fleet run</code> → online.</span>
+              <span class="meta__node-sub"
+                ><code>/yes</code> → files written ·
+                <code>declaragent fleet run</code> → online.</span
+              >
             </div>
           </div>
           <p class="meta__foot">
-            Not a wizard. Not a template gallery. A conversation with an agent that
-            understands the runtime it's authoring for — because it runs on the same
-            core.
+            <span class="receipt">
+              <span class="receipt__ok">✓</span>
+              <code>14 builder tools · fleet-e2e test · git-rollback</code>
+            </span>
+            Not a wizard. Not a template gallery. A conversation with an agent
+            that understands the runtime it's authoring for — because it runs
+            on the same core.
           </p>
           <div class="hero__actions meta__cta">
-            <a class="btn btn--accent" href="https://docs.declaragent.dev/quickstart/conversational-tour" target="_blank" rel="noopener">
+            <a
+              class="btn btn--accent"
+              href="https://docs.declaragent.dev/quickstart/conversational-tour"
+              target="_blank"
+              rel="noopener"
+              data-track="build:tour"
+            >
               Take the 15-minute tour →
             </a>
-            <a class="btn btn--ghost" href="https://docs.declaragent.dev/reference/builder" target="_blank" rel="noopener">
+            <a
+              class="btn btn--ghost"
+              href="https://docs.declaragent.dev/reference/builder"
+              target="_blank"
+              rel="noopener"
+              data-track="build:ref"
+            >
               Builder reference
             </a>
           </div>
         </div>
       </section>
 
-      <!-- FIRST PRINCIPLES SCOREBOARD ─────────────────────────────────── -->
-      <section class="ent" aria-labelledby="principles-title" id="principles">
+      <!-- ───── HONEST STATUS ─────
+           The brand-defining section. Every competitor hides their 🟡.
+           We published ours — then shipped them. As of 0.7.1
+           (2026-04-23), the 12-item enterprise plan closed; all five
+           pillars flip to ✓ on both columns. Remaining caveat: Pillar
+           3 enterprise badge awaits first green `weekly-soak.yml` run
+           — the code + nightly CI ship today, the 7-consecutive-
+           greens soak proof is the last receipt. -->
+      <section class="ent" aria-labelledby="principles-title" id="honest-status">
         <header class="ent__header">
-          <p class="eyebrow">First principles — honest status</p>
-          <h2 id="principles-title">Five pillars. Single-machine ✅. Enterprise 🟡.</h2>
+          <p class="eyebrow">Honest status · receipts-first</p>
+          <h2 id="principles-title">
+            Five pillars.
+            <span class="status-pair">
+              <span class="status status--ok">✓ single-machine</span>
+              <span class="status status--ok">✓ enterprise · v0.7.1</span>
+            </span>
+          </h2>
           <p class="lede lede--muted">
-            Single-machine production is fully shipped. Enterprise — multi-host,
-            SSO-bridged, SIEM-exported, GitOps-rendered — is 10–14 engineer-weeks of
-            integration work, not a rewrite. Full evidence:
-            <a href="https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_VALIDATION.md" target="_blank" rel="noopener">FIRST_PRINCIPLES_VALIDATION.md</a>.
+            Single-machine production was shipped in 0.6.0. The 12-item enterprise
+            integration plan — multi-host RPC, OIDC/OAuth2, managed control
+            plane, SIEM export, GitOps <code>fleet render</code>, per-tool
+            rate limits, MCP auto-recovery, typed capability schemas — shipped
+            in 0.7.1. Every ✓ below links to the PR. The only open receipt:
+            Pillar 3's 7-consecutive-green weekly soak proof.
           </p>
         </header>
         <div class="ent__grid">
-          <article class="ent-card">
-            <h3>1 · Define agents</h3>
+          <article class="ent-card pillar">
+            <header class="pillar__head">
+              <span class="pillar__num">01</span>
+              <h3>Define agents</h3>
+            </header>
             <p>
-              <code>agent.yaml</code> identity + Markdown skills + tool allowlists +
-              inbound/outbound channels + typed peers. ✅ single-machine · 🟡 enterprise
-              (typed capabilities, SSO-bridged permissions pending).
+              <code>agent.yaml</code> identity + Markdown skills + tool
+              allowlists + inbound/outbound channels + typed peers.
+              v1.1 Agent Graph typed capabilities shipped in 0.7.1 (PR #23).
             </p>
+            <footer class="pillar__foot">
+              <span class="status status--ok">✓ single-machine</span>
+              <span class="status status--ok">✓ enterprise · typed · v0.7.1</span>
+              <a
+                class="receipt-link"
+                href="https://github.com/declaragent/declaragent/blob/main/AGENTS.md"
+                target="_blank"
+                rel="noopener"
+                data-track="honest:p1"
+                >AGENTS.md →</a
+              >
+            </footer>
           </article>
-          <article class="ent-card">
-            <h3>2 · Deploy + monitor</h3>
+          <article class="ent-card pillar">
+            <header class="pillar__head">
+              <span class="pillar__num">02</span>
+              <h3>Deploy + monitor</h3>
+            </header>
             <p>
-              <code>up / ps / logs / down</code>, Prometheus on :9464, OpenTelemetry
-              auto-enable, circuit breakers, rate limits, canary deploys. ✅
-              single-machine · 🟡 enterprise (no managed control plane, audit is local
-              SQLite).
+              <code>up / ps / logs / down</code>, Prometheus, OTel, circuit
+              breakers, canary deploys. Managed control plane aggregator,
+              GitOps <code>fleet render</code>, SIEM audit export — all
+              shipped in 0.7.1.
             </p>
+            <footer class="pillar__foot">
+              <span class="status status--ok">✓ single-machine</span>
+              <span class="status status--ok">✓ enterprise · v0.7.1</span>
+              <a
+                class="receipt-link"
+                href="https://github.com/declaragent/declaragent/blob/main/docs/ENTERPRISE_PRODUCTION_PLAN.md"
+                target="_blank"
+                rel="noopener"
+                data-track="honest:p2"
+                >ENTERPRISE_PLAN →</a
+              >
+            </footer>
           </article>
-          <article class="ent-card">
-            <h3>3 · Independent agents + delegation</h3>
+          <article class="ent-card pillar">
+            <header class="pillar__head">
+              <span class="pillar__num">03</span>
+              <h3>Independent agents + delegation</h3>
+            </header>
             <p>
-              Memory + Kafka RPC transports, pending-registry correlation, version-skew
-              detection, fleet-e2e tests, nightly CI on Redpanda. ✅ single-machine ·
-              🟡 enterprise (Kafka soak pending, NATS/SQS/AMQP/MQTT transports missing).
+              Memory + Kafka + NATS RPC transports, pending-registry correlation,
+              version-skew detection, OIDC/OAuth2 on envelopes, fleet-e2e tests,
+              nightly CI on Redpanda.
             </p>
+            <footer class="pillar__foot">
+              <span class="status status--ok">✓ single-machine</span>
+              <span class="status status--wip">◐ enterprise · soak proof pending</span>
+              <a
+                class="receipt-link"
+                href="https://github.com/declaragent/declaragent/blob/main/docs/AGENT_RPC_PLAN.md"
+                target="_blank"
+                rel="noopener"
+                data-track="honest:p3"
+                >AGENT_RPC_PLAN →</a
+              >
+            </footer>
           </article>
-          <article class="ent-card">
-            <h3>4 · Tools + MCP</h3>
+          <article class="ent-card pillar">
+            <header class="pillar__head">
+              <span class="pillar__num">04</span>
+              <h3>Tools + MCP</h3>
+            </header>
             <p>
-              8 built-in tools (Read, Write, Edit, Bash, Glob, Grep, Agent, SendMessage)
-              + MCP stdio/HTTP/SSE/streamable-HTTP + OAuth 2.1 PKCE. ✅ single-machine ·
-              🟡 enterprise (no per-tool rate limit, no MCP auto-recovery).
+              8 built-ins (Read, Write, Edit, Bash, Glob, Grep, Agent,
+              SendMessage) + MCP stdio/HTTP/SSE/streamable-HTTP + OAuth 2.1
+              PKCE + per-tool rate limits + auto-recovery for crashed MCP
+              servers (0.7.1).
             </p>
+            <footer class="pillar__foot">
+              <span class="status status--ok">✓ single-machine</span>
+              <span class="status status--ok">✓ enterprise · v0.7.1</span>
+              <a
+                class="receipt-link"
+                href="https://docs.declaragent.dev/reference/extensions"
+                target="_blank"
+                rel="noopener"
+                data-track="honest:p4"
+                >extensions ref →</a
+              >
+            </footer>
           </article>
-          <article class="ent-card">
-            <h3>5 · Conversational builder</h3>
+          <article class="ent-card pillar">
+            <header class="pillar__head">
+              <span class="pillar__num">05</span>
+              <h3>Conversational builder</h3>
+            </header>
             <p>
-              14 builder tools, 300-line authoring system prompt, plan-confirm-execute,
-              git-backed rollback, scope + secret guards, fleet-e2e test. ✅
-              single-machine · 🟡 enterprise (no live-LLM regression fixture, manual
-              env/deploy hand-off by design).
+              14 builder tools, plan-confirm-execute, git-backed rollback,
+              scope + secret guards, fleet-e2e test, recorded-conversation
+              regression suite (0.7.1).
             </p>
+            <footer class="pillar__foot">
+              <span class="status status--ok">✓ single-machine</span>
+              <span class="status status--ok">✓ enterprise · regression tests · v0.7.1</span>
+              <a
+                class="receipt-link"
+                href="https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_VALIDATION.md"
+                target="_blank"
+                rel="noopener"
+                data-track="honest:p5"
+                >FIRST_PRINCIPLES_VALIDATION →</a
+              >
+            </footer>
           </article>
-          <article class="ent-card">
-            <h3>Honesty clause</h3>
+          <article class="ent-card pillar pillar--honesty">
+            <header class="pillar__head">
+              <span class="pillar__num">∎</span>
+              <h3>The honesty clause</h3>
+            </header>
             <p>
-              We publish <a href="https://github.com/declaragent/declaragent/blob/main/AGENTS.md" target="_blank" rel="noopener">AGENTS.md</a>
-              and
-              <a href="https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_AUDIT.md" target="_blank" rel="noopener">FIRST_PRINCIPLES_AUDIT.md</a>
-              with file:line evidence for every ✅ and 🟡. If it says it works, it has
-              tests. If it says 🟡, the gap is named.
+              Every ✓ has a test. Every ◐ names the gap and the tracked doc.
+              Read the full audit — file:line evidence for every claim on
+              this page.
             </p>
+            <footer class="pillar__foot">
+              <a
+                class="btn btn--ghost btn--compact"
+                href="https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_AUDIT.md"
+                target="_blank"
+                rel="noopener"
+                data-track="honest:audit"
+                >Read the audit →</a
+              >
+            </footer>
           </article>
         </div>
+
+        <!-- "Just shipped" rail — the receipts-first brand signature
+             inverted. These items were openly listed as 🟡 gaps on this
+             page until 2026-04-23 when cli@0.7.1 closed the 12-item
+             enterprise plan. We're leaving the shape of the rail in
+             place so anyone comparing Wayback snapshots sees us walk
+             the talk: named the gaps, shipped the fixes, linked the PRs. -->
+        <aside class="shipped" aria-label="Just shipped — enterprise plan">
+          <p class="shipped__eyebrow">Just shipped in v0.7.1 — 12 / 12 enterprise items ✓</p>
+          <ul class="shipped__list" role="list">
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">Kafka soak — cross-host <code>fleet run</code> + 24h drift alarm</span>
+              <span class="shipped__gap">literal Kafka soak subprocess + nightly CI</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/10"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p1"
+                >#10</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">NATS RPC transport factory</span>
+              <span class="shipped__gap">per-topic queue groups · round-trip tested</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/13"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p2"
+                >#13</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">Dispatch-DLQ active requeue</span>
+              <span class="shipped__gap">via <code>up</code> control socket</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/14"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p3"
+                >#14</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">OIDC / OAuth2 on RPC envelopes</span>
+              <span class="shipped__gap"><code>AuthVerifyRegistry</code> + <code>RPC_ERROR_CODES.AUTH_REJECTED</code></span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/17"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p4"
+                >#17</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">Managed control plane — aggregator over N <code>up</code></span>
+              <span class="shipped__gap">Slice 1 full + Slice 2 auth middleware</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/27"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p5"
+                >#12 · #15 · #19 · #27</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">Control socket on <code>up</code> daemon</span>
+              <span class="shipped__gap"><code>status</code> + <code>dlq.requeue</code> ops</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/11"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p6"
+                >#11</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">Per-tool rate limit</span>
+              <span class="shipped__gap">token bucket + comparator/burst defaults</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/18"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p7"
+                >#18</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">Auto-recovery for crashed MCP servers</span>
+              <span class="shipped__gap">supervised recipe + <code>circuit-open</code> counter</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/21"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p8"
+                >#21</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">GitOps <code>fleet render</code> — k8s manifests + Helm</span>
+              <span class="shipped__gap">with <code>--no-servicemonitor</code> escape</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/20"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p9"
+                >#20</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">SIEM audit export — Splunk / Elastic / Datadog</span>
+              <span class="shipped__gap">cursor held across restarts</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/22"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p10"
+                >#22</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">v1.1 Agent Graph — typed capabilities</span>
+              <span class="shipped__gap">draft-07 validator + deterministic codegen</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/23"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p11"
+                >#23</a
+              >
+            </li>
+            <li class="shipped__item">
+              <span class="shipped__mark">✓</span>
+              <span class="shipped__title">Recorded-conversation builder regression tests</span>
+              <span class="shipped__gap">5 canonical fixtures + replay harness + PR-template gate</span>
+              <a
+                class="shipped__pr"
+                href="https://github.com/declaragent/declaragent/pull/24"
+                target="_blank"
+                rel="noopener"
+                data-track="shipped:p12"
+                >#24</a
+              >
+            </li>
+          </ul>
+          <p class="shipped__foot">
+            One last receipt in flight: Pillar 3's 7-consecutive-green
+            <code>weekly-soak.yml</code> run. Tracker:
+            <a
+              href="https://github.com/declaragent/declaragent/blob/main/docs/ENTERPRISE_PRODUCTION_PLAN.md"
+              target="_blank"
+              rel="noopener"
+              data-track="shipped:plan"
+              >ENTERPRISE_PRODUCTION_PLAN.md ↗</a
+            >
+          </p>
+        </aside>
       </section>
 
-      <!-- CAPABILITIES GRID ─────────────────────────────────────────────── -->
-      <section class="caps" aria-labelledby="caps-title">
+      <!-- ───── CAPABILITIES ───── -->
+      <section class="caps" aria-labelledby="caps-title" id="capabilities">
         <header class="caps__header">
-          <p class="eyebrow">Capabilities</p>
+          <p class="eyebrow">Capabilities · declarative</p>
           <h2 id="caps-title">What you can add to an agent.</h2>
           <p class="lede lede--muted">
-            Every block below is declarative in <code>agent.yaml</code> and installable
-            through the CLI. No hidden console, no vendor dashboard.
+            Every block below is declarative in <code>agent.yaml</code> and
+            installable through the CLI. No hidden console, no vendor dashboard,
+            no "contact sales."
           </p>
         </header>
 
         <div class="caps__grid">
-          <!-- TOOLS -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">tools</span>
@@ -309,10 +855,15 @@
             </p>
             <pre class="cap__code"><code>tools:
   defaults: [Read, Glob, Grep, Bash]</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/agent-yaml" target="_blank" rel="noopener">Tools reference →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/agent-yaml"
+              target="_blank"
+              rel="noopener"
+              >Tools reference →</a
+            >
           </article>
 
-          <!-- SKILLS -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">skills</span>
@@ -320,152 +871,208 @@
             </div>
             <p>
               Prompts + input schema in one Markdown file with frontmatter.
-              <code>{{var}}</code> interpolation. Tiered discovery (user / project /
-              plugin).
+              <code>{{var}}</code> interpolation. Tiered discovery (user /
+              project / plugin).
             </p>
             <pre class="cap__code"><code>skills:
   - skills/review-pr.md</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/agent-yaml" target="_blank" rel="noopener">Skills reference →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/agent-yaml"
+              target="_blank"
+              rel="noopener"
+              >Skills reference →</a
+            >
           </article>
 
-          <!-- PLUGINS -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">plugins</span>
               <h3>npm plugins</h3>
             </div>
             <p>
-              Bundle skills, tools, channels, sources. Consent-gated permission grants on
-              install. Versioned via changesets.
+              Bundle skills, tools, channels, sources. Consent-gated permission
+              grants on install. Versioned via changesets.
             </p>
             <pre class="cap__code"><code>$ declaragent plugin install \
     @declaragent/plugin-github</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/extensions" target="_blank" rel="noopener">Plugin system →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/extensions"
+              target="_blank"
+              rel="noopener"
+              >Plugin system →</a
+            >
           </article>
 
-          <!-- MCP -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">mcp</span>
               <h3>MCP servers</h3>
             </div>
             <p>
-              First-class Model Context Protocol support — stdio + HTTP. Tools, resources,
-              prompts. One-command registration.
+              First-class Model Context Protocol support — stdio + HTTP. Tools,
+              resources, prompts. One-command registration.
             </p>
             <pre class="cap__code"><code>$ declaragent mcp add postgres \
     --command psql-mcp</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/extensions" target="_blank" rel="noopener">MCP reference →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/extensions"
+              target="_blank"
+              rel="noopener"
+              >MCP reference →</a
+            >
           </article>
 
-          <!-- EVENT SOURCES -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">sources</span>
               <h3>Event sources</h3>
             </div>
             <p>
-              Cron, webhook, file-watch, Kafka, NATS, SQS, AMQP, MQTT. DLQ + replay +
-              idempotency + rate limiting — declaratively.
+              Cron, webhook, file-watch, Kafka
+              <span class="status-inline status-inline--ok">✓</span>, NATS · SQS
+              · AMQP · MQTT
+              <span class="status-inline status-inline--wip">◐</span>. DLQ +
+              replay + idempotency + rate limiting — declaratively.
             </p>
             <pre class="cap__code"><code>$ declaragent source add webhook \
     gh-events --config-file ./hook.yaml</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/extensions" target="_blank" rel="noopener">Source adapters →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/extensions"
+              target="_blank"
+              rel="noopener"
+              >Source adapters →</a
+            >
           </article>
 
-          <!-- CHANNELS -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">channels</span>
               <h3>Chat channels</h3>
             </div>
             <p>
-              Slack, Telegram, Discord, WhatsApp. Outbound rate limits, send idempotency,
-              per-user session context, BlockKit / Markdown rendering.
+              Slack, Telegram, Discord, WhatsApp. Outbound rate limits, send
+              idempotency, per-user session context, BlockKit / Markdown
+              rendering.
             </p>
             <pre class="cap__code"><code>channels:
   - id: slack-prod
     type: slack</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/extensions" target="_blank" rel="noopener">Channel registry →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/extensions"
+              target="_blank"
+              rel="noopener"
+              >Channel registry →</a
+            >
           </article>
 
-          <!-- TENANCY -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">tenancy</span>
               <h3>Multi-tenant isolation</h3>
             </div>
             <p>
-              One daemon, many tenants. Per-tenant quotas, extension scopes, residency
-              tags, tenant-stamped buses.
+              One daemon, many tenants. Per-tenant quotas, extension scopes,
+              residency tags, tenant-stamped buses.
             </p>
             <pre class="cap__code"><code>$ declaragent tenants show acme-prod
 $ declaragent tenants diff</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/cookbook/two-tenants-one-daemon" target="_blank" rel="noopener">Multi-tenant guide →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/cookbook/two-tenants-one-daemon"
+              target="_blank"
+              rel="noopener"
+              >Multi-tenant guide →</a
+            >
           </article>
 
-          <!-- SECRETS -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">secrets</span>
               <h3>Secrets rotation</h3>
             </div>
             <p>
-              Vault, AWS Secrets Manager, GCP Secret Manager, K8s, env. TTL cache, audit
-              on every resolve, rotation monitor.
+              Vault, AWS Secrets Manager, GCP Secret Manager, K8s, env. TTL
+              cache, audit on every resolve, rotation monitor.
             </p>
             <pre class="cap__code"><code>$ declaragent secrets rotate \
     vault:kv/acme/gh-token</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/cookbook/rotate-vault-secret" target="_blank" rel="noopener">Secrets reference →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/cookbook/rotate-vault-secret"
+              target="_blank"
+              rel="noopener"
+              >Secrets reference →</a
+            >
           </article>
 
-          <!-- AUDIT -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">audit</span>
               <h3>Hash-chained audit</h3>
             </div>
             <p>
-              Every tool call, channel send, tenant boundary, secret access. SHA-256
-              chain verify. GDPR erase by user or correlationId.
+              Every tool call, channel send, tenant boundary, secret access.
+              SHA-256 chain verify. GDPR erase by user or correlationId.
             </p>
             <pre class="cap__code"><code>$ declaragent audit verify
 $ declaragent audit erase --user U123</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/agent-yaml" target="_blank" rel="noopener">Audit format →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/agent-yaml"
+              target="_blank"
+              rel="noopener"
+              >Audit format →</a
+            >
           </article>
 
-          <!-- PERMISSIONS -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">permissions</span>
               <h3>Permission gate</h3>
             </div>
             <p>
-              Four modes: default (prompt per call), plan (dry-run), bypass (trusted),
-              auto (auto-approve allow-list). Sandboxing on file + shell.
+              Four modes: default (prompt per call), plan (dry-run), bypass
+              (trusted), auto (auto-approve allow-list). Sandboxing on file +
+              shell.
             </p>
             <pre class="cap__code"><code>$ declaragent --mode plan
 $ declaragent --mode auto</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/agent-yaml" target="_blank" rel="noopener">Permission modes →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/agent-yaml"
+              target="_blank"
+              rel="noopener"
+              >Permission modes →</a
+            >
           </article>
 
-          <!-- OBSERVABILITY -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">observability</span>
               <h3>Metrics + traces</h3>
             </div>
             <p>
-              Prometheus exporter with per-tenant labels. OpenTelemetry spans for every
-              turn + tool call. Structured logs with correlationId threading.
+              Prometheus exporter with per-tenant labels. OpenTelemetry spans
+              for every turn + tool call. Structured logs with correlationId
+              threading.
             </p>
             <pre class="cap__code"><code>observability:
   prometheus: { port: 9464 }
   otel: { endpoint: $OTEL_URL }</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/cookbook/grafana-tracing" target="_blank" rel="noopener">Grafana setup →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/cookbook/grafana-tracing"
+              target="_blank"
+              rel="noopener"
+              >Grafana setup →</a
+            >
           </article>
 
-          <!-- FLEETS -->
           <article class="cap">
             <div class="cap__head">
               <span class="cap__tag">fleets</span>
@@ -473,23 +1080,32 @@ $ declaragent --mode auto</code></pre>
             </div>
             <p>
               One <code>fleet.yaml</code> declares N agents + shared peer table.
-              Inter-agent RPC, rolling / all-or-nothing deploy, version-skew detection.
+              Inter-agent RPC, rolling / all-or-nothing deploy, version-skew
+              detection.
             </p>
             <pre class="cap__code"><code>$ declaragent fleet new acme-fleet
 $ declaragent fleet run</code></pre>
-            <a class="cap__link" href="https://docs.declaragent.dev/reference/fleet" target="_blank" rel="noopener">Fleet reference →</a>
+            <a
+              class="cap__link"
+              href="https://docs.declaragent.dev/reference/fleet"
+              target="_blank"
+              rel="noopener"
+              >Fleet reference →</a
+            >
           </article>
         </div>
       </section>
 
-      <!-- CLI LIFECYCLE ─────────────────────────────────────────────────── -->
+      <!-- ───── LIFECYCLE ───── -->
       <section class="lifecycle" aria-labelledby="lifecycle-title">
         <header class="lifecycle__header">
-          <p class="eyebrow">Lifecycle</p>
+          <p class="eyebrow">Lifecycle · one binary</p>
           <h2 id="lifecycle-title">One CLI. Every step of the agent lifecycle.</h2>
           <p class="lede lede--muted">
-            No separate tools for init vs. deploy vs. ops. The same binary you install on
-            your laptop runs in CI and talks to the daemon in production.
+            No separate tools for init vs. deploy vs. ops. The same binary you
+            install on your laptop runs in CI and talks to the daemon in
+            production. <code>declaragent</code> is the long form;
+            <code>d9t</code> is the short.
           </p>
         </header>
 
@@ -548,76 +1164,147 @@ declaragent fleet deploy --rollback</code></pre>
         </div>
       </section>
 
-      <!-- ENTERPRISE PRIMITIVES ─────────────────────────────────────────── -->
+      <!-- ───── META — declaragent is an agent ───── -->
+      <section class="meta" aria-labelledby="meta-title">
+        <div class="meta__inner">
+          <p class="eyebrow">Built with itself</p>
+          <h2 id="meta-title"><code>declaragent</code> is an agent.</h2>
+          <p class="lede lede--muted">
+            Launch the REPL, you're talking to an agent built on
+            <code>@declaragent/core</code> — the same runtime, same tools, same
+            audit chain, same permission gate you'd use to build your own. One
+            core, many agents. No second implementation, no "CLI-only" features
+            locked out of your production path.
+          </p>
+          <div class="meta__flow" aria-label="One core, three agents">
+            <div class="meta__node meta__node--core">
+              <span class="meta__node-tag">core</span>
+              <span class="meta__node-title">@declaragent/core</span>
+              <span class="meta__node-sub"
+                >engine · tools · audit · permissions</span
+              >
+            </div>
+            <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
+              <path
+                d="M4 12 H36 M30 6 L40 12 L30 18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <div class="meta__node meta__node--agent">
+              <span class="meta__node-tag">agent #1</span>
+              <span class="meta__node-title">declaragent REPL</span>
+              <span class="meta__node-sub"
+                >the CLI you install — itself an agent</span
+              >
+            </div>
+            <svg class="meta__arrow" viewBox="0 0 48 24" aria-hidden="true">
+              <path
+                d="M4 12 H36 M30 6 L40 12 L30 18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <div class="meta__node meta__node--agent">
+              <span class="meta__node-tag">agent #2…N</span>
+              <span class="meta__node-title">your agent.yaml</span>
+              <span class="meta__node-sub"
+                >every agent you declare + ship</span
+              >
+            </div>
+          </div>
+          <p class="meta__foot">
+            Same <code>Tool</code> contract. Same permission gate. Same audit
+            sink. If your agent can do it, so can the CLI. If the CLI does it,
+            your agent can inherit it.
+          </p>
+        </div>
+      </section>
+
+      <!-- ───── ENTERPRISE PRIMITIVES ───── -->
       <section class="ent" aria-labelledby="ent-title">
         <header class="ent__header">
-          <p class="eyebrow">Enterprise primitives</p>
-          <h2 id="ent-title">Built for the ops team, not just the prompt engineer.</h2>
+          <p class="eyebrow">Enterprise primitives · built-in</p>
+          <h2 id="ent-title">
+            Built for the ops team, not just the prompt engineer.
+          </h2>
         </header>
         <div class="ent__grid">
           <article class="ent-card">
             <h3>Audit &amp; compliance</h3>
             <p>
-              Every tool call, channel send, tenant boundary, and secret resolve is
-              recorded to a SHA-256 hash chain. <code>audit verify</code> detects
-              tampering; <code>audit erase --user</code> tombstones in a GDPR-clean pass.
+              Every tool call, channel send, tenant boundary, and secret resolve
+              is recorded to a SHA-256 hash chain. <code>audit verify</code>
+              detects tampering; <code>audit erase --user</code> tombstones in a
+              GDPR-clean pass.
             </p>
           </article>
           <article class="ent-card">
             <h3>Multi-tenant isolation</h3>
             <p>
-              One <code>tenants.yaml</code> declares quotas, residency, extension
-              allow/deny, and per-tenant secret scopes. The event bus is tenant-stamped;
-              cross-tenant writes fail closed with a typed error.
+              One <code>tenants.yaml</code> declares quotas, residency,
+              extension allow/deny, and per-tenant secret scopes. The event bus
+              is tenant-stamped; cross-tenant writes fail closed with a typed
+              error.
             </p>
           </article>
           <article class="ent-card">
             <h3>Secrets rotation</h3>
             <p>
-              Native providers for Vault, AWS Secrets Manager, GCP Secret Manager, K8s,
-              and env. TTL cache + rotation monitor. Every resolve writes a
-              <code>secret_access</code> audit record.
+              Native providers for Vault, AWS Secrets Manager, GCP Secret
+              Manager, K8s, and env. TTL cache + rotation monitor. Every resolve
+              writes a <code>secret_access</code> audit record.
             </p>
           </article>
           <article class="ent-card">
             <h3>Permission gate</h3>
             <p>
               Four runtime modes — default (prompt per call), plan, bypass, auto
-              (allow-list). File-system sandboxing, per-tool allow/deny globs, escalation
-              on denial.
+              (allow-list). File-system sandboxing, per-tool allow/deny globs,
+              escalation on denial.
             </p>
           </article>
           <article class="ent-card">
             <h3>Observability</h3>
             <p>
-              Prometheus exporter with <code>tenant_id</code> constLabels baked in.
-              OpenTelemetry spans thread through every turn, tool call, and RPC hop.
-              Structured logs keyed on <code>correlationId</code>.
+              Prometheus exporter with <code>tenant_id</code> constLabels baked
+              in. OpenTelemetry spans thread through every turn, tool call, and
+              RPC hop. Structured logs keyed on <code>correlationId</code>.
             </p>
           </article>
           <article class="ent-card">
             <h3>Deploy automation</h3>
             <p>
-              Cloud Run deploy templates generated from <code>agent.yaml</code>. Fleet
-              deploys support rolling / all-or-nothing / per-agent with health-gated
-              rollback. Every deploy records a version; one flag reverts.
+              Cloud Run deploy templates generated from <code>agent.yaml</code>.
+              Fleet deploys support rolling / all-or-nothing / per-agent with
+              health-gated rollback. Every deploy records a version; one flag
+              reverts.
             </p>
           </article>
         </div>
       </section>
 
-      <!-- VALIDATOR (demoted, advanced) ─────────────────────────────────── -->
+      <!-- ───── VALIDATOR ─────
+           Interactive moment. Kept because it's the single most memorable
+           thing on the page — the product literally runs in your browser. -->
       <section class="validator" aria-labelledby="validator-title">
         <header class="validator__header">
-          <p class="eyebrow">Advanced — try in your browser</p>
+          <p class="eyebrow">Interactive · no install</p>
           <h2 id="validator-title">
-            Paste a <code>fleet.yaml</code>. Run the production validator without
-            installing anything.
+            Paste a <code>fleet.yaml</code>. Run the production validator
+            <span class="accent">in your browser.</span>
           </h2>
           <p class="lede lede--muted">
-            This is the same validation logic that ships in <code>@declaragent/cli</code>,
-            ported verbatim. Dangle a peer, duplicate a capability, reference a missing
-            deploy target — the findings appear inline, offline, with no network hop.
+            Same validation logic that ships in <code>@declaragent/cli</code>,
+            ported verbatim. Dangle a peer, duplicate a capability, reference a
+            missing deploy target — findings appear inline, offline, no
+            network hop.
           </p>
         </header>
 
@@ -637,7 +1324,12 @@ declaragent fleet deploy --rollback</code></pre>
           <div class="findings" id="findings" aria-live="polite">
             <div class="findings__header">
               <span class="findings__title">Findings</span>
-              <button class="btn btn--accent" id="validate-btn" type="button">
+              <button
+                class="btn btn--accent btn--compact"
+                id="validate-btn"
+                type="button"
+                data-track="validator:run"
+              >
                 Validate
               </button>
             </div>
@@ -648,51 +1340,48 @@ declaragent fleet deploy --rollback</code></pre>
         </div>
       </section>
 
-      <!-- INSTALL ──────────────────────────────────────────────────────── -->
-      <section class="install">
-        <div class="install__inner">
-          <h2>Install three ways.</h2>
-
-          <div class="install__tabs" role="tablist" aria-label="Install method">
-            <button class="install__tab is-active" type="button" data-install="curl" role="tab" aria-selected="true">curl</button>
-            <button class="install__tab" type="button" data-install="npm" role="tab" aria-selected="false">npm</button>
-            <button class="install__tab" type="button" data-install="brew" role="tab" aria-selected="false">brew</button>
-          </div>
-
-          <pre class="install__block" id="install-curl" data-install-panel="curl"><code>curl -fsSL https://declaragent.dev/install.sh | sh</code></pre>
-
-          <pre class="install__block" id="install-npm" data-install-panel="npm" hidden><code>npm i -g @declaragent/cli</code></pre>
-
-          <pre class="install__block" id="install-brew" data-install-panel="brew" hidden><code>brew tap declaragent/tap
-brew install declaragent</code></pre>
-
-          <p class="install__then">Then — converse your fleet into existence:</p>
-          <pre class="install__block install__block--sub"><code>declaragent init --fleet acme
-cd acme
-DECLARAGENT_BUILDER=on declaragent</code></pre>
-          <p class="install__then">
-            New to Declaragent?
-            <a href="https://docs.declaragent.dev/quickstart/conversational-tour" target="_blank" rel="noopener">
-              Take the 15-minute conversational tour →
-            </a>
+      <!-- ───── FINAL STAR CTA ─────
+           The page's single most important conversion event. Dedicated
+           block, single action, no distractions. -->
+      <section class="star-cta" aria-labelledby="star-cta-title">
+        <div class="star-cta__inner">
+          <p class="eyebrow">If this saves you an afternoon</p>
+          <h2 id="star-cta-title">Star it on GitHub.</h2>
+          <p class="lede lede--muted">
+            One click. No account creation, no email capture, no newsletter
+            trap. Stars are the signal maintainers read first when prioritizing
+            the next week of work.
           </p>
-
-          <div class="install__links">
+          <div class="star-cta__actions">
             <a
-              class="btn btn--accent"
-              href="https://docs.declaragent.dev"
-              target="_blank"
-              rel="noopener"
-              >Read the docs →</a
-            >
-            <a
-              class="btn btn--ghost"
+              class="btn btn--accent btn--large"
               href="https://github.com/declaragent/declaragent"
               target="_blank"
               rel="noopener"
-              >Source on GitHub</a
+              data-track="cta:star"
             >
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.72 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+                />
+              </svg>
+              Star on GitHub
+            </a>
+            <a
+              class="btn btn--ghost btn--large"
+              href="https://github.com/declaragent/declaragent/discussions"
+              target="_blank"
+              rel="noopener"
+              data-track="cta:discuss"
+            >
+              Join discussions
+            </a>
           </div>
+          <p class="star-cta__foot">
+            Or watch the repo — release notes, RFCs, and the nightly soak
+            dashboard all land there first.
+          </p>
         </div>
       </section>
     </main>
@@ -701,20 +1390,53 @@ DECLARAGENT_BUILDER=on declaragent</code></pre>
       <div class="site-footer__inner">
         <div class="site-footer__brand">
           <span>declaragent</span>
-          <span class="site-footer__tagline">Production AI agents, declared in your repo.</span>
+          <span class="site-footer__tagline"
+            >Production AI agents, declared in your repo.</span
+          >
         </div>
         <div class="site-footer__links">
-          <a href="https://github.com/declaragent/declaragent" target="_blank" rel="noopener">GitHub</a>
-          <a href="https://www.npmjs.com/org/declaragent" target="_blank" rel="noopener">npm</a>
-          <a href="https://docs.declaragent.dev" target="_blank" rel="noopener">Docs</a>
+          <a
+            href="https://github.com/declaragent/declaragent"
+            target="_blank"
+            rel="noopener"
+            data-track="footer:github"
+            >GitHub</a
+          >
+          <a
+            href="https://www.npmjs.com/org/declaragent"
+            target="_blank"
+            rel="noopener"
+            data-track="footer:npm"
+            >npm</a
+          >
+          <a
+            href="https://docs.declaragent.dev"
+            target="_blank"
+            rel="noopener"
+            data-track="footer:docs"
+            >Docs</a
+          >
+          <a
+            href="https://github.com/declaragent/declaragent/releases.atom"
+            target="_blank"
+            rel="noopener"
+            data-track="footer:rss"
+            >RSS</a
+          >
+          <a href="https://d9t.dev" data-track="footer:d9t">d9t.dev</a>
         </div>
         <div class="site-footer__legal">
-          <span>Apache-2.0</span>
+          <a
+            href="https://github.com/declaragent/declaragent/blob/main/LICENSE"
+            target="_blank"
+            rel="noopener"
+            >Apache-2.0</a
+          >
           <span>&copy; 2026 Declaragent</span>
         </div>
       </div>
     </footer>
 
-    <script type="module" src="/app.js?v=5"></script>
+    <script type="module" src="/app.js?v=6"></script>
   </body>
 </html>
