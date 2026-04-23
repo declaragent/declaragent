@@ -34,6 +34,11 @@ import { readFile } from 'node:fs/promises';
 import type { LoadedFleet, PeerAuthConfig } from '@declaragent/core';
 import { FleetConfigError, FleetManifestError, findFleetRoot, loadFleet } from '@declaragent/core';
 import { parse as parseYaml } from 'yaml';
+import {
+  type ZeroTrustPreviewResult,
+  evaluateZeroTrustPreview,
+  formatZeroTrustBootReject,
+} from './zero-trust-preview.js';
 
 export interface FleetAuditRpcIO {
   out: (s: string) => void;
@@ -202,6 +207,55 @@ const STATE_LABEL: Record<RpcAuthState, string> = {
   unreadable: 'unreadable',
 };
 
+function renderDryRun(preview: ZeroTrustPreviewResult): string {
+  const lines: string[] = [
+    '',
+    '─── 0.8.0 zero-trust default flip — dry-run ─────────────────────────',
+    '(simulating DECLARAGENT_RPC_AUTH_DEFAULT=on against this fleet)',
+    '',
+  ];
+  const withPeers = preview.agents.filter((a) => a.peersDeclared);
+  const withoutPeers = preview.agents.filter((a) => !a.peersDeclared);
+  if (preview.agents.length === 0) {
+    lines.push('  (no agents in fleet)');
+  } else {
+    lines.push(`  ${preview.agents.length} agent(s) evaluated.`);
+    lines.push(`  ${withPeers.length} with peers declared (subject to the flip).`);
+    lines.push(
+      `  ${withoutPeers.length} memory-only or peer-less (exempt — never cross a wire boundary).`,
+    );
+  }
+  if (preview.failingAgents.length > 0) {
+    lines.push('');
+    lines.push(
+      `  ✗ ${preview.failingAgents.length} agent(s) would FAIL boot at 0.8.0 with AUTH_REJECTED:`,
+    );
+    for (const a of preview.failingAgents) {
+      lines.push(`      agent://${a.agentId}  — ${a.agentYamlPath}`);
+    }
+    lines.push('');
+    lines.push('  Remediation: run `declaragent fleet audit-rpc --suggest-enable` and paste');
+    lines.push('  the snippet into each agent.yaml, OR set `rpc.auth.enabled: false` to opt out');
+    lines.push('  explicitly (Path B). See docs/ZERO_TRUST_DEFAULT_MIGRATION.md.');
+  } else if (withPeers.length > 0) {
+    lines.push('');
+    lines.push('  ✓ no agents would fail the 0.8.0 flip — all peer-using agents have an');
+    lines.push('    explicit `rpc.auth.enabled` value.');
+  }
+  if (preview.intentionalOptOuts.length > 0) {
+    lines.push('');
+    lines.push(
+      `  ! ${preview.intentionalOptOuts.length} agent(s) explicitly opt out (rpc.auth.enabled: false) — honoured at 0.8.0 with a boot-time warning:`,
+    );
+    for (const a of preview.intentionalOptOuts) {
+      lines.push(`      agent://${a.agentId}  — ${a.agentYamlPath}`);
+    }
+  }
+  lines.push('─────────────────────────────────────────────────────────────────────');
+  lines.push('');
+  return `${lines.join('\n')}`;
+}
+
 function renderText(
   report: FleetAuditRpcReport,
   args: { suggestEnable: boolean; strict: boolean },
@@ -251,11 +305,12 @@ function renderText(
 
 function renderJson(
   report: FleetAuditRpcReport,
-  args: { suggestEnable: boolean; strict: boolean },
+  args: { suggestEnable: boolean; strict: boolean; preview?: ZeroTrustPreviewResult },
 ): string {
+  const previewFails = args.preview?.failingAgents.length ?? 0;
   return `${JSON.stringify(
     {
-      ok: !args.strict || report.allEnabled,
+      ok: (!args.strict || report.allEnabled) && previewFails === 0,
       allEnabled: report.allEnabled,
       agents: report.agents.map((a) => ({
         agentId: a.agentId,
@@ -270,6 +325,28 @@ function renderJson(
             suggestion: suggestRpcAuthYaml(a),
           }),
       })),
+      ...(args.preview !== undefined && {
+        dryRunWithFlag: {
+          flagOn: args.preview.flagOn,
+          wouldBootCleanly: args.preview.failingAgents.length === 0,
+          failingAgents: args.preview.failingAgents.map((a) => ({
+            agentId: a.agentId,
+            agentYamlPath: a.agentYamlPath,
+            reason: a.reason,
+          })),
+          intentionalOptOuts: args.preview.intentionalOptOuts.map((a) => ({
+            agentId: a.agentId,
+            agentYamlPath: a.agentYamlPath,
+          })),
+          agents: args.preview.agents.map((a) => ({
+            agentId: a.agentId,
+            posture: a.posture,
+            peersDeclared: a.peersDeclared,
+            wouldEnable: a.wouldEnable,
+            reason: a.reason,
+          })),
+        },
+      }),
     },
     null,
     2,
@@ -282,6 +359,16 @@ export interface FleetAuditRpcArgs {
   suggestEnable?: boolean;
   strict?: boolean;
   json?: boolean;
+  /**
+   * Simulate the 0.8.0 zero-trust default flip against this fleet. Sets
+   * `DECLARAGENT_RPC_AUTH_DEFAULT=on` semantically (in-process, without
+   * mutating `process.env`) and reports which agents would fail boot.
+   * Under `--strict` a non-empty failing list exits 1. Pairs with
+   * `docs/ZERO_TRUST_DEFAULT_MIGRATION.md` §3.
+   *
+   * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #5b prep
+   */
+  dryRunWithFlag?: boolean;
 }
 
 export interface FleetAuditRpcDeps {
@@ -325,6 +412,7 @@ export async function fleetAuditRpc(
 
   const suggestEnable = args.suggestEnable === true;
   const strict = args.strict === true;
+  const dryRunWithFlag = args.dryRunWithFlag === true;
 
   // Build per-agent state. If a reader override is supplied, use it
   // (keeps the pure-function path for tests); otherwise walk disk.
@@ -341,12 +429,38 @@ export async function fleetAuditRpc(
     ...(overrides.size > 0 && { stateOverrides: overrides }),
   });
 
+  // Optional 0.8.0 dry-run. We always evaluate with `forceFlagOn: true`
+  // when `--dry-run-with-flag` is set so the report is meaningful even
+  // if `process.env[DECLARAGENT_RPC_AUTH_DEFAULT]` is unset in the
+  // caller's shell. The regular inspector output is still rendered
+  // above so the operator sees both views in one run.
+  let preview: ZeroTrustPreviewResult | undefined;
+  if (dryRunWithFlag) {
+    preview = await evaluateZeroTrustPreview({ fleet, forceFlagOn: true });
+  }
+
   if (args.json) {
-    io.out(renderJson(report, { suggestEnable, strict }));
+    io.out(
+      renderJson(report, {
+        suggestEnable,
+        strict,
+        ...(preview !== undefined && { preview }),
+      }),
+    );
   } else {
     io.out(renderText(report, { suggestEnable, strict }));
+    if (preview) {
+      io.out(renderDryRun(preview));
+      if (preview.failingAgents.length > 0) {
+        // Echo the grep-friendly AUTH_REJECTED line so operators piping
+        // the inspector into CI can alert on it the same way their
+        // runtime will at 0.8.0 boot.
+        io.out(`${formatZeroTrustBootReject(preview.failingAgents)}\n`);
+      }
+    }
   }
 
   if (strict && !report.allEnabled) return 1;
+  if (strict && preview && preview.failingAgents.length > 0) return 1;
   return 0;
 }

@@ -524,6 +524,24 @@ export interface LoadedAgent {
    */
   readonly rpcAuthEnabled: boolean;
   /**
+   * Tri-state posture the operator declared for `rpc.auth.enabled`:
+   *
+   *   - `'enabled'` — `rpc.auth.enabled: true` was set explicitly.
+   *   - `'disabled'` — `rpc.auth.enabled: false` was set explicitly
+   *     (intentional opt-out — honoured through 0.8.0 with a
+   *     boot-time warning; see `docs/ZERO_TRUST_DEFAULT_MIGRATION.md` Path B).
+   *   - `'absent'` — no `rpc.auth` block (or the block has no `enabled`
+   *     key). The posture the 0.8.0 default flip changes: today this
+   *     resolves to `rpcAuthEnabled: false`; with the 0.7.6 preview
+   *     flag `DECLARAGENT_RPC_AUTH_DEFAULT=on` it resolves to
+   *     `rpcAuthEnabled: true` when peers are declared, otherwise to
+   *     an `AUTH_REJECTED` boot failure (pre-flight).
+   *
+   * @since 0.7.6 — `DECLARAGENT_RPC_AUTH_DEFAULT` preview mode
+   *   (POST_ENTERPRISE_BACKLOG.md #5b prep for 0.8.0).
+   */
+  readonly rpcAuthPosture: 'enabled' | 'disabled' | 'absent';
+  /**
    * MCP supervisor opt-in. Defaults to `'all'` (every MCP server is
    * wrapped in {@link createMCPSupervisor}).
    *
@@ -639,8 +657,20 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
   // the cast is safe because the schema shape matches LoadedAuditExport.
   const auditExport = cfg.audit?.export as LoadedAuditExport | undefined;
 
-  // RPC auth opt-in. Default false — preserves legacy envelope behaviour.
-  const rpcAuthEnabled = cfg.rpc?.auth?.enabled === true;
+  // RPC auth tri-state posture — see LoadedAgent.rpcAuthPosture for the
+  // three-way semantics. The scalar `rpcAuthEnabled` is kept for
+  // back-compat (call sites that just need yes/no) and always tracks
+  // the explicit `true` posture at load time. Preview-mode default
+  // promotion (`DECLARAGENT_RPC_AUTH_DEFAULT=on`) is applied at the
+  // CLI pre-boot layer, not here — the loader stays deterministic
+  // regardless of ambient env so tests keep their fixtures honest.
+  const rpcAuthKey = cfg.rpc?.auth;
+  let rpcAuthPosture: 'enabled' | 'disabled' | 'absent' = 'absent';
+  if (rpcAuthKey && 'enabled' in rpcAuthKey) {
+    if (rpcAuthKey.enabled === true) rpcAuthPosture = 'enabled';
+    else if (rpcAuthKey.enabled === false) rpcAuthPosture = 'disabled';
+  }
+  const rpcAuthEnabled = rpcAuthPosture === 'enabled';
 
   // MCP supervisor opt-in. Default 'all' — supervision is observational
   // when the server is healthy and only activates recovery paths on
@@ -695,6 +725,7 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
     toolRateLimits,
     ...(auditExport !== undefined && { auditExport }),
     rpcAuthEnabled,
+    rpcAuthPosture,
     mcpSupervised,
     ...(controlPlaneAuth !== undefined && { controlPlaneAuth }),
     agentDir,
@@ -728,6 +759,94 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
  *
  * When `skills` is empty, returns the original prompt unchanged.
  */
+/**
+ * Env var name that toggles the 0.8.0 zero-trust default flip as a
+ * preview in 0.7.6+. Exported so the CLI layer can reference it by
+ * the same constant rather than re-inlining the string.
+ *
+ * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #5b prep
+ */
+export const RPC_AUTH_DEFAULT_ENV = 'DECLARAGENT_RPC_AUTH_DEFAULT';
+
+/**
+ * Read the preview-mode flag from a supplied env bag (defaults to
+ * `process.env`). Returns `true` when the env var is set to `on`,
+ * `true`, or `1` (case-insensitive). Any other value — absent, empty,
+ * `off`, `false`, `0` — returns `false`.
+ *
+ * Exported so:
+ *
+ *   - the CLI pre-boot layer (`up`, `fleet run`) reads the same truth
+ *     source as the inspector's `--dry-run-with-flag`.
+ *   - tests can set the flag via an injected env bag without touching
+ *     `process.env` (avoids leaking state across Bun's parallel
+ *     describe blocks).
+ *
+ * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #5b prep
+ */
+export function isRpcAuthDefaultFlagOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[RPC_AUTH_DEFAULT_ENV];
+  if (raw === undefined) return false;
+  const normalised = raw.trim().toLowerCase();
+  return normalised === 'on' || normalised === 'true' || normalised === '1';
+}
+
+/**
+ * Resolve the effective `rpc.auth.enabled` value given the loader's
+ * tri-state posture + whether peers are declared + whether the 0.8.0
+ * preview flag is on. Returns:
+ *
+ *   - `{ enabled: true, reason: 'explicit' }` — agent set `enabled: true`.
+ *   - `{ enabled: false, reason: 'explicit-optout' }` — agent set
+ *     `enabled: false`. Honoured under the preview flag too (matches
+ *     Path B in the migration doc).
+ *   - `{ enabled: true, reason: 'flag-default' }` — posture `absent`,
+ *     peers declared, flag on.
+ *   - `{ enabled: false, reason: 'legacy-default' }` — posture `absent`,
+ *     flag off (today's behaviour).
+ *   - `{ enabled: false, reason: 'boot-fail' }` — posture `absent`,
+ *     peers declared, flag on → the CLI is expected to reject this
+ *     agent with `AUTH_REJECTED`.
+ *
+ * The CLI's pre-boot helper (`validateZeroTrustPreview`) maps the
+ * `boot-fail` result into an `AUTH_REJECTED` error. `loadAgent` never
+ * throws on this by itself — keeps the pure loader free of ambient
+ * env coupling.
+ *
+ * "Peers declared" means either a fleet-root `rpc-peers.yaml` exists
+ * OR a per-agent `<agentDir>/rpc-peers.yaml` exists. Agents with
+ * neither never cross a wire boundary, so the flip is a no-op for
+ * them (documented as the "memory-only" exemption in the migration
+ * guide §2).
+ *
+ * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #5b prep
+ */
+export type RpcAuthResolveReason =
+  | 'explicit'
+  | 'explicit-optout'
+  | 'flag-default'
+  | 'legacy-default'
+  | 'boot-fail';
+
+export interface ResolvedRpcAuth {
+  readonly enabled: boolean;
+  readonly reason: RpcAuthResolveReason;
+}
+
+export function resolveEffectiveRpcAuth(input: {
+  readonly posture: 'enabled' | 'disabled' | 'absent';
+  readonly peersDeclared: boolean;
+  readonly flagOn: boolean;
+}): ResolvedRpcAuth {
+  if (input.posture === 'enabled') return { enabled: true, reason: 'explicit' };
+  if (input.posture === 'disabled') return { enabled: false, reason: 'explicit-optout' };
+  // posture === 'absent'
+  if (!input.flagOn) return { enabled: false, reason: 'legacy-default' };
+  if (!input.peersDeclared) return { enabled: false, reason: 'legacy-default' };
+  // flag on + peers declared + no explicit opt-in = future boot failure.
+  return { enabled: false, reason: 'boot-fail' };
+}
+
 export function composeSystemPromptWithSkills(
   basePrompt: string,
   skills: readonly Skill[],
