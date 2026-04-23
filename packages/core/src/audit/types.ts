@@ -187,6 +187,14 @@ export interface TenantAuditQuery {
   order?: 'asc' | 'desc';
   /** Free-form substring match over the serialized record (sqlite LIKE). */
   search?: string;
+  /**
+   * Records with `seq > sinceSeq`. Used by cursor-based consumers (SIEM
+   * export loop) that need a strictly-monotonic "what's new since last
+   * call" iterator that survives restarts.
+   *
+   * @since 0.6.x — Enterprise Production Plan §3 Item #10
+   */
+  sinceSeq?: number;
 }
 
 // ── Chain + verification ──────────────────────────────────────────────────
@@ -239,6 +247,23 @@ export interface RetentionPruneOptions {
   now?: () => number;
 }
 
+/**
+ * Persistent cursor state for a forward-only audit consumer (e.g. the
+ * SIEM export loop). Stored in the `audit_export_cursor` SQLite table
+ * keyed on `exporterName`, so a restart doesn't re-push rows already
+ * ack'd by the downstream vendor.
+ *
+ * @since 0.6.x — Enterprise Production Plan §3 Item #10
+ */
+export interface ExportCursor {
+  /** Stable exporter identity. Convention: `"<vendor>:<instance>"` (e.g. `"splunk:default"`). */
+  exporterName: string;
+  /** Last `seq` the consumer acknowledged. `0` before first push. */
+  lastSeq: number;
+  /** ms-epoch of the last advance. */
+  updatedAt: number;
+}
+
 /** @since 1.0.0 */
 export interface TenantAuditSink {
   /** Append one record. Assigns `seq` + chain hash atomically. */
@@ -261,6 +286,23 @@ export interface TenantAuditSink {
    * the count of pruned rows.
    */
   prune(options: RetentionPruneOptions): Promise<number>;
+  /**
+   * Load the persisted cursor for a forward-only consumer. Returns
+   * `null` when the exporter has never advanced (first boot). Optional
+   * on the interface for back-compat with older sinks; the SQLite sink
+   * implements it.
+   *
+   * @since 0.6.x — Enterprise Production Plan §3 Item #10
+   */
+  readExportCursor?(exporterName: string): Promise<ExportCursor | null>;
+  /**
+   * Atomically advance the persisted cursor. Must be monotonic — calling
+   * with `lastSeq < existing.lastSeq` is a no-op (idempotent, so a stale
+   * exporter that crashes mid-batch can't rewind the cursor).
+   *
+   * @since 0.6.x — Enterprise Production Plan §3 Item #10
+   */
+  writeExportCursor?(exporterName: string, lastSeq: number): Promise<void>;
   /** Graceful shutdown. */
   close(): Promise<void> | void;
 }

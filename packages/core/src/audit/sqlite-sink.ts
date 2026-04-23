@@ -3,6 +3,7 @@ import { canonicalizeRecord, computeRecordHash, verifyEntries } from './chain-ve
 import type {
   EraseOptions,
   ErasedAuditRecord,
+  ExportCursor,
   RetentionPruneOptions,
   StoredAuditEntry,
   TenantAuditQuery,
@@ -58,6 +59,19 @@ const SCHEMA = `
     ON audit_records (tenant_id, ts);
   CREATE INDEX IF NOT EXISTS idx_audit_tenant_kind
     ON audit_records (tenant_id, kind);
+
+  /*
+   * Forward-only cursor table used by the SIEM export loop (Enterprise
+   * Production Plan §3 Item #10). One row per configured exporter.
+   * last_seq is the highest audit_records.seq the downstream vendor
+   * has acknowledged; the exporter advances only after ack, so a
+   * crash between push + advance re-pushes on restart (at-least-once).
+   */
+  CREATE TABLE IF NOT EXISTS audit_export_cursor (
+    exporter_name TEXT PRIMARY KEY,
+    last_seq INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
 `;
 
 function tenantIdOf(record: TenantAuditRecord): string {
@@ -129,6 +143,10 @@ export async function createSqliteAuditSink(
       conditions.push('record_json LIKE ?');
       args.push(`%${q.search}%`);
     }
+    if (q.sinceSeq !== undefined) {
+      conditions.push('seq > ?');
+      args.push(q.sinceSeq);
+    }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const order = q.order === 'desc' ? 'DESC' : 'ASC';
     const limit = q.limit ?? 1000;
@@ -188,11 +206,45 @@ export async function createSqliteAuditSink(
     return Number((res as { changes?: number }).changes ?? 0);
   }
 
+  // ── Export cursor (SIEM loop, §3 Item #10) ─────────────────────────────
+  const readCursorStmt = db.prepare(
+    'SELECT exporter_name, last_seq, updated_at FROM audit_export_cursor WHERE exporter_name = ?',
+  );
+  const writeCursorStmt = db.prepare(
+    `INSERT INTO audit_export_cursor (exporter_name, last_seq, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(exporter_name) DO UPDATE SET
+       last_seq = CASE WHEN excluded.last_seq > audit_export_cursor.last_seq
+                       THEN excluded.last_seq
+                       ELSE audit_export_cursor.last_seq END,
+       updated_at = CASE WHEN excluded.last_seq > audit_export_cursor.last_seq
+                         THEN excluded.updated_at
+                         ELSE audit_export_cursor.updated_at END`,
+  );
+
+  async function readExportCursor(exporterName: string): Promise<ExportCursor | null> {
+    const row = readCursorStmt.get(exporterName) as {
+      exporter_name: string;
+      last_seq: number;
+      updated_at: number;
+    } | null;
+    if (!row) return null;
+    return {
+      exporterName: row.exporter_name,
+      lastSeq: row.last_seq,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async function writeExportCursor(exporterName: string, lastSeq: number): Promise<void> {
+    writeCursorStmt.run(exporterName, lastSeq, now());
+  }
+
   async function close(): Promise<void> {
     db.close();
   }
 
-  return { record, query, erase, verify, prune, close };
+  return { record, query, erase, verify, prune, readExportCursor, writeExportCursor, close };
 }
 
 /**

@@ -31,6 +31,8 @@ import {
   AgentConfigError,
   type AgentEvent,
   type AgentSpec,
+  type AuditExportLoopHandle,
+  type AuditExporter,
   CircuitBreaker,
   type CircuitBreakerTransitionEvent,
   type ControlPlaneRoute,
@@ -42,12 +44,15 @@ import {
   type EventStore,
   type LLMProvider,
   type LoadedAgent,
+  type LoadedAuditExport,
   type Logger,
   type PrometheusRegistry,
   type TenantAuditSink,
   type Tracer,
   type UpStatusSnapshot,
   auditRoute,
+  createDatadogExporter,
+  createElasticExporter,
   createEngine,
   createEventDispatcher,
   createExtensionRegistry,
@@ -56,6 +61,7 @@ import {
   createPermissionGate,
   createPrometheusRegistry,
   createSendMessageTool,
+  createSplunkExporter,
   createSqliteAuditSink,
   createSqliteSessionStore,
   createToolRateLimitGate,
@@ -67,6 +73,7 @@ import {
   logsRoute,
   metricsRoute,
   skillExtension,
+  startAuditExportLoop,
   startControlPlaneServer,
   startControlSocket,
   statusRoute,
@@ -282,6 +289,12 @@ interface RunningAgent {
   lastEventAt?: number;
   /** Unsubscribe the lastEventAt-tracker subscriber on shutdown. */
   detachLastEventTracker?: () => void;
+  /**
+   * SIEM export config from this agent's `agent.yaml#audit.export`. When
+   * present, the up-loop starts a {@link AuditExportLoopHandle} for it.
+   * @since 0.6.x — Enterprise Production Plan §3 Item #10
+   */
+  auditExport?: LoadedAuditExport;
 }
 
 /**
@@ -516,6 +529,59 @@ async function runForeground(
     }
   }
 
+  // SIEM audit export loop (Enterprise Production Plan §3 Item #10).
+  // When any agent in the fleet declares `audit.export.kind: splunk|elastic|datadog`,
+  // we start an in-process loop that tails the shared audit SQLite file
+  // and forwards new rows to the vendor on a 10s cadence. The cursor
+  // lives in the same SQLite DB (`audit_export_cursor` table) so a
+  // restart doesn't re-push rows already acked.
+  //
+  // Lifecycle: opens its own TenantAuditSink handle (separate from the
+  // control-plane one) so a daemon with `DECLARAGENT_METRICS_PORT=0`
+  // still exports audit. Stopped during shutdown before the underlying
+  // sink closes.
+  //
+  // @since 0.6.x
+  const auditExports = running
+    .map((r) => ({ id: r.summary.id, cfg: r.auditExport }))
+    .filter((x): x is { id: string; cfg: LoadedAuditExport } => x.cfg !== undefined);
+  let auditExportSink: TenantAuditSink | null = null;
+  const auditExportLoops: AuditExportLoopHandle[] = [];
+  if (auditExports.length > 0) {
+    try {
+      auditExportSink = await createSqliteAuditSink({ path: auditDbPath() });
+    } catch (err) {
+      io.err(
+        `⚠ audit sink at ${auditDbPath()} failed to open for SIEM export — ${err instanceof Error ? err.message : String(err)}. Skipping audit.export.\n`,
+      );
+    }
+    if (auditExportSink) {
+      for (const { id, cfg } of auditExports) {
+        const owner = running.find((r) => r.summary.id === id);
+        if (!owner) continue;
+        try {
+          const exporter = buildAuditExporter(cfg);
+          const loop = startAuditExportLoop({
+            sink: auditExportSink,
+            exporter,
+            ...(cfg.intervalMs !== undefined && { intervalMs: cfg.intervalMs }),
+            ...(cfg.batchSize !== undefined && { batchSize: cfg.batchSize }),
+            metrics: runtime.metrics,
+            logger: agentLoggerToCoreLogger(owner.logger),
+          });
+          auditExportLoops.push(loop);
+          io.out(
+            `  ${id}: audit.export → ${cfg.kind} (${exporter.name}) every ${cfg.intervalMs ?? 10_000}ms\n`,
+          );
+        } catch (err) {
+          io.err(
+            `⚠ ${id}: audit.export (${cfg.kind}) failed to start — ${err instanceof Error ? err.message : String(err)}. Continuing without export.\n`,
+          );
+        }
+      }
+    }
+  }
+
   io.out(`\n✓ up — ${running.length} agent${running.length === 1 ? '' : 's'} bound.\n`);
   io.out('  Ctrl+C to stop.\n\n');
 
@@ -526,6 +592,20 @@ async function runForeground(
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
       io.out('\nshutting down…\n');
+      for (const loop of auditExportLoops) {
+        try {
+          await loop.stop();
+        } catch {
+          // best-effort — never block shutdown on a stuck loop
+        }
+      }
+      if (auditExportSink) {
+        try {
+          await auditExportSink.close();
+        } catch {
+          // best-effort — sink close is idempotent
+        }
+      }
       if (controlPlaneHandle) {
         try {
           await controlPlaneHandle.close();
@@ -619,6 +699,7 @@ async function bringUp(
       },
       logger,
       mcp,
+      ...(loaded.auditExport !== undefined && { auditExport: loaded.auditExport }),
     };
   }
 
@@ -732,6 +813,7 @@ async function bringUp(
     ...(channelsRuntime && { channels: channelsRuntime }),
     ...(plugins && { plugins }),
     ...(detachDispatcher !== undefined && { detachDispatcher }),
+    ...(loaded.auditExport !== undefined && { auditExport: loaded.auditExport }),
   };
 
   // Bind the control socket (§3 item #6 of the Enterprise Production
@@ -1435,6 +1517,76 @@ function indent(text: string, prefix: string): string {
     .split('\n')
     .map((line) => (line.length > 0 ? `${prefix}${line}` : line))
     .join('\n');
+}
+
+/**
+ * Resolve a {@link LoadedAuditExport} config into a concrete {@link AuditExporter}.
+ * Supports the `env:FOO_BAR` prefix on secret fields — operators keep
+ * HEC tokens / API keys out of git by writing `token: env:SPLUNK_HEC_TOKEN`
+ * in `agent.yaml` and exporting `SPLUNK_HEC_TOKEN` at daemon-boot.
+ *
+ * @since 0.6.x — Enterprise Production Plan §3 Item #10
+ */
+function buildAuditExporter(cfg: LoadedAuditExport): AuditExporter {
+  switch (cfg.kind) {
+    case 'splunk':
+      return createSplunkExporter({
+        hecUrl: resolveSecret(cfg.hecUrl),
+        token: resolveSecret(cfg.token),
+        ...(cfg.index !== undefined && { index: cfg.index }),
+        ...(cfg.source !== undefined && { source: cfg.source }),
+        ...(cfg.sourcetype !== undefined && { sourcetype: cfg.sourcetype }),
+        ...(cfg.host !== undefined && { host: cfg.host }),
+        ...(cfg.name !== undefined && { name: cfg.name }),
+      });
+    case 'elastic': {
+      const auth =
+        cfg.auth.kind === 'apiKey'
+          ? ({ kind: 'apiKey' as const, apiKey: resolveSecret(cfg.auth.apiKey) } as const)
+          : cfg.auth.kind === 'bearer'
+            ? ({ kind: 'bearer' as const, token: resolveSecret(cfg.auth.token) } as const)
+            : ({
+                kind: 'basic' as const,
+                username: resolveSecret(cfg.auth.username),
+                password: resolveSecret(cfg.auth.password),
+              } as const);
+      return createElasticExporter({
+        baseUrl: cfg.baseUrl,
+        auth,
+        ...(cfg.index !== undefined && { index: cfg.index }),
+        ...(cfg.name !== undefined && { name: cfg.name }),
+      });
+    }
+    case 'datadog':
+      return createDatadogExporter({
+        apiKey: resolveSecret(cfg.apiKey),
+        ...(cfg.site !== undefined && { site: cfg.site }),
+        ...(cfg.intakeUrl !== undefined && { intakeUrl: cfg.intakeUrl }),
+        ...(cfg.service !== undefined && { service: cfg.service }),
+        ...(cfg.source !== undefined && { source: cfg.source }),
+        ...(cfg.hostname !== undefined && { hostname: cfg.hostname }),
+        ...(cfg.tags !== undefined && { tags: cfg.tags }),
+        ...(cfg.name !== undefined && { name: cfg.name }),
+      });
+  }
+}
+
+/**
+ * Resolve an `env:FOO` reference to the current `process.env` value, or
+ * pass through a literal string. Empty env vars throw — a silently-empty
+ * token would look like a misconfigured exporter at runtime and waste a
+ * pause cycle.
+ */
+function resolveSecret(raw: string): string {
+  if (!raw.startsWith('env:')) return raw;
+  const key = raw.slice(4);
+  const value = process.env[key];
+  if (value === undefined || value === '') {
+    throw new Error(
+      `audit.export: ${key} is not set in the environment — set it before \`declaragent up\` or inline the secret in agent.yaml`,
+    );
+  }
+  return value;
 }
 
 function installDefaultSignalHandlers(onShutdown: () => Promise<void>): () => void {
