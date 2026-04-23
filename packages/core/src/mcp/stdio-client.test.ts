@@ -348,6 +348,88 @@ describe('createMCPClient — restart and failure', () => {
   });
 });
 
+describe('createMCPClient — lifecycle events', () => {
+  test('emits onSpawn after initialize + onExit on shutdown', async () => {
+    const server = startFakeServer();
+    installInitHandshake(server);
+    const events: { type: string; detail?: unknown }[] = [];
+    const client = createMCPClient({
+      name: 'fake',
+      protocolVersion: '2024-11-05',
+      connect: async () => server.connection,
+      lifecycle: {
+        onSpawn: (info) => {
+          events.push({ type: 'spawn', detail: info.name });
+        },
+        onExit: (reason) => {
+          events.push({ type: 'exit', detail: reason });
+        },
+      },
+    });
+    await client.initialize();
+    // Let any post-handshake notifications flush.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(events[0]).toEqual({ type: 'spawn', detail: 'fake' });
+    await client.shutdown();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(events.map((e) => e.type)).toContain('exit');
+    const lastExit = events.filter((e) => e.type === 'exit').pop();
+    expect(lastExit?.detail).toBe('shutdown');
+  });
+
+  test('emits onExit with transport-closed when server crashes', async () => {
+    const servers: FakeServer[] = [];
+    const exits: string[] = [];
+    const client = createMCPClient({
+      name: 'fake',
+      protocolVersion: '2024-11-05',
+      connect: async () => {
+        const s = startFakeServer();
+        installInitHandshake(s);
+        servers.push(s);
+        return s.connection;
+      },
+      sleep: () => Promise.resolve(),
+      backoffMs: () => 0,
+      lifecycle: {
+        onExit: (reason) => {
+          exits.push(reason);
+        },
+      },
+    });
+    await client.initialize();
+    servers[0]?.crash();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(exits).toContain('transport-closed');
+    await client.shutdown();
+  });
+
+  test('emits onExit with init-failed when handshake throws', async () => {
+    const exits: { reason: string; hasErr: boolean }[] = [];
+    let attempts = 0;
+    const client = createMCPClient({
+      name: 'fake',
+      protocolVersion: '2024-11-05',
+      connect: async () => {
+        attempts++;
+        throw new Error(`connect ${attempts}`);
+      },
+      maxConsecutiveFailures: 2,
+      backoffMs: () => 0,
+      sleep: () => Promise.resolve(),
+      lifecycle: {
+        onExit: (reason, err) => {
+          exits.push({ reason, hasErr: err !== undefined });
+        },
+      },
+    });
+    await expect(client.initialize()).rejects.toThrow(/connect/);
+    await new Promise((r) => setTimeout(r, 20));
+    // One from init-failed path and one from the restart-loop failing.
+    expect(exits.some((e) => e.reason === 'init-failed' && e.hasErr)).toBe(true);
+  });
+});
+
 describe('defaultBackoff', () => {
   test('grows exponentially and caps at 30s', async () => {
     const { defaultBackoff } = await import('./stdio-client.js');

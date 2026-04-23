@@ -30,6 +30,36 @@ const NOOP_LOGGER: Logger = (() => {
 
 export type ConnectFn = () => Promise<JSONRPCConnection>;
 
+/**
+ * Reason a lifecycle `exit` event fired. `'shutdown'` is graceful
+ * (`client.shutdown()` called). `'transport-closed'` is an unexpected
+ * close — the supervisor treats this as a crash signal. `'init-failed'`
+ * is a failed handshake before we reached `ready`. `'restart-failed'`
+ * is a failed respawn attempt from inside the restart loop.
+ */
+export type MCPLifecycleExitReason =
+  | 'shutdown'
+  | 'transport-closed'
+  | 'init-failed'
+  | 'restart-failed';
+
+/**
+ * Lifecycle events emitted by the MCP client. Non-breaking — existing
+ * consumers that don't pass a `lifecycle` handler block continue to work
+ * unchanged. The supervisor (`@declaragent/core/mcp/supervisor`) uses
+ * these to drive respawn + circuit-breaker semantics.
+ *
+ * @since 0.7.0
+ */
+export interface MCPLifecycleHandlers {
+  /** Fires after a fresh session has completed its handshake + is `ready`. */
+  onSpawn?: (info: MCPServerInfo) => void;
+  /** Fires when a previously-ready session terminates. */
+  onExit?: (reason: MCPLifecycleExitReason, err?: unknown) => void;
+  /** Fires on transport-level errors (as surfaced by `connection.onError`). */
+  onError?: (err: unknown) => void;
+}
+
 export interface CreateMCPClientOptions {
   /** User-chosen short id; surfaced in errors and logs. */
   name: string;
@@ -48,6 +78,14 @@ export interface CreateMCPClientOptions {
   /** Test seam for backoff sleep. Default: `setTimeout`. */
   sleep?: (ms: number) => Promise<void>;
   logger?: Logger;
+  /**
+   * Opt-in lifecycle hooks. Supplied by the MCP supervisor to observe
+   * spawn / exit / transport-error events. Handler errors are caught
+   * and logged — a misbehaving listener never wedges the client.
+   *
+   * @since 0.7.0
+   */
+  lifecycle?: MCPLifecycleHandlers;
 }
 
 export function defaultBackoff(attempt: number): number {
@@ -71,7 +109,33 @@ export function createMCPClient(options: CreateMCPClientOptions): MCPClient {
   const backoff = options.backoffMs ?? defaultBackoff;
   const sleep = options.sleep ?? defaultSleep;
   const clientInfo = options.clientInfo ?? DEFAULT_CLIENT_INFO;
+  const lifecycle = options.lifecycle ?? {};
   const toolsChangedHandlers = new Set<() => void>();
+
+  function emitSpawn(info: MCPServerInfo): void {
+    if (!lifecycle.onSpawn) return;
+    try {
+      lifecycle.onSpawn(info);
+    } catch (err) {
+      logger.warn('mcp.lifecycle.spawn.error', { err: String(err) });
+    }
+  }
+  function emitExit(reason: MCPLifecycleExitReason, err?: unknown): void {
+    if (!lifecycle.onExit) return;
+    try {
+      lifecycle.onExit(reason, err);
+    } catch (cbErr) {
+      logger.warn('mcp.lifecycle.exit.error', { err: String(cbErr) });
+    }
+  }
+  function emitError(err: unknown): void {
+    if (!lifecycle.onError) return;
+    try {
+      lifecycle.onError(err);
+    } catch (cbErr) {
+      logger.warn('mcp.lifecycle.error.error', { err: String(cbErr) });
+    }
+  }
 
   let status: MCPClientStatus = 'starting';
   let session: ActiveSession | undefined;
@@ -91,6 +155,7 @@ export function createMCPClient(options: CreateMCPClientOptions): MCPClient {
 
     connection.onError((err) => {
       logger.warn('mcp.transport.error', { err: String(err) });
+      emitError(err);
     });
 
     const unsubscribeNotifications = connection.onNotification((method) => {
@@ -129,6 +194,7 @@ export function createMCPClient(options: CreateMCPClientOptions): MCPClient {
         logger.warn('mcp.connection.closed.unexpected');
         session = undefined;
         toolsCache = undefined;
+        emitExit('transport-closed');
         scheduleRestart();
       }
     });
@@ -150,10 +216,12 @@ export function createMCPClient(options: CreateMCPClientOptions): MCPClient {
           session = await startSession();
           consecutiveFailures = 0;
           setStatus('ready');
+          emitSpawn(session.serverInfo);
           return;
         } catch (err) {
           consecutiveFailures++;
           logger.warn('mcp.restart.failed', { attempt, err: String(err) });
+          emitExit('restart-failed', err);
         }
       }
       if (!stopped) {
@@ -172,9 +240,11 @@ export function createMCPClient(options: CreateMCPClientOptions): MCPClient {
           session = await startSession();
           consecutiveFailures = 0;
           setStatus('ready');
+          emitSpawn(session.serverInfo);
           return session.serverInfo;
         } catch (err) {
           consecutiveFailures++;
+          emitExit('init-failed', err);
           if (consecutiveFailures >= maxFailures) {
             setStatus('failed');
           } else {
@@ -242,6 +312,7 @@ export function createMCPClient(options: CreateMCPClientOptions): MCPClient {
       } catch (err) {
         logger.warn('mcp.shutdown.error', { err: String(err) });
       }
+      emitExit('shutdown');
     },
 
     onToolsChanged(handler) {
@@ -410,6 +481,13 @@ export interface CreateStdioMCPClientOptions {
   maxConsecutiveFailures?: number;
   backoffMs?: (attempt: number) => number;
   logger?: Logger;
+  /**
+   * Optional lifecycle hooks forwarded to `createMCPClient`. Used by the
+   * supervisor to observe spawn / exit / transport-error events.
+   *
+   * @since 0.7.0
+   */
+  lifecycle?: MCPLifecycleHandlers;
 }
 
 export function createStdioMCPClient(options: CreateStdioMCPClientOptions): MCPClient {
@@ -423,6 +501,7 @@ export function createStdioMCPClient(options: CreateStdioMCPClientOptions): MCPC
       : { maxConsecutiveFailures: options.maxConsecutiveFailures }),
     ...(options.backoffMs === undefined ? {} : { backoffMs: options.backoffMs }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
+    ...(options.lifecycle === undefined ? {} : { lifecycle: options.lifecycle }),
   });
 }
 

@@ -35,7 +35,22 @@ export type {
   ConnectFn,
   CreateMCPClientOptions,
   CreateStdioMCPClientOptions,
+  MCPLifecycleExitReason,
+  MCPLifecycleHandlers,
 } from './stdio-client.js';
+export {
+  MCPServerCrashedError,
+  createMCPSupervisor,
+  defaultSupervisorBackoff,
+} from './supervisor.js';
+export type {
+  CreateMCPSupervisorOptions,
+  MCPClientFactory,
+  MCPRestartReason,
+  MCPSupervisor,
+  MCPSupervisorState,
+  MCPSupervisorStateSnapshot,
+} from './supervisor.js';
 export { createHTTPConnection, createHTTPMCPClient } from './http-client.js';
 export type {
   CreateHTTPConnectionOptions,
