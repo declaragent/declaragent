@@ -95,6 +95,23 @@ export class ProviderTokenBucket {
     return waitMs;
   }
 
+  /**
+   * Attempt to take one token without sleeping. Returns `true` if a
+   * token was consumed, `false` if the bucket was empty at the time
+   * of call (caller decides how to handle — e.g. fail-fast rejects
+   * used by the MCP aggregate rate-limit gate).
+   *
+   * @since 0.7.5 — Post-Enterprise Backlog #27
+   */
+  tryTake(): boolean {
+    this.refill();
+    if (this.tokens >= 1) {
+      this.tokens -= 1;
+      return true;
+    }
+    return false;
+  }
+
   /** Current token count — primarily for tests/diagnostics. */
   get available(): number {
     this.refill();

@@ -40,6 +40,8 @@ export type {
 } from './stdio-client.js';
 export {
   MCPServerCrashedError,
+  MCPServerRateLimitedError,
+  ToolCallDrainedError,
   createMCPSupervisor,
   defaultSupervisorBackoff,
 } from './supervisor.js';
@@ -47,6 +49,7 @@ export type {
   CreateMCPSupervisorOptions,
   MCPClientFactory,
   MCPRestartReason,
+  MCPServerRateLimitConfig,
   MCPSupervisor,
   MCPSupervisorState,
   MCPSupervisorStateSnapshot,
