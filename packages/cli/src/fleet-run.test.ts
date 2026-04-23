@@ -3,15 +3,28 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
+  AgentAddress,
+  AgentRpcEnvelope,
   AgentSpec,
+  LoadedCapabilities,
   Logger,
   PermissionGate,
   SessionHandle,
+  StoredAuditEntry,
+  TenantAuditRecord,
+  TenantAuditSink,
   ToolContext,
   ToolEvent,
 } from '@declaragent/core';
-import { loadFleet, parsePeersConfig } from '@declaragent/core';
 import {
+  createCapabilityValidatorRegistry,
+  loadFleet,
+  parseCapabilitiesConfig,
+  parsePeersConfig,
+} from '@declaragent/core';
+import {
+  type AuthVerifyRegistry,
+  type CapabilitySchemaViolationEmitter,
   createMemoryBus,
   createMemoryTransport,
   createPendingRegistry,
@@ -922,6 +935,317 @@ describe('startFleetDaemon — slice 5 (transport factories + RequestAgent wirin
         expect(errs.some((e) => e.includes('no factory'))).toBe(true);
         // Daemon still ran — memory transport still bound.
         expect(daemon.agents.get('pr-reviewer')?.topics).toContain('agents.pr-reviewer.requests');
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+// ── Round 6: #4 inline verify-auth + #11 typed-capability wiring ──────
+//
+// The daemon-level tests below exercise the two integrations landed in
+// fleet-run.ts:
+//
+//   - #4 — `startAgentWorker.onRequest` verifies inbound envelopes
+//          against an injected `AuthVerifyRegistry` before dispatching
+//          to the handler. Rejects land in the `rejected_events` table
+//          (via `authRejectSink`) + emit an `auth_check` audit row.
+//
+//   - #11 — the producer-side `RequestAgent` tool is built with the
+//          fleet-run-wide validator registry + peer-capability map so
+//          payloads that violate a peer's `inputSchema` short-circuit
+//          pre-publish + emit a `capability_schema_violation` audit row.
+//
+// Both tests stub the runtime surfaces (audit sink + reject sink) so the
+// coverage is hermetic — no sqlite, no IdP.
+
+function makeMemoryAuditSink(): {
+  sink: TenantAuditSink;
+  records: TenantAuditRecord[];
+} {
+  const records: TenantAuditRecord[] = [];
+  const sink: TenantAuditSink = {
+    async record(r) {
+      records.push(r);
+    },
+    async query() {
+      return records.map(
+        (r, i) =>
+          ({
+            seq: i + 1,
+            record: r,
+            prevHash: '',
+            recordHash: '',
+          }) as StoredAuditEntry,
+      );
+    },
+    async erase() {
+      return 0;
+    },
+    async verify() {
+      return {
+        ok: true,
+        totalEntries: records.length,
+        verifiedEntries: records.length,
+        violations: [],
+      };
+    },
+    async prune() {
+      return 0;
+    },
+    close() {
+      /* no-op */
+    },
+  };
+  return { sink, records };
+}
+
+describe('fleet-run #4 inline verify-auth', () => {
+  test('unauthenticated envelope lands in DLQ + emits auth_check reject row', async () => {
+    const h = mkHarness();
+    try {
+      const fleet = await twoAgentFleet(h);
+      const bus = createMemoryBus();
+      const { sink, records } = makeMemoryAuditSink();
+
+      // Always-reject registry — simulates a peer whose token failed
+      // verify without needing a real IdP/JWT pipeline.
+      const rejectingRegistry: AuthVerifyRegistry = {
+        resolve(peerId) {
+          if (peerId !== 'agent://concierge') return undefined;
+          return {
+            config: {
+              provider: 'oauth2-client',
+              tokenEndpoint: 'https://idp.test/token',
+              clientId: 'test',
+              clientSecretRef: 'env:STUB',
+            } as never,
+            provider: {
+              name: 'oauth2-client',
+              async sign() {
+                return { kind: 'internal' };
+              },
+              async verify() {
+                return {
+                  ok: false,
+                  reason: 'bad-signature',
+                  message: 'stub-provider: payload unsigned',
+                };
+              },
+            },
+          };
+        },
+      };
+
+      const dlqDrops: Array<{ id: string; reason: string; message: string }> = [];
+      const daemon = await startFleetDaemon({
+        fleet,
+        bus,
+        authRegistry: rejectingRegistry,
+        auditSink: sink,
+        authRejectSink: (entry) => {
+          dlqDrops.push({
+            id: entry.envelope.messageId,
+            reason: entry.reason,
+            message: entry.message,
+          });
+        },
+        makeHandler: () => async () => {
+          throw new Error('handler should never run — auth rejected first');
+        },
+      });
+      try {
+        // Publish a request envelope directly onto pr-reviewer's topic,
+        // impersonating concierge.
+        const conciergeTransport = createMemoryTransport({ bus });
+        const envelope: AgentRpcEnvelope = {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-auth-1',
+          correlationId: 'corr-auth-1',
+          from: 'agent://concierge',
+          to: 'agent://pr-reviewer',
+          capability: 'review-pr',
+          payload: { prUrl: 'x' },
+          auth: { kind: 'internal' },
+        };
+        await conciergeTransport.publish('agents.pr-reviewer.requests', envelope);
+        // Allow async handlers to settle.
+        await new Promise((r) => setTimeout(r, 50));
+
+        // DLQ sink captured the drop.
+        expect(dlqDrops).toHaveLength(1);
+        expect(dlqDrops[0]).toEqual({
+          id: 'msg-auth-1',
+          reason: 'auth-rejected',
+          message: 'stub-provider: payload unsigned',
+        });
+
+        // Audit sink captured an auth_check `reject` row.
+        const authChecks = records.filter((r) => r.kind === 'auth_check');
+        expect(authChecks).toHaveLength(1);
+        const first = authChecks[0];
+        if (first === undefined || first.kind !== 'auth_check') {
+          throw new Error('expected auth_check record');
+        }
+        expect(first.decision).toBe('reject');
+        expect(first.reason).toBe('bad-signature');
+        expect(first.peerId).toBe('agent://concierge');
+        expect(first.correlationId).toBe('corr-auth-1');
+
+        // Handler never ran → `responded` stays at 0, but the worker
+        // received + metrics'd the envelope before short-circuiting.
+        const metrics = daemon.agents.get('pr-reviewer')?.metrics();
+        expect(metrics?.received).toBe(1);
+        expect(metrics?.responded).toBe(0);
+        await conciergeTransport.close();
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe('fleet-run #11 typed-capability validation', () => {
+  test('schema-violation rejects pre-wire + emits capability_schema_violation audit row', async () => {
+    const h = mkHarness();
+    try {
+      const fleet = await twoAgentFleet(h);
+      const bus = createMemoryBus();
+      const { sink, records } = makeMemoryAuditSink();
+
+      // Build a peer-capability table that declares an enum-gated
+      // `severity` field — calls with a value outside the enum must
+      // reject pre-wire (status: 'schema-violation') + emit an audit row.
+      const typedCaps: LoadedCapabilities = parseCapabilitiesConfig({
+        version: 1,
+        agent: 'agent://pr-reviewer',
+        transports: [{ kind: 'memory', topics: { requests: 'agents.pr-reviewer.requests' } }],
+        capabilities: [
+          {
+            name: 'review-pr',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                prUrl: { type: 'string' },
+                severity: { enum: ['low', 'med', 'high'] },
+              },
+              required: ['severity'],
+            },
+          },
+        ],
+      });
+      const peerCapabilities = new Map<AgentAddress, LoadedCapabilities>([
+        ['agent://pr-reviewer' as AgentAddress, typedCaps],
+      ]);
+      const validators = createCapabilityValidatorRegistry();
+
+      // Emitter writes to the shared audit sink — mirrors the
+      // production `fleet-run.ts` wiring.
+      const emitter: CapabilitySchemaViolationEmitter = async (event) => {
+        await sink.record({
+          kind: 'capability_schema_violation',
+          ts: Date.now(),
+          tenantId: 'default',
+          capabilityName: event.capabilityName,
+          peerId: event.peerId,
+          side: event.side,
+          violations: event.violations,
+          correlationId: event.correlationId,
+        });
+      };
+
+      const peers = parsePeersConfig({
+        version: 1,
+        peers: [
+          {
+            agent: 'agent://pr-reviewer',
+            transports: [{ kind: 'memory', topics: { requests: 'agents.pr-reviewer.requests' } }],
+          },
+        ],
+      });
+
+      const daemon = await startFleetDaemon({
+        fleet,
+        bus,
+        peers,
+        peerCapabilities,
+        validators,
+        onSchemaViolation: emitter,
+        makeHandler: () => defaultHandler,
+      });
+      try {
+        // Hand-build a RequestAgent tool wired with the same validator
+        // stack — exercises the exact fleet-run-llm-handler wiring path.
+        const conciergeTransport = createMemoryTransport({ bus });
+        const pending = createPendingRegistry();
+        const detach = conciergeTransport.subscribe(
+          'agents.concierge.responses',
+          async (envelope) => {
+            if (envelope.kind !== 'response') return;
+            const payload = envelope.payload as
+              | { ok: true; data: unknown }
+              | { ok: false; error: { code: string; message: string } };
+            pending.settle(
+              envelope.correlationId,
+              payload.ok
+                ? { status: 'ok', data: payload.data }
+                : { status: 'error', error: payload.error },
+            );
+          },
+        );
+        const tool = createRequestAgentTool({
+          selfAgent: 'agent://concierge',
+          peers,
+          transports: new Map([['memory', conciergeTransport]]),
+          pending,
+          replyTo: 'memory://agents.concierge.responses',
+          peerCapabilities,
+          validators,
+          onSchemaViolation: emitter,
+        });
+
+        const events = await collectEvents(
+          tool.execute(
+            {
+              to: 'agent://pr-reviewer',
+              capability: 'review-pr',
+              // `severity: 'critical'` is outside the declared enum.
+              payload: { prUrl: 'x', severity: 'critical' },
+              timeoutMs: 2000,
+            },
+            makeToolContext(),
+          ),
+        );
+        // Pre-wire rejection: status `schema-violation`, no envelope
+        // reaches the receiver, no handler invocation.
+        expect(events.result?.status).toBe('schema-violation');
+        expect(events.result?.schemaSide).toBe('request');
+        expect(events.result?.error?.code).toBe('EAGENTRPC_SCHEMA_VIOLATION');
+
+        // Audit row landed — one `capability_schema_violation` entry.
+        const schemaRows = records.filter((r) => r.kind === 'capability_schema_violation');
+        expect(schemaRows).toHaveLength(1);
+        const first = schemaRows[0];
+        if (first === undefined || first.kind !== 'capability_schema_violation') {
+          throw new Error('expected capability_schema_violation record');
+        }
+        expect(first.capabilityName).toBe('review-pr');
+        expect(first.peerId).toBe('agent://pr-reviewer');
+        expect(first.side).toBe('request');
+        expect(first.violations.length).toBeGreaterThan(0);
+
+        // The receiver never processed a request — validator rejected
+        // before publish.
+        const metrics = daemon.agents.get('pr-reviewer')?.metrics();
+        expect(metrics?.received).toBe(0);
+        detach();
+        await conciergeTransport.close();
       } finally {
         await daemon.shutdown();
       }

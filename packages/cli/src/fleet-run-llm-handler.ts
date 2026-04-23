@@ -143,6 +143,13 @@ export function createLLMHandlerFactory(
               : { status: 'error', error: payload.error },
           );
         });
+        // #11 typed-capability validation (Enterprise Production Plan §3).
+        // When the fleet-run boot wired `peerCapabilities` + `validators`,
+        // thread them straight through — the tool uses them to reject
+        // outbound requests + inbound responses that violate the
+        // peer's declared `inputSchema` / `outputSchema`. Legacy fleets
+        // (no schemas declared) see zero change: the tool's internal
+        // guard short-circuits when `validators === undefined`.
         extraTools.push(
           createRequestAgentTool({
             selfAgent: rpcContext.selfAddress,
@@ -150,6 +157,15 @@ export function createLLMHandlerFactory(
             transports: rpcContext.transports,
             pending,
             replyTo,
+            ...(rpcContext.peerCapabilities !== undefined && {
+              peerCapabilities: rpcContext.peerCapabilities,
+            }),
+            ...(rpcContext.validators !== undefined && {
+              validators: rpcContext.validators,
+            }),
+            ...(rpcContext.onSchemaViolation !== undefined && {
+              onSchemaViolation: rpcContext.onSchemaViolation,
+            }),
           }) as Tool,
         );
       }
