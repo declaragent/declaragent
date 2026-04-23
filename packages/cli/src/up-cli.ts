@@ -71,11 +71,13 @@ import {
   defaultRateForProvider,
   dlqRoute,
   eventsRoute,
+  isRpcAuthDefaultFlagOn,
   loadAgent,
   loadFleet,
   loadPeersConfig,
   logsRoute,
   metricsRoute,
+  resolveEffectiveRpcAuth,
   skillExtension,
   startAuditExportLoop,
   startControlPlaneServer,
@@ -867,9 +869,37 @@ async function bringUp(
   // `agent-inbox` adapter hands it through unchanged.
   //
   // @since 0.7.x — Enterprise Production Plan §3 Item #4 follow-up
+  //
+  // 0.7.6 preview — the `DECLARAGENT_RPC_AUTH_DEFAULT=on` flag
+  // promotes `absent` posture + peers declared → `enabled` (0.8.0
+  // default). `absent` + peers + flag rejects boot with AUTH_REJECTED
+  // so operators can rehearse the 0.8.0 flip in CI. See
+  // `docs/ZERO_TRUST_DEFAULT_MIGRATION.md`.
+  const peersPath = findRpcPeersConfig(agentDir);
+  const peersDeclared = peersPath !== undefined;
+  const flagOn = isRpcAuthDefaultFlagOn();
+  const effective = resolveEffectiveRpcAuth({
+    posture: loaded.rpcAuthPosture,
+    peersDeclared,
+    flagOn,
+  });
+  if (effective.reason === 'boot-fail') {
+    throw new Error(
+      `AUTH_REJECTED: agent://${agentId} has no rpc.auth.enabled value but rpc-peers.yaml is present, and DECLARAGENT_RPC_AUTH_DEFAULT=on simulates the 0.8.0 default flip. Set rpc.auth.enabled: true (recommended) or false (explicit opt-out) in ${agentDir}/agent.yaml. See docs/ZERO_TRUST_DEFAULT_MIGRATION.md.`,
+    );
+  }
+  if (effective.reason === 'flag-default') {
+    io.out(
+      `  ${agentId}: DECLARAGENT_RPC_AUTH_DEFAULT=on → promoting absent rpc.auth.enabled to true (0.8.0 preview).\n`,
+    );
+  }
+  if (effective.reason === 'explicit-optout') {
+    io.err(
+      `⚠ ${agentId}: rpc.auth.enabled=false explicitly set. Accepts unauthenticated envelopes — not recommended for cross-host deploys. See docs/ZERO_TRUST_DEFAULT_MIGRATION.md §4 Path B.\n`,
+    );
+  }
   let authRegistry: AuthVerifyRegistry | undefined;
-  if (loaded.rpcAuthEnabled) {
-    const peersPath = findRpcPeersConfig(agentDir);
+  if (effective.enabled) {
     if (peersPath === undefined) {
       io.err(
         `⚠ ${agentId}: rpc.auth.enabled=true but no rpc-peers.yaml found — auth registry is empty (every envelope follows the legacy path).\n`,

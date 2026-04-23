@@ -1,6 +1,6 @@
 # Zero-Trust RPC Default Flip — 0.8.0 Migration Plan
 
-**Authored:** 2026-04-23 (post-enterprise Sprint 5 docs pass) · **Target release:** `@declaragent/cli@0.8.0` · **Backlog row:** `docs/POST_ENTERPRISE_BACKLOG.md` #5b (Part B of row #5; Part A shipped at 0.7.3 as `declaragent fleet audit-rpc --suggest-enable`).
+**Authored:** 2026-04-23 (post-enterprise Sprint 5 docs pass) · **Preview mode shipped:** `@declaragent/cli@0.7.6` (Sprint 6, 2026-04-23) · **Target release for default flip:** `@declaragent/cli@0.8.0` · **Backlog row:** `docs/POST_ENTERPRISE_BACKLOG.md` #5b (Part B of row #5; Part A shipped at 0.7.3 as `declaragent fleet audit-rpc --suggest-enable`).
 
 **Sibling docs:**
 - [`docs/POST_ENTERPRISE_BACKLOG.md`](./POST_ENTERPRISE_BACKLOG.md) — the 52-item follow-up tracker; row #5b points here.
@@ -88,6 +88,74 @@ rpc:
 ```
 
 When no peer references this agent (e.g. external-only callers or dangling peer graph), the suggestion falls back to a commented stub so the operator can fill in provider details manually.
+
+---
+
+## 3a · 0.7.6 preview mode — rehearse the 0.8.0 flip today
+
+Shipped at `@declaragent/cli@0.7.6` (Sprint 6): the full 0.8.0 behaviour is available behind a feature flag so operators can validate against their own fleets 2–4 weeks *before* 0.8.0 drops. Nothing changes by default — you opt in per invocation or per CI job.
+
+### Opt in via env var (runtime)
+
+```bash
+export DECLARAGENT_RPC_AUTH_DEFAULT=on
+
+# `declaragent up` and `declaragent fleet run` now enforce the 0.8.0 gate:
+#   - Every agent with rpc-peers.yaml (fleet-root OR per-agent) must carry
+#     an explicit rpc.auth.enabled value. Agents with no rpc.auth block and
+#     peers declared abort boot with AUTH_REJECTED.
+#   - Agents with rpc.auth.enabled: false are honoured (Path B) with a
+#     boot-time warning.
+#   - Agents with rpc.auth.enabled: true boot as before.
+#   - Agents with no peers declared are exempt (memory-only path).
+declaragent up -d
+declaragent fleet run --transport kafka
+```
+
+Accepted values: `on`, `true`, `1` (case-insensitive). Any other value — unset, `off`, `false`, `0` — preserves 0.7.x behaviour (opt-in auth).
+
+### Rehearse with the inspector (read-only)
+
+For CI jobs that want the 0.8.0 verdict without actually mutating boot behaviour:
+
+```bash
+# Non-mutating dry-run. Exit 0 unless --strict is combined with an actual
+# 0.8.0-fail. The env var is NOT required for this flag — the inspector
+# simulates the flip in-process.
+declaragent fleet audit-rpc --dry-run-with-flag
+
+# CI-safe: exits 1 if any agent would fail the 0.8.0 boot gate.
+declaragent fleet audit-rpc --dry-run-with-flag --strict
+
+# Structured output for scripting. The JSON gains a top-level
+# `dryRunWithFlag` key with `{ flagOn, wouldBootCleanly, failingAgents, intentionalOptOuts, agents[] }`.
+declaragent fleet audit-rpc --dry-run-with-flag --json
+```
+
+The dry-run reports three agent states:
+
+- **would FAIL boot at 0.8.0** — no `rpc.auth.enabled` + peers declared. These are the agents you need to remediate before 0.8.0.
+- **intentionally unauthenticated** — explicit `rpc.auth.enabled: false`. Honoured with a boot-time warning; Path B in §4.
+- **exempt (memory-only)** — no peers declared. The flip is a no-op for these agents.
+
+### Recommended CI wiring
+
+Add a required check on the fleet repo that runs for 2–4 weeks before 0.8.0 ships:
+
+```yaml
+# .github/workflows/fleet-check.yml
+- name: 0.8.0 zero-trust dry-run
+  run: declaragent fleet audit-rpc --dry-run-with-flag --strict
+```
+
+If this green-runs for two consecutive weeks, taking 0.8.0 is a no-op upgrade. Any red run surfaces the same agent list that would fail post-upgrade — remediate from the list and the next run goes green.
+
+### Why a 0.7.6 preview instead of the 0.8.0 flip directly?
+
+Two reasons:
+
+1. **Lockfile-pinned deploys can't un-pin mid-incident.** Operators pinned to `@declaragent/cli@0.7.x` can run the 0.8.0 gate against their current CI without touching the lockfile. This means the 0.8.0 upgrade window is decoupled from the rehearsal window.
+2. **IdP misconfig surfaces on the first real token, not on a config edit.** Two weeks of `--dry-run-with-flag --strict` in CI catches the "we rotated the JWKS cert last Tuesday" class of bug before production takes the upgrade.
 
 ---
 
@@ -212,9 +280,10 @@ Yes — `core`, `plugin-agent-rpc`, and the six transport packages will each get
 
 ## 8 · Timeline for this doc
 
-- **0.7.5** (Sprint 5, in progress) — this doc authored; `CLAUDE.md` §"Upcoming breaking changes" cross-link added; `POST_ENTERPRISE_BACKLOG.md` #5b Evidence pointer updated to cite this file.
-- **0.7.6–0.7.8** (subsequent sprints) — any follow-up clarification from early migrators lands here as §7 FAQ additions. No breaking-change surface added in patch releases.
-- **0.8.0** (target 2–3 weeks after 0.7.5) — default flip ships. This doc is the canonical upgrade reference from this release forward. No further edits required unless a migration edge case surfaces.
+- **0.7.5** (Sprint 5) — this doc authored; `CLAUDE.md` §"Upcoming breaking changes" cross-link added; `POST_ENTERPRISE_BACKLOG.md` #5b Evidence pointer updated to cite this file.
+- **0.7.6** (Sprint 6, 2026-04-23) — **preview mode shipped.** `DECLARAGENT_RPC_AUTH_DEFAULT=on` env var + `declaragent fleet audit-rpc --dry-run-with-flag` land at `@declaragent/cli@0.7.6`. Operators can rehearse the 0.8.0 gate against their fleets today. §3a documents the opt-in surface. Default behaviour unchanged — no breaking change in 0.7.6 itself.
+- **0.7.7–0.7.x** (subsequent sprints) — any follow-up clarification from early migrators lands here as §7 FAQ additions. No breaking-change surface added in patch releases.
+- **0.8.0** (target 2–3 weeks after 0.7.6) — default flip ships. Behaviourally, `@declaragent/cli@0.8.0` boots as if `DECLARAGENT_RPC_AUTH_DEFAULT=on` is always set. The env var itself becomes a no-op (harmless to leave set in CI). This doc is the canonical upgrade reference from this release forward.
 - **0.9.0+** — this doc transitions to "historical — see CHANGELOG" once upgrade feedback settles. Not removed.
 
 ---

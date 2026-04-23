@@ -522,8 +522,11 @@ export {
   AgentConfigError,
   composeSystemPromptWithSkills,
   controlPlaneAuthSchema,
+  isRpcAuthDefaultFlagOn,
   loadAgent,
   parseControlPlaneAuth,
+  resolveEffectiveRpcAuth,
+  RPC_AUTH_DEFAULT_ENV,
 } from './agents/load-agent.js';
 export type {
   AgentYaml,
@@ -534,6 +537,8 @@ export type {
   LoadedControlPlaneAuth,
   LoadedMCPSupervised,
   LoadedToolRateLimit,
+  ResolvedRpcAuth,
+  RpcAuthResolveReason,
 } from './agents/load-agent.js';
 export {
   DEFAULT_PLUGIN_STORE_FILE,

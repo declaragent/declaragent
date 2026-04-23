@@ -50,6 +50,7 @@ import {
   createEventStore,
   createSqliteSessionStore,
   findFleetRoot,
+  isRpcAuthDefaultFlagOn,
   loadAgent,
   loadFleet,
   loadPeersConfig,
@@ -75,6 +76,7 @@ import { createLLMHandlerFactory } from './fleet-run-llm-handler.js';
 import { auditDbPath, sessionsDbPath } from './paths.js';
 import { createProviderFromCreds } from './provider-factory.js';
 import { getPreset } from './providers-registry.js';
+import { evaluateZeroTrustPreview, formatZeroTrustBootReject } from './zero-trust-preview.js';
 
 export interface FleetRunIO {
   out: (s: string) => void;
@@ -1004,13 +1006,61 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
   // `fleet run` and `up` are independent entry points that never
   // co-exist in a single process. A future refactor can unify both
   // under a shared platform struct — tracked in §"open decisions".
+  // ── 0.8.0 zero-trust preview gate (POST_ENTERPRISE_BACKLOG.md #5b) ──
+  // When `DECLARAGENT_RPC_AUTH_DEFAULT=on` is set, simulate the 0.8.0
+  // default flip: any agent with `rpc-peers.yaml` and no explicit
+  // `rpc.auth.enabled` value fails boot with AUTH_REJECTED. Agents
+  // with an explicit `true` or `false` value are honoured. Evaluated
+  // BEFORE any sink / socket / broker is opened so a failure aborts
+  // cleanly with no orphan resources.
+  if (isRpcAuthDefaultFlagOn()) {
+    const preview = await evaluateZeroTrustPreview({
+      fleet: filteredFleet,
+      forceFlagOn: true,
+      loader: async (agent) => {
+        const a = await loadAgentMemoized(agent);
+        return { posture: a.rpcAuthPosture };
+      },
+    });
+    if (preview.failingAgents.length > 0) {
+      io.err(`${formatZeroTrustBootReject(preview.failingAgents)}\n`);
+      throw new Error(
+        `AUTH_REJECTED: ${preview.failingAgents.length} agent(s) fail the 0.8.0 zero-trust preview gate. See stderr for remediation and docs/ZERO_TRUST_DEFAULT_MIGRATION.md.`,
+      );
+    }
+    for (const a of preview.agents) {
+      if (a.reason === 'flag-default') {
+        io.out(
+          `  ${a.agentId}: DECLARAGENT_RPC_AUTH_DEFAULT=on → promoting absent rpc.auth.enabled to true (0.8.0 preview).\n`,
+        );
+      }
+      if (a.reason === 'explicit-optout') {
+        io.err(
+          `⚠ ${a.agentId}: rpc.auth.enabled=false explicitly set. Accepts unauthenticated envelopes — see docs/ZERO_TRUST_DEFAULT_MIGRATION.md §4 Path B.\n`,
+        );
+      }
+    }
+  }
+
   let anyAgentHasRpcAuth = false;
   for (const agent of filteredFleet.agents) {
     try {
       const a = await loadAgentMemoized(agent);
+      // Under the 0.7.6 preview flag, an `absent` posture with peers
+      // declared was either rejected above OR promoted to `enabled`
+      // here. Re-resolve to match the runtime behaviour the rest of
+      // this function expects.
       if (a.rpcAuthEnabled) {
         anyAgentHasRpcAuth = true;
         break;
+      }
+      if (isRpcAuthDefaultFlagOn() && a.rpcAuthPosture === 'absent') {
+        // Fleet-root OR per-agent peers → the gate promoted this agent.
+        const perAgentPeers = existsSync(join(agent.path, 'rpc-peers.yaml'));
+        if (filteredFleet.peers !== undefined || perAgentPeers) {
+          anyAgentHasRpcAuth = true;
+          break;
+        }
       }
     } catch {
       // A broken agent.yaml still fails downstream during engine boot;

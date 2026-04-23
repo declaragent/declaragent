@@ -181,7 +181,7 @@ Usage:
   declaragent fleet list [--json]
   declaragent fleet validate [--json]
   declaragent fleet capabilities [--json]
-  declaragent fleet audit-rpc [--suggest-enable] [--strict] [--json]
+  declaragent fleet audit-rpc [--suggest-enable] [--strict] [--json] [--dry-run-with-flag]
   declaragent fleet ps [--host <name>] [--json]                                # cross-host status fan-out (#50)
   declaragent fleet events [--host <name>] [--kind <k>] [--since <ms>] [--state circuit-open] [--outcome <k>] [--correlation <id>] [--limit <n>] [--all] [--json]
   declaragent fleet dlq [--host <name>] [--reason <r>] [--min-attempts <n>] [--since <ms>] [--limit <n>] [--all] [--json]
@@ -1031,10 +1031,12 @@ async function runFleetSubcommand(
   if (action === 'audit-rpc') {
     const suggestEnable = flagSet(rest, '--suggest-enable');
     const strict = flagSet(rest, '--strict');
+    const dryRunWithFlag = flagSet(rest, '--dry-run-with-flag');
     return fleetAuditRpc({
       ...(suggestEnable && { suggestEnable: true }),
       ...(strict && { strict: true }),
       ...(json && { json: true }),
+      ...(dryRunWithFlag && { dryRunWithFlag: true }),
     });
   }
   // Cross-host fan-out verbs (CONTROL_PLANE_PLAN.md Slice 3, #50).
