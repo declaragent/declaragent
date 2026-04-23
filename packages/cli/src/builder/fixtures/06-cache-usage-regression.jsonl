@@ -1,0 +1,15 @@
+# Fixture 6 — Cache-usage cost-regression coverage (backlog #37).
+# Exercises: cache-read vs cache-creation + serverTimestamps in
+#            `FixtureEntry.usage`. No DeclaraProposeChange /
+#            DeclaraApplyChange — the fixture is purely for the
+#            `expectCacheHitRateAtLeast` helper in replay-harness.ts.
+#
+# Mimics a realistic post-warmup builder turn: 96k of the prompt
+# served from Anthropic's prompt cache (`cacheReadInputTokens`), only
+# 4k sent fresh (`inputTokens`), ~92% cache-hit rate. A system-prompt
+# edit that breaks the cacheable preamble's prefix stability would
+# crater the ratio and trip the >=80% threshold.
+{ "role": "user", "text": "hi" }
+{ "role": "assistant", "stopReason": "end_turn", "model": "claude-opus-4-7", "usage": { "inputTokens": 4000, "outputTokens": 50, "cacheCreationInputTokens": 0, "cacheReadInputTokens": 96000, "serverTimestamps": { "firstToken": "2026-04-23T12:00:00.120Z", "lastToken": "2026-04-23T12:00:00.780Z" } }, "content": [ { "type": "text", "text": "Hello! What would you like to build?" } ] }
+{ "role": "user", "text": "make me a webhook agent" }
+{ "role": "assistant", "stopReason": "end_turn", "model": "claude-opus-4-7", "usage": { "inputTokens": 4200, "outputTokens": 80, "cacheCreationInputTokens": 0, "cacheReadInputTokens": 101000, "serverTimestamps": { "firstToken": "2026-04-23T12:00:10.110Z", "lastToken": "2026-04-23T12:00:10.900Z" } }, "content": [ { "type": "text", "text": "Sure — describe the events you want routed." } ] }

@@ -1,0 +1,9 @@
+# Fixture 7 — Synthetic tool_result replay (backlog #36).
+# Exercises: a fixture-authored `toolResults` payload that the replay
+#            harness must merge into the emitted LLMResponse content.
+# No apply — this fixture is purely scaffolding for the #36
+# forward-compat path, so the step kinds list stays empty. The
+# harness's `providerCallCount` + content-merge logic is the assertion
+# surface (see `recording-provider.test.ts`).
+{ "role": "user", "text": "echo hello" }
+{ "role": "assistant", "stopReason": "end_turn", "content": [ { "type": "text", "text": "echoing" } ], "toolResults": [ { "type": "tool_result", "toolUseId": "synthetic-42", "content": "hello" } ] }

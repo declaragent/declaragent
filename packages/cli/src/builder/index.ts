@@ -187,6 +187,8 @@ export {
 } from './recording-provider.js';
 export type {
   RecordedEntry,
+  RecordedUsage,
   RecordingProviderHandle,
   RecordingProviderOptions,
+  ToolResultBlock,
 } from './recording-provider.js';

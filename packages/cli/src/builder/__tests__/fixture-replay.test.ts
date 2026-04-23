@@ -28,7 +28,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fleetInit } from '../../fleet-init-cli.js';
-import { replayFixture } from './replay-harness.js';
+import {
+  computeCacheHitRate,
+  expectCacheHitRateAtLeast,
+  loadFixture,
+  replayFixture,
+} from './replay-harness.js';
 
 const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 
@@ -127,6 +132,54 @@ describe('builder fixture replay — regression for the system prompt', () => {
     expect(result.redactionFindings[0]?.label).toBe('GitHub PAT');
     expect(result.appliedStepKinds).toEqual(['addSecret']);
     expect(result.appliedResults[0]?.ok).toBe(true);
+  });
+
+  test('07 · replay merges recorded toolResults into response content (backlog #36)', async () => {
+    // Fixture 07 carries a `toolResults` array with one synthetic
+    // entry. The replay harness must merge it into the emitted
+    // `LLMResponse.content` so the engine's transcript state records
+    // the synthesised result. The fixture applies no proposal, so
+    // the step-kind list stays empty — the assertion surface here is
+    // that replay completes without throwing (i.e., the fixture was
+    // loadable + the merged response was accepted by the engine).
+    writeFileSync(join(tmp, 'agent.yaml'), AGENT_YAML);
+    const result = await replayFixture({
+      fixturePath: join(FIXTURES_DIR, '07-tool-result-replay.jsonl'),
+      scopeRoot: tmp,
+    });
+    expect(result.appliedStepKinds).toEqual([]);
+    expect(result.providerCallCount).toBe(1);
+    expect(result.turnCount).toBe(1);
+  });
+
+  test('06 · cache-hit rate holds at >=80% across the fixture (backlog #37)', () => {
+    // Cost-regression coverage: the cacheable system-prompt preamble
+    // should keep the cache-read share above the threshold. A drop
+    // below 80% indicates the prompt lost prefix stability between
+    // turns — usually a whitespace / reordering edit that rotated
+    // the cache key.
+    const path = join(FIXTURES_DIR, '06-cache-usage-regression.jsonl');
+    const rate = expectCacheHitRateAtLeast(path, 0.8);
+    // Fixture sums to (96k + 101k) cache-read over (4k + 4.2k + 96k
+    // + 101k) total input+cache — ~96%.
+    expect(rate).toBeGreaterThan(0.9);
+
+    // Also exercise the manual compute helper on the same data so a
+    // future refactor that moves the ratio math off the assertion
+    // doesn't silently stop covering both paths.
+    const entries = loadFixture(path);
+    const manual = computeCacheHitRate(entries);
+    expect(manual).not.toBeNull();
+    if (manual !== null) expect(manual).toBe(rate);
+  });
+
+  test('expectCacheHitRateAtLeast throws on a fixture missing usage data', () => {
+    // Fixtures 01–05 were authored before backlog #37 landed and
+    // carry no usage telemetry. The helper must fail loudly rather
+    // than silently pass — "no data" is a fixture bug, not a green
+    // run.
+    const path = join(FIXTURES_DIR, '01-single-agent-webhook-triager.jsonl');
+    expect(() => expectCacheHitRateAtLeast(path, 0.8)).toThrow(/no usage data/);
   });
 
   test('05 · scope-escape proposal rejected — no apply, clean recovery', async () => {

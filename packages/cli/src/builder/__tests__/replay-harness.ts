@@ -79,14 +79,51 @@ import { redactSecrets } from '../secret-guard.js';
 
 // ── Fixture JSONL shape ────────────────────────────────────────────────
 
+/**
+ * Narrow to the tool_result variant of the engine's content union.
+ * Re-exported here so fixture authors can type-annotate a
+ * `toolResults` payload without reaching into `recording-provider.ts`
+ * from their fixture author-tooling.
+ */
+export type ToolResultBlock = Extract<LLMContent, { type: 'tool_result' }>;
+
+/**
+ * Usage telemetry captured per assistant turn. Today's capture path
+ * surfaces cache-token fields + server-side timestamps so CI can
+ * assert cache-hit-rate + TTFT regressions against recorded fixtures
+ * (backlog items #36 + #37). All fields optional — pre-0.7.6
+ * fixtures without the new columns replay unchanged.
+ */
+export interface FixtureUsage {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
+  readonly cacheReadInputTokens?: number;
+  readonly serverTimestamps?: {
+    readonly firstToken: string;
+    readonly lastToken: string;
+  };
+}
+
 export type FixtureEntry =
   | { readonly role: 'user'; readonly text: string }
   | {
       readonly role: 'assistant';
       readonly content: readonly LLMContent[];
       readonly stopReason?: 'end_turn' | 'tool_use' | 'max_tokens' | 'error';
-      readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number };
+      readonly usage?: FixtureUsage;
       readonly model?: string;
+      /**
+       * Tool-result blocks emitted by the provider (backlog #36).
+       * Kept optional because today the non-streaming `complete()`
+       * path never surfaces them directly — tool results land in the
+       * *next* user-role message's `content` array. A future
+       * streaming provider that emits `tool_result` as first-class
+       * content blocks will populate this field; the replay harness
+       * threads them back into the engine at the corresponding
+       * stream position.
+       */
+      readonly toolResults?: readonly ToolResultBlock[];
     };
 
 /**
@@ -410,12 +447,39 @@ export async function replayFixture(options: ReplayFixtureOptions): Promise<Repl
       const stop =
         entry.stopReason ??
         (entry.content.some((c) => c.type === 'tool_use') ? 'tool_use' : 'end_turn');
+      // Thread recorded toolResults back into the assistant content
+      // stream at the tail (backlog #36). The engine's non-streaming
+      // `complete()` path happily accepts `tool_result` blocks in
+      // assistant content — they're pass-through for its purposes and
+      // will mirror into transcript state. De-dup: don't re-append a
+      // tool_result already present in `content` (covers fixtures
+      // authored with both fields populated).
+      const mergedContent: LLMContent[] = entry.content.slice();
+      if (entry.toolResults) {
+        const presentIds = new Set(
+          mergedContent
+            .filter((c): c is ToolResultBlock => c.type === 'tool_result')
+            .map((c) => c.toolUseId),
+        );
+        for (const tr of entry.toolResults) {
+          if (!presentIds.has(tr.toolUseId)) mergedContent.push(tr);
+        }
+      }
+      // Surface cache-token fields when they're present so a
+      // downstream test using {@link computeCacheHitRate} sees the
+      // ratio we recorded rather than a zero'd fallback. The
+      // `TokenUsage` shape only knows about `cacheReadTokens`, so we
+      // map `cacheReadInputTokens` onto it (the canonical on-disk
+      // field name) — cacheCreation is not tracked by the engine at
+      // replay time and is fixture-only.
+      const cacheRead = entry.usage?.cacheReadInputTokens;
       cur.assistantResponses.push({
-        content: entry.content.slice(),
+        content: mergedContent,
         stopReason: stop,
         usage: {
           inputTokens: entry.usage?.inputTokens ?? 0,
           outputTokens: entry.usage?.outputTokens ?? 0,
+          ...(typeof cacheRead === 'number' && { cacheReadTokens: cacheRead }),
         },
         model: entry.model ?? 'claude-opus-4-7',
       });
@@ -508,4 +572,74 @@ export async function replayFixture(options: ReplayFixtureOptions): Promise<Repl
     providerCallCount: provider.callCount,
     turnCount: turns.length,
   };
+}
+
+// ── Cost-regression helpers (backlog #37) ──────────────────────────────
+
+/**
+ * Sum cache-read vs billable-input tokens across a fixture file's
+ * assistant turns and return the ratio `cacheRead / (cacheRead +
+ * inputTokens)`. Returns `null` when the fixture carries no usage
+ * data at all — callers can then skip the assertion rather than
+ * fail on an empty baseline.
+ *
+ * The denominator uses `inputTokens + cacheReadInputTokens` because
+ * Anthropic's billable input tokens are the *uncached* portion; a
+ * turn with 90k cache-read + 10k input means 10% of input was
+ * freshly sent and 90% served from the prompt cache. A cache-hit
+ * ratio below 0.8 is a useful CI alert threshold for the builder's
+ * system prompt — the prompt is deliberately front-loaded with the
+ * cacheable preamble.
+ */
+export function computeCacheHitRate(entries: readonly FixtureEntry[]): number | null {
+  let totalInput = 0;
+  let totalCacheRead = 0;
+  let anyUsage = false;
+  for (const entry of entries) {
+    if (entry.role !== 'assistant') continue;
+    const usage = entry.usage;
+    if (!usage) continue;
+    if (typeof usage.inputTokens !== 'number' && typeof usage.cacheReadInputTokens !== 'number') {
+      continue;
+    }
+    anyUsage = true;
+    totalInput += usage.inputTokens ?? 0;
+    totalCacheRead += usage.cacheReadInputTokens ?? 0;
+  }
+  if (!anyUsage) return null;
+  const denom = totalInput + totalCacheRead;
+  if (denom === 0) return 0;
+  return totalCacheRead / denom;
+}
+
+/**
+ * Assertion helper — fails (throws) when the fixture's aggregate
+ * cache-read ratio drops below `threshold`. Returns the computed
+ * ratio on success so callers can additionally log / trend it.
+ *
+ * Use in the regression-test suite to catch silent prompt changes
+ * that break cache reuse. The default threshold (0.8) reflects the
+ * builder system-prompt design: the static preamble should always
+ * exceed the variable portion.
+ *
+ * A fixture without any usage data throws a distinct error rather
+ * than silently passing — "no data" is a fixture bug, not a
+ * successful assertion.
+ */
+export function expectCacheHitRateAtLeast(fixturePath: string, threshold: number): number {
+  const entries = loadFixture(fixturePath);
+  const rate = computeCacheHitRate(entries);
+  if (rate === null) {
+    throw new Error(
+      `expectCacheHitRateAtLeast: fixture ${fixturePath} has no usage data on any assistant turn — cost-regression assertion cannot run. Re-record with a provider that emits cache-token telemetry.`,
+    );
+  }
+  if (rate < threshold) {
+    const pct = (rate * 100).toFixed(1);
+    const thr = (threshold * 100).toFixed(1);
+    throw new Error(
+      `cache-hit-rate regression in ${fixturePath}: ${pct}% observed < ${thr}% threshold. Likely cause: system-prompt edit broke the cacheable preamble's prefix stability.`,
+    );
+  }
+  return rate;
 }
