@@ -209,4 +209,54 @@ Process: {{payload}}
     // request.
     expect(requests[0]?.model).toBe('claude-sonnet-4-5');
   });
+
+  test('loadAgentFn override is honoured (post-enterprise backlog #43)', async () => {
+    // When the caller threads a memoized `loadAgent` (which `fleetRun`
+    // does — it shares one cache between the probe + the handler
+    // factory), the factory MUST use it instead of hitting disk itself.
+    const provider = scriptedProvider([textResponse('ok')]);
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'declara-fleet-memo-')), 'sessions.db');
+    const store = createSqliteSessionStore({ path: dbPath });
+    let calls = 0;
+    const { loadAgent } = await import('@declaragent/core');
+    const factory = createLLMHandlerFactory({
+      provider,
+      sessionStore: store,
+      defaultModel: 'claude-sonnet-4-5',
+      loadAgentFn: async (agent) => {
+        calls += 1;
+        return loadAgent({ agentDir: agent.path });
+      },
+    });
+    const agentEntry: LoadedAgentEntry = {
+      id: 'pr-reviewer',
+      path: agentDir,
+    } as LoadedAgentEntry;
+    const handler = await factory(agentEntry, {
+      selfAddress: 'agent://pr-reviewer',
+      transports: new Map(),
+    });
+    expect(calls).toBe(1);
+    // Second factory invocation (the same `agent` path) still hits the
+    // injected function — memoization is the caller's concern, not the
+    // factory's. The test asserts the override is routed, not that the
+    // function caches.
+    await factory(agentEntry, {
+      selfAddress: 'agent://pr-reviewer',
+      transports: new Map(),
+    });
+    expect(calls).toBe(2);
+    // Sanity: the returned handler still works.
+    let captured: RpcRespondResult | null = null;
+    await handler({
+      agentId: 'pr-reviewer',
+      capability: 'review-pr',
+      envelope: buildEnvelope('review-pr', { prUrl: 'https://example.com/pr/99' }),
+      respond: async (r) => {
+        captured = r;
+      },
+    });
+    expect(captured).not.toBeNull();
+    store.close();
+  });
 });

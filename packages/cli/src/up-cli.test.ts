@@ -9,6 +9,8 @@ import type {
   startAgentSources,
 } from './run-agent-sources.js';
 import { up } from './up-cli.js';
+import { readUpState } from './up-lifecycle.js';
+import { CLI_VERSION } from './version.js';
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -133,6 +135,69 @@ describe('up verb — single agent', () => {
     expect(text).toContain('skill-only');
     expect(text).toContain('✓ up');
     expect(text).toContain('✓ down');
+  });
+
+  // Install a signal handler that inspects `readUpState` AFTER
+  // the daemon wrote it but BEFORE the shutdown path clears it.
+  // The harness fires `onShutdown` once we've captured the state.
+  function captureStateThenShutdown(captured: { value: ReturnType<typeof readUpState> | null }): (
+    onShutdown: () => Promise<void>,
+  ) => () => void {
+    return (onShutdown) => {
+      // The up code installs this AFTER writeUpState + the metrics
+      // listener — at this point the state file exists on disk.
+      captured.value = readUpState();
+      void onShutdown();
+      return () => {};
+    };
+  }
+
+  // #44 — cliVersion stamping on UpState at write time.
+  test('stamps CLI_VERSION onto UpState at boot (#44)', async () => {
+    const captured: { value: ReturnType<typeof readUpState> | null } = {
+      value: null,
+    };
+    const cap = captureIo();
+    const code = await up(
+      {},
+      {
+        io: cap.io,
+        cwd: dir,
+        startSources: stubSources().fn,
+        installSignals: captureStateThenShutdown(captured),
+      },
+    );
+    expect(code).toBe(0);
+    expect(captured.value).not.toBeNull();
+    expect(captured.value?.cliVersion).toBe(CLI_VERSION);
+  });
+
+  test('honours DECLARAGENT_CLI_VERSION override (#44)', async () => {
+    const originalOverride = process.env.DECLARAGENT_CLI_VERSION;
+    process.env.DECLARAGENT_CLI_VERSION = '9.9.9-test';
+    try {
+      const captured: { value: ReturnType<typeof readUpState> | null } = {
+        value: null,
+      };
+      const cap = captureIo();
+      await up(
+        {},
+        {
+          io: cap.io,
+          cwd: dir,
+          startSources: stubSources().fn,
+          installSignals: captureStateThenShutdown(captured),
+        },
+      );
+      expect(captured.value?.cliVersion).toBe('9.9.9-test');
+    } finally {
+      if (originalOverride === undefined) {
+        // biome-ignore lint/performance/noDelete: see the metrics tests — `delete` is the canonical way to remove a process.env entry.
+        delete process.env.DECLARAGENT_CLI_VERSION;
+      } else {
+        process.env.DECLARAGENT_CLI_VERSION = originalOverride;
+      }
+    }
   });
 
   test('starts event-sources when event-sources.yaml is present', async () => {

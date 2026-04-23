@@ -283,6 +283,43 @@ export interface UpAgentStatus {
   readonly channels: readonly UpChannelStatus[];
   /** Tiny rollup of the runtime counters most operators want at a glance. */
   readonly metrics: UpAgentMetricsRollup;
+  /**
+   * Per-agent PID fidelity.
+   *
+   * Today `declaragent up` hosts every agent in a single process, so
+   * every `agents[i].hostedBy.pid` equals the daemon's pid ({@link
+   * UpStatusSnapshot.pid}). This field makes that collapsing explicit:
+   * a future out-of-process-per-agent topology (or a sidecar runner)
+   * can populate a distinct pid per agent without a schema break, and
+   * operators can scan for `hostedBy.pid !== snapshot.pid` to find
+   * agents running outside the daemon process.
+   *
+   * `hostedBy.index` is a stable slot number within the daemon process
+   * (0..n-1 by agents iteration order) — useful when every agent
+   * shares a pid but logs need to correlate with a position.
+   *
+   * See: docs/POST_ENTERPRISE_BACKLOG.md #45.
+   *
+   * @since 0.7.2
+   */
+  readonly hostedBy?: UpAgentHost;
+}
+
+/**
+ * Describes the process hosting a given agent. See {@link UpAgentStatus.hostedBy}
+ * for why this is optional.
+ *
+ * @since 0.7.2
+ */
+export interface UpAgentHost {
+  /**
+   * PID of the hosting process. When multiple agents share one daemon
+   * this equals the daemon pid — the field's value is that the
+   * collapsing is documented instead of silently assumed.
+   */
+  readonly pid: number;
+  /** Stable slot index within the hosting process (0..n-1). */
+  readonly index: number;
 }
 
 export interface UpSourceStatus {

@@ -42,6 +42,7 @@ import type {
 import {
   FleetConfigError,
   FleetManifestError,
+  type LoadedAgent,
   RPC_ERROR_CODES,
   checkFleetVersionSkew,
   createCapabilityValidatorRegistry,
@@ -875,6 +876,8 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     agentsById: new Map(selected.map((a) => [a.id, a])),
   };
 
+  const loadAgentMemoized = createMemoizedLoadAgent();
+
   // Resolve the handler factory. Tests inject `deps.makeHandler` — in
   // production we stand up the LLM engine per agent. Missing auth is a
   // hard error: the daemon would otherwise crash mid-request.
@@ -896,6 +899,7 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
       provider,
       sessionStore,
       defaultModel,
+      loadAgentFn: loadAgentMemoized,
     });
   }
 
@@ -928,7 +932,7 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
   let anyAgentHasRpcAuth = false;
   for (const agent of filteredFleet.agents) {
     try {
-      const a = await loadAgent({ agentDir: agent.path });
+      const a = await loadAgentMemoized(agent);
       if (a.rpcAuthEnabled) {
         anyAgentHasRpcAuth = true;
         break;
@@ -936,6 +940,8 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     } catch {
       // A broken agent.yaml still fails downstream during engine boot;
       // we don't want the auth-detection probe to crash fleet-run.
+      // The failed promise stays in the cache so a later call surfaces
+      // the same error rather than re-reading a known-bad disk path.
     }
   }
 
@@ -1159,6 +1165,36 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
   await daemon.waitForShutdown();
   await shutdownDaemon();
   return 0;
+}
+
+/**
+ * Build a memoized `loadAgent` closure keyed by `agent.path`. Used by
+ * {@link fleetRun} to avoid reading `agent.yaml` + walking `skills/`
+ * twice per agent — once in the `rpcAuthEnabled` probe, once in the
+ * LLM handler factory. Failures land in the cache as a rejected
+ * Promise so the probe's `try/catch` behaves identically to pre-
+ * memoization, while a later call doesn't re-read a known-bad path.
+ *
+ * Exported for unit-testing the cache contract directly; production
+ * callers should just pass the result into
+ * {@link createLLMHandlerFactory}'s `loadAgentFn` option.
+ *
+ * See: docs/POST_ENTERPRISE_BACKLOG.md #43.
+ *
+ * @since 0.7.2
+ */
+export function createMemoizedLoadAgent(
+  loader: (agent: LoadedAgentEntry) => Promise<LoadedAgent> = (a) =>
+    loadAgent({ agentDir: a.path }),
+): (agent: LoadedAgentEntry) => Promise<LoadedAgent> {
+  const cache = new Map<string, Promise<LoadedAgent>>();
+  return (agent) => {
+    const cached = cache.get(agent.path);
+    if (cached !== undefined) return cached;
+    const fresh = loader(agent);
+    cache.set(agent.path, fresh);
+    return fresh;
+  };
 }
 
 /**

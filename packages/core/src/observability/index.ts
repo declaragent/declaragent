@@ -22,6 +22,7 @@ export type {
   ControlPlaneServerInstance,
   ControlPlaneServerListenOptions,
   ControlPlaneServerOptions,
+  UpAgentHost,
   UpAgentMetricsRollup,
   UpAgentStatus,
   UpChannelStatus,

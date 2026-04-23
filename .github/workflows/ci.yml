@@ -38,6 +38,31 @@ jobs:
       - name: Test
         run: bun test
 
+      # Drift guards — pre-push hook (.githooks/pre-push) is the primary
+      # defence for these, but it's opt-in per clone (`bun run
+      # hooks:install`). The CI check below is the safety net: it fails
+      # the build when a push landed without running the extractor or
+      # the formatter. See:
+      #   - docs/POST_ENTERPRISE_BACKLOG.md #48, #49
+      #   - .githooks/pre-push
+      - name: Drift guard — docs-cli-extract (#48)
+        run: |
+          bun run scripts/docs-cli-extract.ts
+          if ! git diff --quiet -- docs-site/docs/reference/cli.mdx; then
+            echo "::error::docs-site/docs/reference/cli.mdx is out of date with packages/cli/src/index.tsx. Run \`bun run scripts/docs-cli-extract.ts\` locally (or \`bun run hooks:install\` once)."
+            git --no-pager diff -- docs-site/docs/reference/cli.mdx | head -80
+            exit 1
+          fi
+
+      - name: Drift guard — sidebars.ts biome format (#49)
+        run: |
+          bun run biome format --write docs-site/sidebars.ts
+          if ! git diff --quiet -- docs-site/sidebars.ts; then
+            echo "::error::docs-site/sidebars.ts is not biome-formatted. Run \`bun run biome format --write docs-site/sidebars.ts\` locally (or \`bun run hooks:install\` once)."
+            git --no-pager diff -- docs-site/sidebars.ts | head -40
+            exit 1
+          fi
+
       - name: Verify publishability (@declaragent/core)
         working-directory: packages/core
         run: npm publish --dry-run

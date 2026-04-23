@@ -116,6 +116,7 @@ import {
   waitForUpState,
   writeUpState,
 } from './up-lifecycle.js';
+import { CLI_VERSION } from './version.js';
 
 export interface UpIO {
   out: (s: string) => void;
@@ -483,9 +484,17 @@ async function runForeground(
   }
 
   // Persist the snapshot for `ps` / `logs` + future `down`.
+  //
+  // #44 — pre-0.7.2 `buildUpStatusSnapshot` read `cliVersion` from
+  // `DECLARAGENT_CLI_VERSION` per scrape. Stamp it into state once at
+  // boot so scrapes reflect the daemon's actual CLI version (env vars
+  // on the scrape process — a future in-process HTTP client — are
+  // irrelevant). The env var is still honoured for test overrides.
+  const cliVersion = process.env.DECLARAGENT_CLI_VERSION ?? CLI_VERSION;
   const state: UpState = {
     version: 1,
     pid: process.pid,
+    cliVersion,
     startedAt: new Date().toISOString(),
     manifestPath,
     agents: running.map((r) => r.summary),
@@ -1494,15 +1503,17 @@ function resolveMetricsPort(isDetached: boolean): number {
  * tolerate empty channels + zeroed metrics as "not yet instrumented"
  * rather than "none".
  *
- * The `cliVersion` is sourced from `DECLARAGENT_CLI_VERSION` when set
- * (the release script injects it), else `'dev'`. Pulled fresh on every
- * request so a rolling upgrade reflects the new version without a
- * restart — cheap because the env is read once per `/status` scrape.
+ * The `cliVersion` is stamped onto {@link UpState} at boot (see #44 in
+ * `docs/POST_ENTERPRISE_BACKLOG.md`) and read from there on every
+ * scrape so a rolling upgrade's new version is visible without a
+ * restart of the scrape client. The `DECLARAGENT_CLI_VERSION` env is
+ * still honoured as a last-resort override for back-compat with state
+ * files written by pre-0.7.2 daemons.
  *
  * @since 0.7.0-slice.1
  */
 function buildUpStatusSnapshot(state: UpState, running: RunningAgent[]): UpStatusSnapshot {
-  const cliVersion = process.env.DECLARAGENT_CLI_VERSION ?? 'dev';
+  const cliVersion = state.cliVersion ?? process.env.DECLARAGENT_CLI_VERSION ?? 'dev';
   const startedAtMs = Date.parse(state.startedAt);
   const nowMs = Date.now();
   const uptimeMs = Number.isFinite(startedAtMs) ? Math.max(0, nowMs - startedAtMs) : 0;
@@ -1512,7 +1523,7 @@ function buildUpStatusSnapshot(state: UpState, running: RunningAgent[]): UpStatu
     pid: state.pid,
     startedAt: state.startedAt,
     manifestPath: state.manifestPath,
-    agents: running.map((r) => ({
+    agents: running.map((r, index) => ({
       id: r.summary.id,
       path: r.summary.path,
       uptimeMs,
@@ -1527,6 +1538,13 @@ function buildUpStatusSnapshot(state: UpState, running: RunningAgent[]): UpStatu
         eventsRejected: 0,
         breakerOpen: 0,
       },
+      // #45 per-agent pid fidelity. Today `up` hosts every agent in one
+      // process so `pid` equals `state.pid`; a stable `index` is still
+      // useful for correlating with logs. Writing the field explicitly
+      // (instead of leaving every agent's top-level pid as the daemon
+      // pid) documents the collapsing so operators don't assume per-
+      // agent process isolation.
+      hostedBy: { pid: state.pid, index },
     })),
   };
 }

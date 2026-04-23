@@ -34,6 +34,7 @@
 import {
   type AgentSpec,
   type LLMProvider,
+  type LoadedAgent,
   type LoadedAgentEntry,
   type Message,
   RPC_ERROR_CODES,
@@ -66,6 +67,16 @@ export interface CreateLLMHandlerFactoryOptions {
    * `--model` flag).
    */
   defaultModel: string;
+  /**
+   * Optional memoized `loadAgent` — when supplied, the handler factory
+   * reuses the caller's cache instead of re-reading `agent.yaml` + the
+   * `skills/` directory. `fleetRun` pre-populates this during the probe
+   * loop so the handler factory path never hits disk a second time
+   * (post-enterprise backlog #43).
+   *
+   * @since 0.7.2
+   */
+  loadAgentFn?: (agent: LoadedAgentEntry) => Promise<LoadedAgent>;
 }
 
 /**
@@ -79,8 +90,10 @@ export interface CreateLLMHandlerFactoryOptions {
 export function createLLMHandlerFactory(
   options: CreateLLMHandlerFactoryOptions,
 ): (agent: LoadedAgentEntry, rpcContext: FleetAgentRpcContext) => Promise<FleetAgentHandler> {
+  const loadAgentFn =
+    options.loadAgentFn ?? ((a: LoadedAgentEntry) => loadAgent({ agentDir: a.path }));
   return async (agent, rpcContext) => {
-    const loaded = await loadAgent({ agentDir: agent.path });
+    const loaded = await loadAgentFn(agent);
     const spec: AgentSpec = {
       ...loaded.spec,
       model: loaded.spec.model || options.defaultModel,
