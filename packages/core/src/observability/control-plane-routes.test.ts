@@ -6,9 +6,12 @@ import { createEventStore } from '../events/store.js';
 import type { AgentEvent, DispatchOutcome } from '../events/types.js';
 import {
   type AuditResponse,
+  type DlqMutationResponse,
   type DlqResponse,
   type EventsResponse,
   auditRoute,
+  dlqDropRoute,
+  dlqRequeueRoute,
   dlqRoute,
   eventsRoute,
 } from './control-plane-routes.js';
@@ -295,6 +298,214 @@ describe('dlqRoute', () => {
       new Request('http://127.0.0.1/dlq?minAttempts=0', { headers: LOCAL_HEADERS }),
     );
     expect(res.status).toBe(400);
+    await handle.close();
+  });
+});
+
+// ── /dlq/drop + /dlq/requeue tests ─────────────────────────────────────────
+
+describe('dlqDropRoute', () => {
+  it('removes a DLQ row and returns 200 ok', async () => {
+    const store = createEventStore({ db: memDb() });
+    await store.upsertRejection('evt-1', 'circuit-open', undefined, 1_000);
+
+    const { server, handle } = await startFake([dlqDropRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq/drop?kind=dispatch&id=evt-1', {
+        method: 'POST',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DlqMutationResponse;
+    expect(body.ok).toBe(true);
+    expect(body.op).toBe('drop');
+    expect(body.eventId).toBe('evt-1');
+    expect(body.attemptsBeforeOp).toBe(1);
+
+    // Row actually gone:
+    const gone = await store.getRejection('evt-1');
+    expect(gone).toBeFalsy();
+    await handle.close();
+  });
+
+  it('returns 404 with not-found when the id is absent', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([dlqDropRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq/drop?kind=dispatch&id=nope', {
+        method: 'POST',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as DlqMutationResponse;
+    expect(body.ok).toBe(false);
+    expect(body.reason).toBe('not-found');
+    await handle.close();
+  });
+
+  it('fires onAudit with initiator, op, ok, and attempts', async () => {
+    const store = createEventStore({ db: memDb() });
+    await store.upsertRejection('evt-a', 'circuit-open', undefined, 1_000);
+    const captured: Array<Record<string, unknown>> = [];
+    const route = dlqDropRoute(store, {
+      onAudit: (r) => {
+        captured.push(r);
+      },
+    });
+    const { server, handle } = await startFake([route]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq/drop?kind=dispatch&id=evt-a', {
+        method: 'POST',
+        headers: { ...LOCAL_HEADERS, 'x-declaragent-initiator': 'alice' },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    const rec = captured[0];
+    expect(rec).toBeDefined();
+    expect(rec?.op).toBe('drop');
+    expect(rec?.ok).toBe(true);
+    expect(rec?.initiator).toBe('alice');
+    expect(rec?.attemptsBeforeOp).toBe(1);
+    expect(rec?.dlqKind).toBe('dispatch');
+    await handle.close();
+  });
+
+  it('rejects GET with 405', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([dlqDropRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq/drop?kind=dispatch&id=x', {
+        method: 'GET',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(405);
+    await handle.close();
+  });
+
+  it('returns 400 when id is missing', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([dlqDropRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq/drop?kind=dispatch', {
+        method: 'POST',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+
+  it('returns 400 on unsupported kind', async () => {
+    const store = createEventStore({ db: memDb() });
+    const { server, handle } = await startFake([dlqDropRoute(store)]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq/drop?kind=mcp&id=x', {
+        method: 'POST',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(400);
+    await handle.close();
+  });
+});
+
+describe('dlqRequeueRoute', () => {
+  it('republishes the event and deletes the rejection row', async () => {
+    const store = createEventStore({ db: memDb() });
+    const event = makeEvent({ id: 'evt-r', timestamp: 1_000 });
+    await store.record(event);
+    await store.upsertRejection('evt-r', 'circuit-open', undefined, 1_500);
+    const published: AgentEvent[] = [];
+    const bus = {
+      publish: async (e: AgentEvent) => {
+        published.push(e);
+      },
+      subscribe: () => () => {},
+      recent: () => [],
+      drained: async () => {},
+      registerPressureListener: () => () => {},
+      inflightCount: () => 0,
+    };
+    const { server, handle } = await startFake([dlqRequeueRoute({ store, bus })]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq/requeue?kind=dispatch&id=evt-r', {
+        method: 'POST',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DlqMutationResponse;
+    expect(body.ok).toBe(true);
+    expect(body.op).toBe('requeue');
+    expect(body.attemptsBeforeOp).toBe(1);
+    expect(published).toHaveLength(1);
+    expect(published[0]?.id).toBe('evt-r');
+    const gone = await store.getRejection('evt-r');
+    expect(gone).toBeFalsy();
+    await handle.close();
+  });
+
+  it('returns 404 with dlq-miss on absent id', async () => {
+    const store = createEventStore({ db: memDb() });
+    const bus = {
+      publish: async (_e: AgentEvent) => {},
+      subscribe: () => () => {},
+      recent: () => [],
+      drained: async () => {},
+      registerPressureListener: () => () => {},
+      inflightCount: () => 0,
+    };
+    const { server, handle } = await startFake([dlqRequeueRoute({ store, bus })]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/dlq/requeue?kind=dispatch&id=nope', {
+        method: 'POST',
+        headers: LOCAL_HEADERS,
+      }),
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as DlqMutationResponse;
+    expect(body.ok).toBe(false);
+    expect(body.reason).toBe('dlq-miss');
+    await handle.close();
+  });
+
+  it('fires onAudit with requeue op tag', async () => {
+    const store = createEventStore({ db: memDb() });
+    const event = makeEvent({ id: 'evt-q', timestamp: 1_000 });
+    await store.record(event);
+    await store.upsertRejection('evt-q', 'circuit-open', undefined, 1_500);
+    const bus = {
+      publish: async (_e: AgentEvent) => {},
+      subscribe: () => () => {},
+      recent: () => [],
+      drained: async () => {},
+      registerPressureListener: () => () => {},
+      inflightCount: () => 0,
+    };
+    const captured: Array<Record<string, unknown>> = [];
+    const route = dlqRequeueRoute(
+      { store, bus },
+      {
+        onAudit: (r) => {
+          captured.push(r);
+        },
+      },
+    );
+    const { server, handle } = await startFake([route]);
+    await server.fetch(
+      new Request('http://127.0.0.1/dlq/requeue?kind=dispatch&id=evt-q', {
+        method: 'POST',
+        headers: { ...LOCAL_HEADERS, 'x-declaragent-initiator': 'bob' },
+      }),
+    );
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.op).toBe('requeue');
+    expect(captured[0]?.ok).toBe(true);
+    expect(captured[0]?.initiator).toBe('bob');
     await handle.close();
   });
 });

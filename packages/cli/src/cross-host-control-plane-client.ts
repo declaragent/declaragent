@@ -43,7 +43,13 @@
  */
 
 import { readFileSync } from 'node:fs';
-import type { DlqResponse, EventsResponse, FleetHost, UpStatusSnapshot } from '@declaragent/core';
+import type {
+  DlqMutationResponse,
+  DlqResponse,
+  EventsResponse,
+  FleetHost,
+  UpStatusSnapshot,
+} from '@declaragent/core';
 
 /** Discriminated-union result for a single-host call. */
 export type HostResult<T> = { readonly ok: T } | { readonly err: HostError };
@@ -170,6 +176,51 @@ async function callJson<T>(
   }
 }
 
+/**
+ * POST variant used by the DLQ mutation endpoints (`/dlq/drop` and
+ * `/dlq/requeue`). Accepts both 200 (success) and 404 (idempotence
+ * branches: `not-found` / `dlq-miss`) — the route reports the typed
+ * failure mode in the JSON body rather than purely via HTTP status,
+ * so both paths deserialize into the same {@link DlqMutationResponse}.
+ * Everything else (>= 500, auth, timeouts) throws like `callJson`.
+ *
+ * `initiator` is threaded into the `x-declaragent-initiator` header
+ * so the host-side audit record captures which local CLI user asked
+ * for the mutation instead of collapsing everything to `api`.
+ */
+async function callMutation(
+  host: FleetHost,
+  path: string,
+  search: URLSearchParams,
+  options: CrossHostClientOptions,
+  initiator: string | undefined,
+): Promise<DlqMutationResponse> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const env = options.env ?? (process.env as Record<string, string | undefined>);
+  const timeout = host.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const { url, headers, signal, cancel } = buildHostRequest(host, path, search, timeout, env);
+  headers.accept = 'application/json';
+  if (initiator !== undefined && initiator !== '') {
+    headers['x-declaragent-initiator'] = initiator;
+  }
+  try {
+    const res = await fetchImpl(url, { method: 'POST', headers, signal });
+    // 200 → success body. 404 → typed miss body ({ok:false,reason:'not-found'|'dlq-miss'|'event-miss'}).
+    // Both bodies share the DlqMutationResponse shape; every other
+    // status is a hard failure for the caller.
+    if (res.status !== 200 && res.status !== 404) {
+      const text = await res.text().catch(() => '');
+      const snippet = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+      const err = new Error(`${res.status} ${res.statusText}${snippet ? `: ${snippet}` : ''}`);
+      (err as Error & { status?: number }).status = res.status;
+      throw err;
+    }
+    return (await res.json()) as DlqMutationResponse;
+  } finally {
+    cancel();
+  }
+}
+
 function toHostError(host: FleetHost, err: unknown): HostError {
   const message = err instanceof Error ? err.message : String(err);
   const status = (err as { status?: number } | null)?.status;
@@ -180,6 +231,35 @@ export interface CrossHostControlPlaneClient {
   getStatus(host: FleetHost): Promise<UpStatusSnapshot>;
   getEvents(host: FleetHost, opts?: GetEventsOpts): Promise<EventsResponse>;
   getDlq(host: FleetHost, opts?: GetDlqOpts): Promise<DlqResponse>;
+  /**
+   * `POST /dlq/drop?kind=<kind>&id=<id>` — remove a DLQ row without
+   * re-publishing. Idempotent: subsequent calls for the same id return
+   * `{ok: false, reason: 'not-found'}` but do NOT throw.
+   *
+   * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #50 Slice 6b
+   */
+  dropDlqEntry(host: FleetHost, args: DlqMutationArgs): Promise<DlqMutationResponse>;
+  /**
+   * `POST /dlq/requeue?kind=<kind>&id=<id>` — re-inject a DLQ row onto
+   * the live bus. A second call for the same id after success returns
+   * `{ok: false, reason: 'dlq-miss'}`.
+   *
+   * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #50 Slice 6b
+   */
+  requeueDlqEntry(host: FleetHost, args: DlqMutationArgs): Promise<DlqMutationResponse>;
+}
+
+export interface DlqMutationArgs {
+  /** DLQ sub-system. Today only `dispatch`. */
+  readonly kind: 'dispatch';
+  /** Event id to mutate. */
+  readonly id: string;
+  /**
+   * Local CLI user asking for the mutation. Sent as
+   * `x-declaragent-initiator` so the host-side audit row captures the
+   * requester. Omit to let the route record `api`.
+   */
+  readonly initiator?: string;
 }
 
 export interface GetEventsOpts {
@@ -231,6 +311,13 @@ function buildDlqSearch(opts: GetDlqOpts | undefined): URLSearchParams {
   return sp;
 }
 
+function buildMutationSearch(args: DlqMutationArgs): URLSearchParams {
+  const sp = new URLSearchParams();
+  sp.set('kind', args.kind);
+  sp.set('id', args.id);
+  return sp;
+}
+
 export function createCrossHostControlPlaneClient(
   options: CrossHostClientOptions = {},
 ): CrossHostControlPlaneClient {
@@ -243,6 +330,12 @@ export function createCrossHostControlPlaneClient(
     },
     getDlq(host, opts) {
       return callJson<DlqResponse>(host, '/dlq', buildDlqSearch(opts), options);
+    },
+    dropDlqEntry(host, args) {
+      return callMutation(host, '/dlq/drop', buildMutationSearch(args), options, args.initiator);
+    },
+    requeueDlqEntry(host, args) {
+      return callMutation(host, '/dlq/requeue', buildMutationSearch(args), options, args.initiator);
     },
   };
 }

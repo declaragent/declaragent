@@ -41,6 +41,7 @@ import {
   type ControlSocketContext,
   type ControlSocketServer,
   DEFAULT_TENANT_CONTEXT,
+  type DlqMutationAuditHook,
   type EventBus,
   type EventDispatcher,
   type EventStore,
@@ -69,6 +70,8 @@ import {
   createSqliteSessionStore,
   createToolRateLimitGate,
   defaultRateForProvider,
+  dlqDropRoute,
+  dlqRequeueRoute,
   dlqRoute,
   eventsRoute,
   isRpcAuthDefaultFlagOn,
@@ -591,6 +594,46 @@ async function runForeground(
           fanOut: allEventStoresProvider,
         }),
       );
+
+      // `/dlq/drop` + `/dlq/requeue` — mutation routes (Slice 6b of
+      // POST_ENTERPRISE_BACKLOG.md #50). Both route-level handlers pull
+      // from the same EventStore as the read-side `/dlq` and (for
+      // requeue) the matching agent's live bus. When a shared audit
+      // sink is up, we record a `dlq_operation` entry per mutation so
+      // operator-initiated DLQ churn leaves a hash-chained receipt.
+      const sinkForAudit = sharedAuditSink;
+      const onMutationAudit: DlqMutationAuditHook | undefined =
+        sinkForAudit !== null
+          ? async (record) => {
+              await sinkForAudit.record({
+                ts: Date.now(),
+                ...record,
+                kind: 'dlq_operation',
+              });
+            }
+          : undefined;
+      routes.push(
+        dlqDropRoute(eventStoreForRoutes, {
+          ...(onMutationAudit !== undefined && { onAudit: onMutationAudit }),
+        }),
+      );
+      // Requeue needs the bus for the first agent that owns a store —
+      // same "pick the first runner" policy as the read routes. A
+      // future per-agent route split can grow on top without touching
+      // the single-host default.
+      const busOwner = running.find(
+        (r) => r.sources.bus !== undefined && r.sources.eventStore !== undefined,
+      );
+      if (busOwner?.sources.bus) {
+        routes.push(
+          dlqRequeueRoute(
+            { store: eventStoreForRoutes, bus: busOwner.sources.bus },
+            {
+              ...(onMutationAudit !== undefined && { onAudit: onMutationAudit }),
+            },
+          ),
+        );
+      }
     }
     // `/audit` reuses the shared sink opened at boot (see §3 Item #7
     // follow-up — single handle per up-process, not one per consumer).

@@ -164,6 +164,54 @@ export interface CapabilitySchemaViolationAuditRecord {
 }
 
 /**
+ * Dispatch-DLQ mutation — one record per operator-initiated `drop` or
+ * `requeue` executed against `rejected_events`. Emitted by the
+ * control-plane `/dlq/drop` + `/dlq/requeue` HTTP routes (Slice 6b of
+ * POST_ENTERPRISE_BACKLOG.md #50) and by the same CLI flow running
+ * cross-host against a `fleet.yaml#hosts[]` entry.
+ *
+ * Why its own kind: mutations to the DLQ are the ONLY destructive
+ * operator-initiated action the control plane exposes today. Bucketing
+ * them under `tool_call` or `auth_check` would force reviewers to
+ * reconstruct intent from free-form message bodies; a dedicated kind
+ * gives SIEM rules a single grep target.
+ *
+ * `initiator` is the local CLI user (e.g. `getpwuid(geteuid()).pw_name`)
+ * when the op originated from `fleet dlq drop/requeue`; for programmatic
+ * hits (curl / direct HTTP) it's `api` — the route only records what
+ * the client identified itself as, it never spoofs.
+ *
+ * `host` is the FleetHost name the mutation landed on when issued from
+ * the cross-host CLI path; omitted on single-host runs (no fleet.yaml
+ * host binding).
+ *
+ * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #50 Slice 6b
+ */
+export interface DlqOperationAuditRecord {
+  kind: 'dlq_operation';
+  ts: number;
+  tenantId: string;
+  /** Which mutation fired. */
+  op: 'drop' | 'requeue';
+  /** DLQ sub-system. Only `dispatch` is honored today. */
+  dlqKind: 'dispatch';
+  /** Event id mutated. */
+  eventId: string;
+  /** Whether the underlying helper reported success. */
+  ok: boolean;
+  /** Attempt count before mutation (missing when the row was absent). */
+  attemptsBeforeOp?: number;
+  /** Cross-host FleetHost name when invoked via `fleet dlq ...`; else absent. */
+  host?: string;
+  /** Agent id hosting the DLQ (matches `?all=1` fan-out semantics); absent for single-agent default. */
+  agentId?: string;
+  /** Local CLI user ("ssvk", "root", ...) or "api" for raw HTTP hits. */
+  initiator: string;
+  /** Free-form failure reason when `ok=false` (e.g. `dlq-miss`, `event-miss`). */
+  reason?: string;
+}
+
+/**
  * Erasure tombstone — surfaced by queries in place of records that
  * `TenantAuditSink.erase()` has scrubbed. Keeps the hash-chain verifier
  * able to confirm continuity even after right-to-erasure requests.
@@ -200,6 +248,7 @@ export type TenantAuditRecord =
   | AuthCheckAuditRecord
   | (RateLimitedAuditRecord & { tenantId: string })
   | CapabilitySchemaViolationAuditRecord
+  | DlqOperationAuditRecord
   | ErasedAuditRecord;
 
 /** @since 1.0.0 */

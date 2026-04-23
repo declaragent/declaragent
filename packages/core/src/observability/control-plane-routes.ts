@@ -27,13 +27,14 @@
  * @since 0.7.0-slice.1
  */
 
-import type { TenantAuditQuery, TenantAuditSink } from '../audit/types.js';
+import type { DlqOperationAuditRecord, TenantAuditQuery, TenantAuditSink } from '../audit/types.js';
+import { type RequeueResult, requeue as requeueDispatchDlq } from '../events/dlq.js';
 import type {
   EventRejectionListFilter,
   EventStore,
   EventStoreListFilter,
 } from '../events/store.js';
-import type { DispatchOutcome, EventKind } from '../events/types.js';
+import type { DispatchOutcome, EventBus, EventKind } from '../events/types.js';
 import type { ControlPlaneRoute } from './control-plane-server.js';
 
 // ── Shared cursor + query helpers ──────────────────────────────────────────
@@ -651,6 +652,292 @@ export function dlqRoute(
       return jsonResponse(200, body, req.method);
     },
   };
+}
+
+// ── /dlq/drop + /dlq/requeue — mutation routes ─────────────────────────────
+//
+// Slice 6b of POST_ENTERPRISE_BACKLOG.md #50. The read side of `/dlq` ships
+// in Slice 3 (see {@link dlqRoute}). This pair adds the destructive half
+// so `declaragent fleet dlq drop/requeue` can act across hosts over HTTP
+// instead of requiring a per-host control-socket hop.
+//
+// Design choices:
+//   - Two dedicated exact-match paths (`/dlq/drop`, `/dlq/requeue`) rather
+//     than a single `/dlq/:id` — matches the server's exact-path router
+//     contract without introducing a per-route parser.
+//   - POST method. DELETE would have been RESTfully nicer for drop, but
+//     intermediaries (some reverse proxies, corporate CDNs) strip or
+//     filter DELETE bodies; POST + JSON response is the lowest-friction
+//     verb every operator's network accepts.
+//   - Parameters land on the query string (`?kind=dispatch&id=<id>`) so
+//     the route never has to parse a body — a malformed client can't
+//     hang the handler.
+//   - Return shape is `{ ok, op, eventId, attemptsBeforeOp? , reason? }`.
+//     Clients render the successful path the same way they do for the
+//     control-socket `dlq.requeue` op today, and the cross-host CLI
+//     layer tags the response with a `host:` before printing.
+//   - The host name is NOT baked into the route response — the route
+//     doesn't know which FleetHost name the operator referred to it by
+//     (one listener can be pointed at by multiple host entries). The
+//     CLI that invoked the call tags the response on receive. This
+//     matches how the read-side `/status` etc. already behave.
+
+/**
+ * JSON body served by `/dlq/drop` and `/dlq/requeue`. Shared between both
+ * routes so cross-host callers can render either without special-casing.
+ *
+ * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #50 Slice 6b
+ */
+export interface DlqMutationResponse {
+  readonly ok: boolean;
+  readonly op: 'drop' | 'requeue';
+  readonly eventId: string;
+  /**
+   * Attempt count recorded on the DLQ row just before the mutation
+   * landed. Absent when no row existed (drop of an already-absent id,
+   * or requeue that hit `dlq-miss`). Useful for operator telemetry.
+   */
+  readonly attemptsBeforeOp?: number;
+  /**
+   * Typed failure reason when `ok === false`. Mirrors
+   * {@link RequeueRejectionReason} plus `not-found` for the drop path.
+   */
+  readonly reason?: 'dlq-miss' | 'event-miss' | 'not-found';
+  /** Free-form message for the operator. Never machine-parsed. */
+  readonly message?: string;
+}
+
+/**
+ * Hook the route fires exactly once per mutation attempt, success or
+ * failure. The up-cli wires this to the shared `TenantAuditSink` so
+ * every drop/requeue shows up in the hash-chained audit stream with
+ * the invoking user + host context preserved.
+ *
+ * The hook runs AFTER the helper completes but BEFORE the HTTP response
+ * is returned, so audit recording is part of the critical path — a
+ * failed audit write surfaces as a 500 to the caller instead of a
+ * silent gap in the audit trail.
+ */
+export type DlqMutationAuditHook = (
+  record: Omit<DlqOperationAuditRecord, 'kind' | 'ts'> & { kind?: 'dlq_operation'; ts?: number },
+) => Promise<void> | void;
+
+export interface DlqDropRouteOptions {
+  path?: string;
+  /**
+   * Called after the mutation completes (success OR failure). Omit to
+   * skip auditing — the route still records the op in the SQLite ledger
+   * (via `deleteRejection`), but no `dlq_operation` audit row is written.
+   */
+  onAudit?: DlqMutationAuditHook;
+  /**
+   * Override the tenant label on emitted audit records. Defaults to
+   * `'system'` — matches how other admin-originated records (e.g. auth
+   * checks) tag themselves when no channel context is available.
+   */
+  auditTenantId?: string;
+}
+
+/**
+ * `POST /dlq/drop?kind=dispatch&id=<eventId>` — remove a dispatch-DLQ
+ * row without re-publishing. The underlying `EventStore.deleteRejection`
+ * is idempotent: a second call for the same id returns `ok: false` with
+ * `reason: 'not-found'` (HTTP 404) so automation can distinguish a
+ * fresh drop from a silent no-op.
+ *
+ * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #50 Slice 6b
+ */
+export function dlqDropRoute(
+  store: Pick<EventStore, 'getRejection' | 'deleteRejection'>,
+  opts: DlqDropRouteOptions = {},
+): ControlPlaneRoute {
+  const path = opts.path ?? '/dlq/drop';
+  const auditTenantId = opts.auditTenantId ?? 'system';
+  return {
+    path,
+    async fetch(req) {
+      if (req.method !== 'POST') {
+        return new Response('method not allowed', {
+          status: 405,
+          headers: { Allow: 'POST' },
+        });
+      }
+      const url = new URL(req.url);
+      const q = url.searchParams;
+
+      const kindRaw = q.get('kind');
+      if (kindRaw !== null && kindRaw !== 'dispatch') {
+        return jsonError(400, `unsupported kind "${kindRaw}"; supported: dispatch`);
+      }
+      const id = q.get('id');
+      if (!id) {
+        return jsonError(400, 'missing required query param "id"');
+      }
+      const initiator = resolveInitiator(req);
+
+      // Peek the row first so the audit record can carry attempts-before-op
+      // even when the delete succeeds. Two round-trips beats losing the
+      // telemetry — the table is tiny in practice.
+      let attemptsBeforeOp: number | undefined;
+      try {
+        const row = await store.getRejection(id);
+        if (row) attemptsBeforeOp = row.attemptCount;
+      } catch (err) {
+        return jsonError(500, `event-store getRejection failed: ${errMsg(err)}`);
+      }
+
+      let removed: boolean;
+      try {
+        removed = await store.deleteRejection(id);
+      } catch (err) {
+        return jsonError(500, `event-store deleteRejection failed: ${errMsg(err)}`);
+      }
+
+      const body: DlqMutationResponse = removed
+        ? {
+            ok: true,
+            op: 'drop',
+            eventId: id,
+            ...(attemptsBeforeOp !== undefined && { attemptsBeforeOp }),
+            message: `dropped dispatch DLQ entry for "${id}"`,
+          }
+        : {
+            ok: false,
+            op: 'drop',
+            eventId: id,
+            reason: 'not-found',
+            message: `no dispatch DLQ entry for "${id}"`,
+          };
+
+      if (opts.onAudit) {
+        try {
+          await opts.onAudit({
+            tenantId: auditTenantId,
+            op: 'drop',
+            dlqKind: 'dispatch',
+            eventId: id,
+            ok: removed,
+            ...(attemptsBeforeOp !== undefined && { attemptsBeforeOp }),
+            initiator,
+            ...(!removed && { reason: 'dlq-miss' as const }),
+          });
+        } catch (err) {
+          return jsonError(500, `audit-sink record failed: ${errMsg(err)}`);
+        }
+      }
+
+      return jsonResponse(removed ? 200 : 404, body, req.method);
+    },
+  };
+}
+
+export interface DlqRequeueRouteOptions {
+  path?: string;
+  onAudit?: DlqMutationAuditHook;
+  auditTenantId?: string;
+}
+
+/**
+ * `POST /dlq/requeue?kind=dispatch&id=<eventId>` — re-inject a rejected
+ * event onto the live bus via {@link requeueDispatchDlq}. Mirrors the
+ * semantics of the per-agent `dlq.requeue` control-socket op, just over
+ * HTTP so cross-host callers don't need per-agent socket addressing.
+ *
+ * HTTP status mapping:
+ *   - 200 on success.
+ *   - 404 when the id isn't in the DLQ (`dlq-miss`) or the row is in the
+ *     DLQ but the event body has been vacuumed (`event-miss`).
+ *   - 500 on unexpected store / bus failures.
+ *
+ * @since 0.7.6 — POST_ENTERPRISE_BACKLOG.md #50 Slice 6b
+ */
+export function dlqRequeueRoute(
+  deps: { store: EventStore; bus: EventBus },
+  opts: DlqRequeueRouteOptions = {},
+): ControlPlaneRoute {
+  const path = opts.path ?? '/dlq/requeue';
+  const auditTenantId = opts.auditTenantId ?? 'system';
+  return {
+    path,
+    async fetch(req) {
+      if (req.method !== 'POST') {
+        return new Response('method not allowed', {
+          status: 405,
+          headers: { Allow: 'POST' },
+        });
+      }
+      const url = new URL(req.url);
+      const q = url.searchParams;
+
+      const kindRaw = q.get('kind');
+      if (kindRaw !== null && kindRaw !== 'dispatch') {
+        return jsonError(400, `unsupported kind "${kindRaw}"; supported: dispatch`);
+      }
+      const id = q.get('id');
+      if (!id) {
+        return jsonError(400, 'missing required query param "id"');
+      }
+      const initiator = resolveInitiator(req);
+
+      let result: RequeueResult;
+      try {
+        result = await requeueDispatchDlq({
+          store: deps.store,
+          bus: deps.bus,
+          eventId: id,
+        });
+      } catch (err) {
+        return jsonError(500, `requeue failed: ${errMsg(err)}`);
+      }
+
+      const body: DlqMutationResponse = result.ok
+        ? {
+            ok: true,
+            op: 'requeue',
+            eventId: result.eventId,
+            attemptsBeforeOp: result.attemptsBeforeRequeue,
+            message: `requeued dispatch DLQ entry for "${result.eventId}" (attempts before requeue: ${result.attemptsBeforeRequeue})`,
+          }
+        : {
+            ok: false,
+            op: 'requeue',
+            eventId: result.eventId,
+            reason: result.reason,
+            message: result.message,
+          };
+
+      if (opts.onAudit) {
+        try {
+          await opts.onAudit({
+            tenantId: auditTenantId,
+            op: 'requeue',
+            dlqKind: 'dispatch',
+            eventId: id,
+            ok: result.ok,
+            ...(result.ok && { attemptsBeforeOp: result.attemptsBeforeRequeue }),
+            ...(!result.ok && { reason: result.reason }),
+            initiator,
+          });
+        } catch (err) {
+          return jsonError(500, `audit-sink record failed: ${errMsg(err)}`);
+        }
+      }
+
+      return jsonResponse(result.ok ? 200 : 404, body, req.method);
+    },
+  };
+}
+
+/**
+ * Best-effort initiator extraction. The CLI path passes
+ * `x-declaragent-initiator: <username>`; direct HTTP hits (curl, test
+ * harnesses) land as `'api'` so the audit trail never records a forged
+ * `"root"` just because nothing was supplied.
+ */
+function resolveInitiator(req: Request): string {
+  const raw = req.headers.get('x-declaragent-initiator');
+  if (raw && raw.length > 0 && raw.length <= 128) return raw;
+  return 'api';
 }
 
 // ── /audit ─────────────────────────────────────────────────────────────────
