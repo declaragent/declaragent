@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/testkit",
-  "version": "4.0.4",
+  "version": "4.0.5",
   "description": "Load testing + acceptance harness for Declaragent event sources (Phase 4 slice 16).",
   "license": "Apache-2.0",
   "type": "module",
@@ -33,7 +33,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@declaragent/core": "^0.5.4",
+    "@declaragent/core": "^0.5.5",
     "@declaragent/plugin-agent-rpc": "^4.0.3",
     "@declaragent/source-kafka": "^4.0.0"
   },

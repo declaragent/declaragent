@@ -14,7 +14,7 @@
     },
     "examples/phase5-demo": {
       "name": "@declaragent-examples/phase5-demo",
-      "version": "0.0.11",
+      "version": "0.0.12",
       "dependencies": {
         "@declaragent/core": "workspace:*",
         "@declaragent/testkit": "workspace:*",
@@ -62,13 +62,13 @@
     },
     "packages/cli": {
       "name": "@declaragent/cli",
-      "version": "0.7.5",
+      "version": "0.7.6",
       "bin": {
         "declaragent": "./bin/declaragent.js",
         "d9t": "./bin/declaragent.js",
       },
       "dependencies": {
-        "@declaragent/core": "^0.5.4",
+        "@declaragent/core": "^0.5.5",
         "@declaragent/plugin-agent-rpc": "^4.0.3",
         "ink": "^5.0.1",
         "ink-text-input": "^6.0.0",
@@ -86,7 +86,7 @@
     },
     "packages/core": {
       "name": "@declaragent/core",
-      "version": "0.5.4",
+      "version": "0.5.5",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.89.0",
         "chokidar": "^5.0.0",
@@ -160,7 +160,7 @@
     },
     "packages/testkit": {
       "name": "@declaragent/testkit",
-      "version": "4.0.4",
+      "version": "4.0.5",
       "dependencies": {
         "@declaragent/core": "workspace:*",
         "@declaragent/plugin-agent-rpc": "workspace:*",
@@ -172,7 +172,7 @@
         "@declaragent/cli": "workspace:*",
       },
       "peerDependencies": {
-        "@declaragent/core": "^0.5.4",
+        "@declaragent/core": "^0.5.5",
         "@declaragent/plugin-agent-rpc": "^4.0.3",
         "@declaragent/source-kafka": "^4.0.0",
       },

@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/cli",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "Interactive REPL for Declaragent.",
   "license": "Apache-2.0",
   "type": "module",
@@ -29,7 +29,7 @@
     "postinstall": "node ./bin/postinstall.js"
   },
   "dependencies": {
-    "@declaragent/core": "^0.5.4",
+    "@declaragent/core": "^0.5.5",
     "@declaragent/plugin-agent-rpc": "^4.0.3",
     "ink": "^5.0.1",
     "ink-text-input": "^6.0.0",

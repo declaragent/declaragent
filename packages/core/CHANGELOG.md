@@ -1,5 +1,52 @@
 # @declaragent/core
 
+## 0.5.5
+
+### Patch Changes
+
+- 5fca34b: feat(rpc): 0.8.0 zero-trust preview mode — `DECLARAGENT_RPC_AUTH_DEFAULT=on` env var + `fleet audit-rpc --dry-run-with-flag` (#5b prep)
+
+  Operators can now rehearse the 0.8.0 RPC auth default flip against their fleets 2–4 weeks before the behavioural change ships. Nothing changes by default at 0.7.6.
+
+  - `@declaragent/core` exposes `isRpcAuthDefaultFlagOn()`, `resolveEffectiveRpcAuth()`, and a new `LoadedAgent.rpcAuthPosture: 'enabled' | 'disabled' | 'absent'` tri-state so call sites can distinguish explicit-opt-out from no-block.
+  - `@declaragent/cli` pre-boot gate in `up` + `fleet run`: when `DECLARAGENT_RPC_AUTH_DEFAULT=on`, agents with peers declared but no explicit `rpc.auth.enabled` value abort boot with `AUTH_REJECTED`. Agents with `rpc.auth.enabled: false` are honoured (Path B) with a boot-time warning.
+  - New `declaragent fleet audit-rpc --dry-run-with-flag` flag — non-mutating simulation of the 0.8.0 flip. Reports per-agent `would-fail`, `intentional-optout`, or `exempt (memory-only)` verdicts. Pairs with `--strict` for CI use.
+  - See `docs/ZERO_TRUST_DEFAULT_MIGRATION.md` §3a for the recommended rollout. The default flip still ships at 0.8.0.
+
+- e17abfc: feat(control-plane): Slice 6b — `fleet dlq drop/requeue` cross-host mutations (#50 follow-up)
+
+  Slice 3 shipped snapshot fan-out across `fleet.yaml#hosts[]` at 0.7.4. Slice 6a
+  added live `fleet logs -f` multiplex at 0.7.5. This closes the remaining half
+  with destructive mutations over the same control-plane transport.
+
+  **Core:**
+
+  - New `dlqDropRoute(store, { onAudit? })` bound at `POST /dlq/drop?kind=dispatch&id=<id>`.
+  - New `dlqRequeueRoute({ store, bus }, { onAudit? })` bound at `POST /dlq/requeue?kind=dispatch&id=<id>`.
+    Mirrors the semantics of the per-agent `dlq.requeue` control-socket op over HTTP.
+  - New `DlqOperationAuditRecord` audit kind. Wired into the shared `TenantAuditSink` via `onAudit`
+    so every operator-initiated drop/requeue leaves a hash-chained receipt with `op`, `host` (added
+    by the cross-host CLI before rendering), `initiator` (from `x-declaragent-initiator`), and
+    `attemptsBeforeOp`.
+  - 200 on success, 404 with typed `reason` (`not-found` / `dlq-miss` / `event-miss`) for
+    idempotent no-ops, 400 on missing / invalid params.
+
+  **CLI:**
+
+  - `CrossHostControlPlaneClient` extended with `dropDlqEntry(host, args)` + `requeueDlqEntry(host, args)`.
+    Both treat 404 as a typed-miss body (no throw) so callers can distinguish fresh mutations from
+    silent retries.
+  - `declaragent fleet dlq drop --id <id> [--kind dispatch] [--host <name> | --all-hosts --yes] [--json]`
+    and `declaragent fleet dlq requeue ...` verbs. Default is single-host; fleets with >1 host
+    refuse to fan out without explicit `--host <name>` OR `--all-hosts` (which requires a
+    confirmation prompt, bypassable with `--yes`). Exit codes: 0 success / 1 partial failure /
+    2 ambiguous target / 3 user cancelled.
+  - One-host fleets skip the ambiguity check and drop/requeue directly.
+
+  No breaking changes. `declaragent up` binds the new routes automatically when an event store
+  is available; operators using a reverse-proxy need to allow `POST /dlq/drop` and `POST /dlq/requeue`
+  (same loopback-by-default / auth-by-config posture as every other control-plane endpoint).
+
 ## 0.5.4
 
 ### Patch Changes
