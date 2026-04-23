@@ -9,8 +9,8 @@ This doc is the honest 0.7.x+ backlog. Every entry was flagged by a shipped PR's
 ## 0 · Summary banner
 
 ```
-Status:               19 open follow-ups from the enterprise push (33 shipped across 0.7.1 + 0.7.2 + 0.7.3 + 0.7.4 + 0.7.5)
-Shipping-gate count:  4 (must land before 0.7.0 cut)
+Status:               18 open follow-ups from the enterprise push (34 shipped across 0.7.1 + 0.7.2 + 0.7.3 + 0.7.4 + 0.7.5)
+Shipping-gate count:  3 (must land before 0.7.0 cut; #4 closed in Sprint 5 docs pass)
 Security count:       6 (address within 0.7.x)
 Robustness count:     7 (enterprise-nice-to-have)
 Topology count:       5 (correctness under specific deploys)
@@ -36,9 +36,9 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 1 | [ ] Flip Pillar 3 enterprise badge in `CLAUDE.md` + `FIRST_PRINCIPLES_VALIDATION.md` after first green `weekly-soak.yml` | Ship-gate | 5 min | Pending weekly run | PR #10 acceptance #4 |
 | 2 | [ ] Cut `@declaragent/cli@0.7.0` release with full enterprise stack + peer-dep cascade | Ship-gate | 1 d | Not started | — |
 | 3 | [ ] Flip website `/principles` 🟡 → ✅; replace "10–14 engineer-weeks" with "shipped" | Ship-gate | 30 min | Not started | — |
-| 4 | [ ] Regenerate `docs/FIRST_PRINCIPLES_AUDIT.md` + `FIRST_PRINCIPLES_VALIDATION.md` capability matrix | Ship-gate | 2 h | Not started | — |
+| 4 | [x] Regenerate `docs/FIRST_PRINCIPLES_AUDIT.md` + `FIRST_PRINCIPLES_VALIDATION.md` capability matrix | Ship-gate | 2 h | Shipped (0.7.5 docs-only) — branch `agent-a/docs-sprint-5-items-4-5b` | `FIRST_PRINCIPLES_AUDIT.md` rewritten — Pillar 1/2/3 flipped to ✅, Pillar 4 held at 🟡 citing #27, Cross-pillar gap list rewritten from the stale 8-item post-0.6 framing to the 21-item post-enterprise-backlog framing. `FIRST_PRINCIPLES_VALIDATION.md` pillar table updated + Pillar 1–4 "Shipped at enterprise scale" sections refreshed with 0.7.1 → 0.7.4 evidence (#6, #7, #11, #12, #14, #16, #18, #22, #23, #24a/b/c, #25, #26, #40, #50, #52). `CLAUDE.md` §"First-principles scoreboard" + §"Current status" banner rewritten against `@declaragent/cli@0.7.4`. |
 | 5a | [x] `declaragent fleet audit-rpc [--suggest-enable] [--strict] [--json]` pre-flight inspector | Security | 3 d | Shipped (0.7.3) — branch `agent-a/security-sprint-3-item-5` | `packages/cli/src/fleet-audit-rpc-cli.ts` walks `fleet.yaml` + each `agent.yaml` + `rpc-peers.yaml`; classifies each agent as `enabled`/`disabled`/`absent`/`unreadable`; `--suggest-enable` emits copy-pasteable YAML diffs pre-filled with the matching peer provider; `--strict` exits non-zero for CI use; 11 unit tests in `fleet-audit-rpc-cli.test.ts` cover all three deliverable fixtures (fully-enabled, partial, not-enabled) plus JSON + strict + unreadable |
-| 5b | [ ] `rpc.auth.enabled: true` default flip | Security | 2 d | Deferred to 0.8.0 — behavioural default change needs SemVer signal + at least one `--suggest-enable` release cycle in CI before landing | PR #25 open Q1 |
+| 5b | [ ] `rpc.auth.enabled: true` default flip | Security | 2 d | Deferred to 0.8.0 — migration plan drafted 0.7.5 docs-only sprint (branch `agent-a/docs-sprint-5-items-4-5b`); ships when 0.8.0 is cut | [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./ZERO_TRUST_DEFAULT_MIGRATION.md) — 9-section migration plan: affected surface, inspector walkthrough, three migration paths (enable-now / opt-out / per-agent split), recommended 2–3 week `--strict`-in-CI rollout, breaking-change scope (`AUTH_REJECTED` with scope-mismatch detail preserved), FAQ covering minor-vs-major, memory transport exemption, mock-mode exemption, IdP outage semantics, staged multi-host rollout. PR #25 open Q1 points here. |
 | 6 | [x] Per-route scope overrides on `/audit` + `/events` + `/logs` + `/status` + `/metrics` | Security | 3 d | Shipped — branch `agent-a/security-sprint-2-items-6-7` | `controlPlane.auth.routeScopes: Record<path, string[]>` in `packages/core/src/agents/load-agent.ts`; enforced by `applyControlPlaneAuth` in `packages/core/src/observability/control-plane-auth.ts` with new `ControlPlaneAuthContext.routePath`; one test per route in `control-plane-auth.test.ts` |
 | 7 | [x] `allowLoopback` + reverse-proxy semantics (X-Forwarded-For / proxy-IP-as-loopback) | Security | 2 d | Shipped — branch `agent-a/security-sprint-2-items-6-7` | `allowLoopback: boolean \| { trustedProxies: string[] }` in `load-agent.ts`; `resolveEffectivePeer()` in `control-plane-auth.ts` rejects XFF from untrusted peers with new `untrusted-proxy` reason; `control-plane-server.ts` threads `peerIp` via `Bun.serve`'s `server.requestIP(req)` |
 | 8 | [x] Add `AUTH_REJECTED` to `RPC_ERROR_CODES` constant (today string literal) | Security | 30 min | Shipped — branch `agent-a/security-sprint-1-items-8-9` | `packages/core/src/rpc/errors.ts` + `errors.test.ts`; `fleet-run.ts` literals swapped for `RPC_ERROR_CODES.AUTH_REJECTED` (wire value preserved) |
@@ -94,10 +94,10 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 ## 2 · Group-level notes
 
 ### Ship-gate (§1 rows 1–4)
-All four close out the 0.6.0 → 0.7.0 cut. #1 is timing-gated (Sunday cron). The other three are small operator actions, not engineering work.
+Three of four remain. #4 closed in the 0.7.5 docs-only sprint (branch `agent-a/docs-sprint-5-items-4-5b`). #1 is timing-gated (Sunday cron). #2 and #3 are small operator actions, not engineering work.
 
 ### Security (§1 rows 5–10)
-Row #5 split in sprint 3: **#5a** (the `fleet audit-rpc --suggest-enable` inspector) shipped at 0.7.3, **#5b** (the default flip) is deferred to 0.8.0 so the SemVer signal + one release cycle of `--suggest-enable` in CI reach operators first. Remaining priority order: #5b, #6, #7 — those three close the "opt-in trust-the-network" → "zero-trust enterprise deploy" gap. #10 (schema version policy) needs a product call before eng.
+Row #5 split in sprint 3: **#5a** (the `fleet audit-rpc --suggest-enable` inspector) shipped at 0.7.3, **#5b** (the default flip) is deferred to 0.8.0 with a full migration plan at [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./ZERO_TRUST_DEFAULT_MIGRATION.md) (drafted Sprint 5). #6 + #7 shipped in Sprint 2. Remaining priority: #5b (ships at 0.8.0) and #10 (schema version policy — needs a product call before eng).
 
 ### Topology (§1 rows 18–22)
 Mostly same shape: "today works for N=1 or bind=127.0.0.1; enterprise needs N=many or remote bind." These land together when the first customer asks.
