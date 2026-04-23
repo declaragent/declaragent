@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
   openAgentLog,
   readUpState,
   reapStaleState,
+  rotatedAgentLogPath,
   upLogPath,
   upPidPath,
   upStatePath,
@@ -235,5 +236,128 @@ describe('openAgentLog', () => {
     logger.write({ kind: 'late' });
     // Tiny tail tick so `end()` propagates before afterEach.
     await new Promise((r) => setTimeout(r, 10));
+  });
+});
+
+describe('openAgentLog rotate() — POST_ENTERPRISE_BACKLOG.md #22', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'declara-up-logs-rotate-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function listLogFiles(agentId: string): string[] {
+    const logsDir = join(dir, 'logs');
+    if (!existsSync(logsDir)) return [];
+    return readdirSync(logsDir)
+      .filter((name) => name.startsWith(agentId))
+      .sort();
+  }
+
+  test('rotatedAgentLogPath encodes ISO timestamp with `:` → `-`', () => {
+    const path = rotatedAgentLogPath('a', new Date('2026-04-23T10:20:30.000Z'), dir);
+    expect(path).toContain('a-2026-04-23T10-20-30.000Z.log');
+    // Must live under the logs dir.
+    expect(path.startsWith(join(dir, 'logs'))).toBe(true);
+  });
+
+  test('rotate() produces an archive + fresh active file', async () => {
+    const agent = 'rotater';
+    const logger = openAgentLog(agent, dir);
+    logger.write({ kind: 'pre', n: 1 });
+    logger.write({ kind: 'pre', n: 2 });
+    // Settle the stream before rename (bun's createWriteStream opens async).
+    const active = upLogPath(agent, dir);
+    const deadline = Date.now() + 1000;
+    while (!existsSync(active) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const result = await logger.rotate();
+    expect(result.activePath).toBe(active);
+    expect(result.archivedPath).not.toBe(active);
+    expect(result.archivedPath).toContain(agent);
+    expect(result.archivedPath).toMatch(/\.log$/);
+    // Both files exist.
+    expect(existsSync(result.archivedPath)).toBe(true);
+    expect(existsSync(result.activePath)).toBe(true);
+    // Archive holds the pre-rotation lines.
+    const archiveContent = readFileSync(result.archivedPath, 'utf8').trim().split('\n');
+    expect(archiveContent.length).toBe(2);
+    // Fresh file starts empty (or only has post-rotate content).
+    logger.write({ kind: 'post', n: 3 });
+    logger.close();
+    await new Promise((r) => setTimeout(r, 30));
+    const active2 = readFileSync(active, 'utf8')
+      .trim()
+      .split('\n')
+      .filter((l) => l.length > 0);
+    expect(active2.length).toBe(1);
+    const parsed = JSON.parse(active2[0] ?? '{}') as { kind?: string; n?: number };
+    expect(parsed.kind).toBe('post');
+    expect(parsed.n).toBe(3);
+    // Listing shows two files.
+    const names = listLogFiles(agent);
+    expect(names.length).toBe(2);
+  });
+
+  test('tail across rotation: reading the active file post-rotate sees post-rotate writes', async () => {
+    const agent = 'tailer';
+    const logger = openAgentLog(agent, dir);
+    logger.write({ kind: 'pre' });
+    const active = upLogPath(agent, dir);
+    const deadline = Date.now() + 1000;
+    while (!existsSync(active) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await logger.rotate();
+    logger.write({ kind: 'post' });
+    logger.close();
+    await new Promise((r) => setTimeout(r, 30));
+    const raw = readFileSync(active, 'utf8').trim();
+    expect(raw).toContain('"post"');
+    expect(raw).not.toContain('"pre"');
+  });
+
+  test('writes issued during rotation are buffered + flushed, not dropped', async () => {
+    const agent = 'buffered';
+    const logger = openAgentLog(agent, dir);
+    logger.write({ kind: 'pre' });
+    const active = upLogPath(agent, dir);
+    const deadline = Date.now() + 1000;
+    while (!existsSync(active) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // Kick off rotation; before awaiting, issue writes from the same
+    // microtask turn so they land while `rotating === true`.
+    const rotatePromise = logger.rotate();
+    logger.write({ kind: 'mid', n: 1 });
+    logger.write({ kind: 'mid', n: 2 });
+    const result = await rotatePromise;
+    logger.close();
+    await new Promise((r) => setTimeout(r, 30));
+    const activeContent = readFileSync(result.activePath, 'utf8').trim().split('\n');
+    // Both mid-rotation writes are present on the new file.
+    expect(activeContent.length).toBe(2);
+    const kinds = activeContent.map((l) => (JSON.parse(l) as { kind?: string }).kind);
+    expect(kinds).toEqual(['mid', 'mid']);
+    // Pre-rotation write lives on the archive.
+    const archiveContent = readFileSync(result.archivedPath, 'utf8').trim().split('\n');
+    expect(archiveContent.length).toBe(1);
+    expect((JSON.parse(archiveContent[0] ?? '{}') as { kind?: string }).kind).toBe('pre');
+  });
+
+  test('rotate() throws when the logger is already closed', async () => {
+    const logger = openAgentLog('closed', dir);
+    const active = upLogPath('closed', dir);
+    const deadline = Date.now() + 1000;
+    while (!existsSync(active) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    logger.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await expect(logger.rotate()).rejects.toThrow(/already closed/);
   });
 });

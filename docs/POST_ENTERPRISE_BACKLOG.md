@@ -9,7 +9,7 @@ This doc is the honest 0.7.x+ backlog. Every entry was flagged by a shipped PR's
 ## 0 · Summary banner
 
 ```
-Status:               48 open follow-ups from the enterprise push (#6, #7, #41, #42 shipped)
+Status:               31 open follow-ups from the enterprise push (21 shipped across 0.7.1 + 0.7.2)
 Shipping-gate count:  4 (must land before 0.7.0 cut)
 Security count:       6 (address within 0.7.x)
 Robustness count:     7 (enterprise-nice-to-have)
@@ -48,14 +48,14 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 13 | [ ] MCP graceful draining of in-flight tool calls across respawn | Robustness | 1 wk | Not started | PR #21 scope-out |
 | 14 | [x] MCP dedicated `mcp_server_circuit_open_total` counter for alertmanager simplicity | Robustness | 1 d | Shipped (0.7.1) | `agent-c/robustness-sprint-1-warmups` — `packages/core/src/mcp/supervisor.ts` |
 | 15 | [ ] `/audit` tail-segment-only hash-chain verification when soak-size evidence justifies it | Robustness | 3 d | Deferred (need soak numbers) | PR #15 open Q1 |
-| 16 | [ ] Wire `TenantAuditSink` into `up-cli`'s engine path (round-5 shipped fleet-run side only) | Robustness | 1 d | Not started | PR #18 follow-up |
+| 16 | [x] Wire `TenantAuditSink` into `up-cli`'s engine path (round-5 shipped fleet-run side only) | Robustness | 1 d | Shipped (0.7.2) | `agent-c/robustness-sprint-2-items-16-22-52` — `packages/cli/src/up-cli.ts` threads `DEFAULT_TENANT_CONTEXT` into `createEngine` so single-process deployments key `rate_limited` audit records on the same `tenantId` fleet-run uses |
 | 17 | [ ] `fleet.yaml`-level `controlPlane:` block (today: process-wide listener reads per-agent; picks first + warns) | Robustness | 3 d | Not started | PR #27 open Q3 |
 | 18 | [ ] Fleet-side per-agent auth registry (today collapses if an agent needs a different peer set than fleet root) | Topology | 1 wk | Not started | PR #28 open Q1 |
 | 19 | [ ] `/events` + `/dlq` multi-agent fan-out via `?all=1` once Slice 2 auth lands | Topology | 2 d | Not started | PR #15 open Q1 |
 | 20 | [ ] `/logs` multi-agent fan-out guard via `?all=1` (today opens N watchers at N=50 agents) | Topology | 2 d | Not started | PR #19 open Q1 |
 | 21 | [ ] Narrow `idleTimeout: 0` to `/logs` only once Slice 2 adds remote bind | Topology | 1 d | Not started | PR #19 open Q4 |
-| 22 | [ ] In-process log-rotation signal for `openAgentLog` (external rotation already handled via inode) | Topology | 2 d | Not started | PR #19 open Q2 |
-| 23 | [x] `createJetStreamTransport` for at-least-once RPC with replay | Transport | 1 wk | Shipped — branch `agent-b/transport-sprint-2-item-23` | `packages/plugin-agent-rpc/src/jetstream-transport.ts` + 16-case unit suite + `packages/testkit/src/fleet-integration/jetstream-rpc.test.ts` (FLEET_INTEGRATION=1 + NATS_INTEGRATION=1) |
+| 22 | [x] In-process log-rotation signal for `openAgentLog` (external rotation already handled via inode) | Topology | 2 d | Shipped (0.7.2) | `agent-c/robustness-sprint-2-items-16-22-52` — `openAgentLog().rotate()` closes the active stream, renames to `<agentId>-<ISO>.log`, opens a fresh append-mode stream; concurrent writes buffered + drained, no drops; 5 new tests in `up-lifecycle.test.ts` |
+| 23 | [x] `createJetStreamTransport` for at-least-once RPC with replay | Transport | 1 wk | Shipped (0.7.2) | `agent-b/transport-sprint-2-item-23` — `packages/plugin-agent-rpc/src/jetstream-transport.ts` + 16-case unit suite + `packages/testkit/src/fleet-integration/jetstream-rpc.test.ts` (FLEET_INTEGRATION=1 + NATS_INTEGRATION=1) |
 | 24 | [ ] SQS / AMQP / MQTT RPC transport factories (same pattern as Kafka + NATS) | Transport | 2 wk | Not started | PR #13 scope-out |
 | 25 | [x] NATS per-topic queue-group semantics (today one at construction-time) | Transport | 2 d | Shipped (0.7.1) | agent-b/transport-sprint-1-items-25-26 — `createNatsTransport` accepts `queueGroups: string \| Record<topic, group>`; legacy `queueGroup` stays as fallback |
 | 26 | [x] Kafka soak harness: literal `declaragent fleet run` subprocess spawn (today worker replicates broker loop) | Transport | 2 d | Shipped (0.7.1) | agent-b/transport-sprint-1-items-25-26 — subprocess now boots via `loadFleet` + real `fleet.yaml`/`capabilities.yaml` scaffolded per run; gap documented on the `startFleetDaemon` memory-hardwired respond path |
@@ -84,7 +84,7 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 49 | [x] Pre-push hook for Biome formatting on `docs-site/sidebars.ts` (recurring drift) | CI | 30 min | Shipped — branch `agent-d/platform-sprint-2-items-43-44-45-48-49` | Extended the same `.githooks/pre-push` + mirrored as CI drift-guard step. Hook runs `biome format --write docs-site/sidebars.ts` and aborts the push on drift |
 | 50 | [ ] Slice 3 of `CONTROL_PLANE_PLAN.md` — CLI fan-out across hosts (`declaragent fleet ps` calls each host's `/status`) | Platform | 2 wk | Not started | PR #19 follow-up |
 | 51 | [ ] Ready-made Grafana dashboard aggregating `mcp_server_restarts_total`, `mcp_server_circuit_state`, `audit_export_queue_depth`, `rate_limit_waits_total` | Platform | 3 d | Not started | 0.7.x polish |
-| 52 | [ ] Dedupe SIEM loop + `/audit` route to one shared `createSqliteAuditSink` handle | Platform | 1 d | Not started | PR #22 open Q3 |
+| 52 | [x] Dedupe SIEM loop + `/audit` route to one shared `createSqliteAuditSink` handle | Platform | 1 d | Shipped (0.7.2) | `agent-c/robustness-sprint-2-items-16-22-52` — new `packages/cli/src/audit-sink-singleton.ts` memoises sink handles by absolute path; `up-cli` routes all callers (rate-limit gate, `/audit` route, SIEM export loop) through the singleton; 6 new tests cover concurrent opens, release idempotency, post-release reopen |
 
 **Status vocabulary:** *Not started · In-progress · Deferred (reason) · Blocked (cite blocker) · Shipped (link PR + version)*
 

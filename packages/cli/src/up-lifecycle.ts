@@ -26,6 +26,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -163,11 +164,51 @@ export function reapStaleState(dir = configDir()): UpState | null {
 
 // ── Per-agent log stream ────────────────────────────────────────────────
 
+export interface AgentLogRotateResult {
+  /** Absolute path of the renamed (archived) log file. */
+  readonly archivedPath: string;
+  /** Absolute path of the freshly-opened active log file (unchanged). */
+  readonly activePath: string;
+}
+
 export interface AgentLogger {
   /** Append a structured JSON-line entry. */
   write(record: Record<string, unknown>): void;
   /** Flush + close the underlying file handle. */
   close(): void;
+  /**
+   * In-process log rotation (Enterprise backlog #22). Closes the
+   * current write stream cleanly, renames the active log to
+   * `<agentId>-<ISO>.log` (colons squashed so the filename is
+   * portable across filesystems), and opens a fresh append-mode
+   * stream at the original `<agentId>.log` path.
+   *
+   * Writes issued concurrently during rotation are buffered and
+   * flushed to the new stream once it's open — no record is dropped
+   * provided the caller hasn't closed the logger.
+   *
+   * External rotation (logrotate rename+create) is already handled
+   * via inode re-check in {@link followOne}; this verb covers the
+   * daemon-owned case (size-bound / time-bound rotation driven by
+   * the `up` process itself).
+   *
+   * Returns the archived + active paths so the caller can report /
+   * hand the archive to a shipper.
+   *
+   * @since 0.7.2 — POST_ENTERPRISE_BACKLOG.md #22
+   */
+  rotate(): Promise<AgentLogRotateResult>;
+}
+
+/**
+ * Build the archive path for a rotated log. Replaces `:` with `-`
+ * so the filename is legal on Windows + simpler to grep.
+ *
+ * Exported for tests; callers should use {@link AgentLogger.rotate}.
+ */
+export function rotatedAgentLogPath(agentId: string, when: Date, dir = configDir()): string {
+  const iso = when.toISOString().replace(/:/g, '-');
+  return join(upLogsDir(dir), `${sanitizeFileName(agentId)}-${iso}.log`);
 }
 
 /**
@@ -177,22 +218,45 @@ export interface AgentLogger {
  */
 export function openAgentLog(agentId: string, dir = configDir()): AgentLogger {
   const path = upLogPath(agentId, dir);
-  const stream: WriteStream = createWriteStream(path, { flags: 'a' });
-  // Swallow async stream errors — fd-open races during shutdown (tmpdir
-  // already rm'd, broken pipe, etc.) shouldn't tank `up` or the test
-  // runner. Writes are guarded synchronously below.
-  stream.on('error', () => {});
+  let stream: WriteStream = openStream(path);
   let closed = false;
+  // Rotation state. While `rotating` is true, `write()` enqueues the
+  // serialised payload onto `pending` instead of touching the active
+  // stream; the rotate() routine drains it onto the new stream once
+  // the rename has completed.
+  let rotating = false;
+  const pending: string[] = [];
+
+  function openStream(target: string): WriteStream {
+    const s = createWriteStream(target, { flags: 'a' });
+    // Swallow async stream errors — fd-open races during shutdown (tmpdir
+    // already rm'd, broken pipe, etc.) shouldn't tank `up` or the test
+    // runner. Writes are guarded synchronously below.
+    s.on('error', () => {});
+    return s;
+  }
+
+  function writeLine(line: string): void {
+    try {
+      stream.write(line);
+    } catch {
+      // A broken pipe during shutdown shouldn't take the up process
+      // down — swallow and let the stream cleanup take over.
+    }
+  }
+
   return {
     write(record) {
       if (closed) return;
       const payload = { ts: new Date().toISOString(), agent: agentId, ...record };
-      try {
-        stream.write(`${JSON.stringify(payload)}\n`);
-      } catch {
-        // A broken pipe during shutdown shouldn't take the up process
-        // down — swallow and let the stream cleanup take over.
+      const line = `${JSON.stringify(payload)}\n`;
+      if (rotating) {
+        // Buffer until rotate() drains us onto the new stream. Order is
+        // preserved because we push in call-order.
+        pending.push(line);
+        return;
       }
+      writeLine(line);
     },
     close() {
       if (closed) return;
@@ -201,6 +265,82 @@ export function openAgentLog(agentId: string, dir = configDir()): AgentLogger {
         stream.end();
       } catch {
         // already closed
+      }
+    },
+    async rotate() {
+      if (closed) {
+        throw new Error(`openAgentLog(${agentId}).rotate(): logger is already closed`);
+      }
+      if (rotating) {
+        // Collapse concurrent rotate() calls: wait until the in-flight
+        // one clears so callers don't race into a half-renamed state.
+        while (rotating) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+      }
+      rotating = true;
+      try {
+        const archivedPath = rotatedAgentLogPath(agentId, new Date(), dir);
+        // Drain the current stream before rename. `end()` flushes + closes;
+        // `finish` fires once the kernel has the bytes.
+        const current = stream;
+        await new Promise<void>((resolveEnd) => {
+          let settled = false;
+          const done = (): void => {
+            if (settled) return;
+            settled = true;
+            resolveEnd();
+          };
+          try {
+            current.once('finish', done);
+            current.once('close', done);
+            current.once('error', done);
+            current.end();
+          } catch {
+            // If end() throws synchronously the stream is effectively gone;
+            // don't hang rotation on a destroyed fd.
+            done();
+          }
+        });
+        // Rename BEFORE opening the new stream so the active path is free.
+        // Missing source (e.g. someone deleted the file) is tolerated —
+        // the rename is best-effort; the new stream is the critical bit.
+        try {
+          renameSync(path, archivedPath);
+        } catch {
+          // Silently swallow — an absent file means rotate was a no-op
+          // file-wise, and we still want to reopen below.
+        }
+        stream = openStream(path);
+        // Wait for the new fd to open before we hand control back. The
+        // first synchronous `.write()` can land before `'open'` fires on
+        // Bun/Node — writes are buffered internally, but the on-disk
+        // file doesn't exist until open. Tests (and external tailers
+        // watching via inode) reasonably expect the file to be present
+        // once rotate() resolves.
+        if (!existsSync(path)) {
+          await new Promise<void>((resolveOpen) => {
+            let settled = false;
+            const done = (): void => {
+              if (settled) return;
+              settled = true;
+              resolveOpen();
+            };
+            stream.once('open', done);
+            stream.once('error', done);
+            // Defensive short timeout — never block rotate() on a stuck
+            // open() syscall. 250ms matches the test-harness patience.
+            setTimeout(done, 250);
+          });
+        }
+        // Drain buffered writes onto the new stream in call-order.
+        while (pending.length > 0) {
+          const line = pending.shift();
+          if (line !== undefined) writeLine(line);
+        }
+        return { archivedPath, activePath: path };
+      } finally {
+        rotating = false;
       }
     },
   };
