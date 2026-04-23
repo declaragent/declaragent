@@ -29,6 +29,21 @@ export type {
   EventsResponseEntry,
   EventsRouteOptions,
 } from './control-plane-routes.js';
+export { createLogTailer } from './log-tail.js';
+export type {
+  CreateLogTailerOptions,
+  LogTailer,
+  LogTailLine,
+  LogTailPath,
+} from './log-tail.js';
+export { logsRoute } from './logs-sse-route.js';
+export type {
+  LogsQuery,
+  LogsResolvedPaths,
+  LogsRouteOptions,
+  ResolvedLogPath,
+  ResolveLogPaths,
+} from './logs-sse-route.js';
 export {
   createPrometheusRegistry,
   startPrometheusExporter,

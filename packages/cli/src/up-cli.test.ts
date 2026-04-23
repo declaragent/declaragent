@@ -181,6 +181,84 @@ describe('up verb — single agent', () => {
     expect(cap.err.join('')).not.toBe('');
   });
 
+  test('/logs SSE endpoint registers on the control-plane when DECLARAGENT_METRICS_PORT is set', async () => {
+    // Deeper stream-behavior assertions live in
+    // `packages/core/src/observability/logs-sse-route.test.ts`. This
+    // integration test just confirms the route is wired into `up`'s
+    // listener — a GET returns 200 `text/event-stream`, an unknown
+    // agent returns 400 — so a regression that drops the route from
+    // the routes array fails CI here rather than silently in
+    // production.
+    const port = await freePort();
+    const originalPort = process.env.DECLARAGENT_METRICS_PORT;
+    process.env.DECLARAGENT_METRICS_PORT = String(port);
+    try {
+      const cap = captureIo();
+      let knownStatus = 0;
+      const knownContentType: { value: string | null } = { value: null };
+      let unknownStatus = 0;
+      let driverErr: unknown = undefined;
+
+      const deferredShutdown: (onShutdown: () => Promise<void>) => () => void = (onShutdown) => {
+        void (async () => {
+          try {
+            for (let i = 0; i < 100; i += 1) {
+              if (cap.out.join('').includes('logs: http://')) break;
+              await new Promise((r) => setTimeout(r, 20));
+            }
+            const ac1 = new AbortController();
+            const res1 = await fetch(`http://127.0.0.1:${port}/logs?agent=test-up-agent`, {
+              signal: ac1.signal,
+            });
+            knownStatus = res1.status;
+            knownContentType.value = res1.headers.get('content-type');
+            ac1.abort();
+            // Bun rejects the body with an AbortError once we
+            // abort — drain to a terminal state so we don't leak
+            // the body reader.
+            try {
+              await res1.body?.cancel();
+            } catch {
+              // already closed
+            }
+
+            const res2 = await fetch(`http://127.0.0.1:${port}/logs?agent=bogus`);
+            unknownStatus = res2.status;
+            await res2.body?.cancel();
+          } catch (err) {
+            driverErr = err;
+          } finally {
+            await onShutdown();
+          }
+        })();
+        return () => {};
+      };
+
+      const code = await up(
+        {},
+        {
+          io: cap.io,
+          cwd: dir,
+          startSources: stubSources().fn,
+          installSignals: deferredShutdown,
+        },
+      );
+      if (driverErr !== undefined) throw driverErr;
+      expect(code).toBe(0);
+      expect(cap.out.join('')).toContain(`http://127.0.0.1:${port}/logs`);
+      expect(knownStatus).toBe(200);
+      expect(knownContentType.value).toBe('text/event-stream; charset=utf-8');
+      expect(unknownStatus).toBe(400);
+    } finally {
+      if (originalPort === undefined) {
+        // biome-ignore lint/performance/noDelete: see above.
+        delete process.env.DECLARAGENT_METRICS_PORT;
+      } else {
+        process.env.DECLARAGENT_METRICS_PORT = originalPort;
+      }
+    }
+  });
+
   test('exposes a Prometheus /metrics endpoint when DECLARAGENT_METRICS_PORT is set', async () => {
     const port = await freePort();
     const originalPort = process.env.DECLARAGENT_METRICS_PORT;
