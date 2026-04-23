@@ -1,14 +1,58 @@
 /**
  * declaragent.dev — landing page behavior.
  *
- * Three features:
- *   1. Typing terminal — cycles through a realistic CLI lifecycle so
- *      visitors see the shape of `declaragent` commands + their outputs.
- *   2. Install command copy + install-method tabs (curl / npm / brew).
- *   3. Live in-browser fleet validator — demoted to the "Advanced"
- *      section. Runs the same logic as `declaragent fleet validate`
- *      without a server round-trip.
+ * Features:
+ *   1. Typing terminal — cycles through a realistic CLI lifecycle,
+ *      with a skip button for returning visitors.
+ *   2. Install command copy + install-method tabs (npm / brew / curl).
+ *   3. Live in-browser fleet validator (Advanced section).
+ *   4. Event-tracking stub — `track(name, props)` routes through
+ *      `posthog.capture(...)` when PostHog is loaded (snippet is in
+ *      index.html, commented out until a project API key is wired),
+ *      and no-ops otherwise. Wires up `data-track="..."` attributes on
+ *      clickable elements so marketing can measure the funnel without
+ *      touching the markup. Event-name convention: `<section>:<action>`.
+ *   5. IntersectionObserver fade-in on sections (respects
+ *      prefers-reduced-motion).
  */
+
+/* ───────────────────────── analytics stub ───────────────────────── */
+
+// PostHog: product analytics + session replay + funnels + feature
+// flags. When the <script> in index.html is uncommented with a valid
+// project API key, `window.posthog` exists and `posthog.capture(name,
+// props)` fires real events. Until then, the stub below keeps
+// `track()` from throwing. The loader snippet in index.html also
+// installs a lazy stub — we guard for both paths here.
+function track(name, props) {
+  try {
+    if (typeof window.posthog?.capture === 'function') {
+      window.posthog.capture(name, props);
+    }
+    // No-op otherwise; analytics must never break the page.
+  } catch {
+    /* ignore */
+  }
+}
+
+// Wire every element carrying `data-track="section:label"` to fire a
+// named event on click. One convention covers every CTA on the page.
+// Click name → PostHog event name (colon-delimited, e.g. "hero:star").
+// When adding new CTAs, use `data-track="<section>:<action>"` — this
+// wiring picks them up automatically, no JS changes needed.
+document.addEventListener('click', (ev) => {
+  const target = ev.target instanceof Element ? ev.target.closest('[data-track]') : null;
+  if (!target) return;
+  const name = target.getAttribute('data-track');
+  if (!name) return;
+  // Capture the destination when the element is an anchor — useful
+  // for outbound-link attribution in PostHog's Insights.
+  const props =
+    target instanceof HTMLAnchorElement && target.href
+      ? { href: target.href, external: target.host !== window.location.host }
+      : undefined;
+  track(name, props);
+});
 
 const installCmd = document.getElementById('install-cmd');
 
@@ -131,6 +175,17 @@ function tokenize(line) {
   return out;
 }
 
+// Skip button support — when `skipRequested` is true the typer
+// drains remaining lines instantly and renders the final frame.
+let skipRequested = false;
+const termSkipBtn = document.getElementById('term-skip');
+if (termSkipBtn) {
+  termSkipBtn.addEventListener('click', () => {
+    skipRequested = true;
+    termSkipBtn.setAttribute('hidden', '');
+  });
+}
+
 async function typeTerminal() {
   if (!termBody || !termCursor) return;
   // Two loops: one full pass through the SCRIPT then clear + repeat.
@@ -138,15 +193,17 @@ async function typeTerminal() {
   // out top-to-bottom, then resets.
   while (true) {
     termBody.textContent = '';
+    if (termSkipBtn) termSkipBtn.removeAttribute('hidden');
+    skipRequested = false;
     for (const step of SCRIPT) {
       await typeLine(step.in, { delayPerChar: 28 });
-      await sleep(220);
+      await sleep(skipRequested ? 0 : 220);
       for (const line of step.out) {
         await typeLine(line, { delayPerChar: 8, instantSpans: true });
       }
-      await sleep(640);
+      await sleep(skipRequested ? 0 : 640);
     }
-    await sleep(5500);
+    await sleep(skipRequested ? 1200 : 5500);
   }
 }
 
@@ -156,14 +213,15 @@ function sleep(ms) {
 
 async function typeLine(raw, { delayPerChar, instantSpans }) {
   const tokens = tokenize(raw);
-  if (instantSpans) {
-    // Output lines: render the whole line immediately for readability.
+  if (instantSpans || skipRequested) {
+    // Output lines (or skip in flight): render the whole line immediately.
     for (const { ch, cls } of tokens) appendChar(ch, cls);
     appendChar('\n', null);
     return;
   }
   for (const { ch, cls } of tokens) {
     appendChar(ch, cls);
+    if (skipRequested) continue;
     await sleep(delayPerChar + Math.random() * 18);
   }
   appendChar('\n', null);
@@ -192,7 +250,36 @@ function appendChar(ch, cls) {
 
 window.addEventListener('load', () => {
   typeTerminal();
+  mountFadeIn();
 });
+
+/* ───────────────────────── fade-in on scroll ───────────────────────── */
+
+// Respect OS-level reduced-motion preferences — skip the animation
+// entirely and let content render plain.
+function mountFadeIn() {
+  if (typeof IntersectionObserver !== 'function') return;
+  const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  if (mq?.matches) return;
+
+  const targets = document.querySelectorAll('main > section');
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        entry.target.classList.add('is-visible');
+        io.unobserve(entry.target);
+      }
+    },
+    { rootMargin: '0px 0px -10% 0px', threshold: 0.05 },
+  );
+  for (const el of targets) {
+    // Skip the hero — it should appear immediately, no fade.
+    if (el.classList.contains('hero')) continue;
+    el.classList.add('fade-in');
+    io.observe(el);
+  }
+}
 
 /* ───────────────────────── install command copy ───────────────────────── */
 
