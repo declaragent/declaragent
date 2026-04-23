@@ -132,6 +132,19 @@ export interface FleetAgentWorker {
 export interface FleetDaemon {
   readonly agents: ReadonlyMap<string, FleetAgentWorker>;
   readonly bus: MemoryBus;
+  /**
+   * Look up the effective auth-verify registry for an agent. Returns
+   * the per-agent override when `authRegistryByAgent` carried an entry
+   * for `agentId`, otherwise the fleet-wide `authRegistry`, otherwise
+   * `undefined` (legacy pass-through).
+   *
+   * Exposed for cross-host fan-out consumers (control-plane Slice 3)
+   * that need to verify an inbound envelope on behalf of a specific
+   * agent without re-deriving the per-agent selection.
+   *
+   * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #18
+   */
+  authRegistryFor(agentId: string): AuthVerifyRegistry | undefined;
   shutdown(): Promise<void>;
   waitForShutdown(): Promise<void>;
 }
@@ -216,9 +229,33 @@ export interface StartFleetDaemonOptions {
    * Tests inject a stub registry so the verify gate fires without
    * standing up a real IdP.
    *
+   * This is the FLEET-WIDE default. An agent's entry in
+   * {@link authRegistryByAgent} (when present) overrides it on a
+   * per-agent basis.
+   *
    * @since 0.7.x — Enterprise Production Plan §3 Item #4
    */
   authRegistry?: AuthVerifyRegistry;
+  /**
+   * Per-agent auth-verify registries, keyed by `agent.id` (matches
+   * `fleet.yaml → agents[].id`). When an agent has an entry here,
+   * that registry is used instead of the fleet-wide
+   * {@link authRegistry} — letting one fleet host agents that trust
+   * disjoint peer sets (e.g. agent A trusts tenant-X signer, agent B
+   * trusts tenant-Y signer, with NO cross-trust).
+   *
+   * Back-compat: agents without a per-agent entry fall back to
+   * {@link authRegistry}. Passing neither disables verify (legacy
+   * `internal`/`hmac` path — unchanged from 0.7.3).
+   *
+   * Lifetime: the map + each registry value are owned by the caller
+   * (typically {@link fleetRun}). The daemon does not close them;
+   * production callers release underlying resources alongside the
+   * audit sink on `shutdownDaemon`.
+   *
+   * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #18
+   */
+  authRegistryByAgent?: ReadonlyMap<string, AuthVerifyRegistry>;
   /**
    * Audit sink used for `auth_check` + `capability_schema_violation`
    * records. Shared across every agent in the fleet — one SQLite handle
@@ -305,6 +342,18 @@ export interface FleetAgentRpcContext {
    * @since 0.7.x
    */
   onSchemaViolation?: CapabilitySchemaViolationEmitter;
+  /**
+   * Effective auth-verify registry for THIS agent. Resolved at daemon
+   * boot from `authRegistryByAgent.get(agent.id)` when the caller
+   * supplied a per-agent map, falling back to the fleet-root
+   * {@link StartFleetDaemonOptions.authRegistry}. Exposed on the rpc
+   * context so cross-host fan-out consumers (Control Plane Slice 3)
+   * can evaluate auth at the fan-out seam with the same verifier a
+   * single-process receiver would use.
+   *
+   * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #18
+   */
+  authRegistry?: AuthVerifyRegistry;
 }
 
 /**
@@ -413,6 +462,14 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
 
   try {
     for (const agent of options.fleet.agents) {
+      // #18 per-agent registry selection. When the caller supplied a
+      // per-agent map AND this agent has an entry, use that registry;
+      // otherwise fall back to the fleet-wide `authRegistry`. Absent
+      // both → worker runs in legacy pass-through mode for this agent.
+      const perAgentRegistry = options.authRegistryByAgent?.get(agent.id);
+      const effectiveAuthRegistry: AuthVerifyRegistry | undefined =
+        perAgentRegistry ?? options.authRegistry;
+
       const rpcContext: FleetAgentRpcContext = {
         selfAddress: `agent://${agent.id}`,
         transports,
@@ -426,6 +483,11 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
         ...(options.onSchemaViolation !== undefined && {
           onSchemaViolation: options.onSchemaViolation,
         }),
+        // #18 expose the effective registry for this agent on the
+        // rpc context so cross-host fan-out consumers (control-plane
+        // Slice 3) can evaluate auth at the fan-out seam without
+        // re-deriving the per-agent selection.
+        ...(effectiveAuthRegistry !== undefined && { authRegistry: effectiveAuthRegistry }),
       };
       const worker = startAgentWorker({
         agent,
@@ -434,10 +496,9 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
         logger: io,
         ...(selfFleetVersion !== undefined && { selfFleetVersion }),
         ...(minFleetVersion !== undefined && { minFleetVersion }),
-        // #4 inline verify-auth. The registry/sinks are shared across
-        // every agent — the worker only uses them when the inbound
-        // envelope's `from` peer resolves to an entry in the registry.
-        ...(options.authRegistry !== undefined && { authRegistry: options.authRegistry }),
+        // #4 inline verify-auth — now per-agent (#18). Each worker
+        // binds to the registry resolved above; sinks remain shared.
+        ...(effectiveAuthRegistry !== undefined && { authRegistry: effectiveAuthRegistry }),
         ...(options.auditSink !== undefined && { auditSink: options.auditSink }),
         ...(options.authRejectSink !== undefined && {
           authRejectSink: options.authRejectSink,
@@ -463,9 +524,23 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
     throw err;
   }
 
+  // Snapshot the per-agent registry selection at boot so the accessor
+  // returns stable answers across the daemon's lifetime — mutation of
+  // the caller-supplied map post-boot should NOT retroactively swap
+  // what a running worker verifies against.
+  const resolvedAuthByAgent = new Map<string, AuthVerifyRegistry>();
+  for (const agent of options.fleet.agents) {
+    const perAgent = options.authRegistryByAgent?.get(agent.id);
+    const effective = perAgent ?? options.authRegistry;
+    if (effective !== undefined) resolvedAuthByAgent.set(agent.id, effective);
+  }
+
   return {
     agents,
     bus,
+    authRegistryFor(agentId: string): AuthVerifyRegistry | undefined {
+      return resolvedAuthByAgent.get(agentId);
+    },
     async shutdown(): Promise<void> {
       if (!shutdownPromise) shutdownPromise = shutdownAll();
       await shutdownPromise;
@@ -982,33 +1057,69 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
   // #4 AuthVerifyRegistry build. Requires peers; when the opt-in flag
   // is set but no peers exist we log a warning and proceed — legacy
   // envelopes still flow through unchanged.
+  //
+  // #18 (POST_ENTERPRISE_BACKLOG.md) per-agent registries. For each
+  // agent, if `<agentPath>/rpc-peers.yaml` exists, build a registry
+  // from that file and key it by `agent.id`. Agents without a per-
+  // agent file fall back to the fleet-root registry. This lets one
+  // fleet host agents with disjoint peer sets (e.g. tenant-scoped
+  // signers) without any cross-trust.
   let authRegistry: AuthVerifyRegistry | undefined;
+  const authRegistryByAgent = new Map<string, AuthVerifyRegistry>();
   let authEventStore: EventStore | undefined;
   let authEventStoreDb: Database | undefined;
   let authRejectSink:
     | ((entry: { envelope: AgentRpcEnvelope; reason: string; message: string }) => Promise<void>)
     | undefined;
   if (anyAgentHasRpcAuth) {
+    const resolver = createDefaultSecretResolver({ fileRoot: root });
     if (peers === undefined) {
       io.err(
-        'warning: rpc.auth.enabled=true but no rpc-peers.yaml found — auth registry is empty (every envelope follows the legacy path).\n',
+        'warning: rpc.auth.enabled=true but no fleet-root rpc-peers.yaml found — fleet-wide auth registry is empty. Per-agent rpc-peers.yaml files (if any) will still be loaded.\n',
       );
     } else {
       try {
-        const resolver = createDefaultSecretResolver({ fileRoot: root });
         authRegistry = await buildAuthVerifyRegistry({
           peers,
           secrets: (ref) => resolver.resolve(ref),
         });
         const registeredPeers = peers.config.peers.filter((p) => p.auth !== undefined).length;
         io.out(
-          `  rpc.auth enabled (${registeredPeers} peer(s) with verify providers registered)\n`,
+          `  rpc.auth enabled (${registeredPeers} peer(s) with verify providers registered at fleet root)\n`,
         );
       } catch (err) {
         io.err(
-          `warning: rpc.auth.enabled=true but registry build failed — ${
+          `warning: rpc.auth.enabled=true but fleet-root registry build failed — ${
             err instanceof Error ? err.message : String(err)
-          }. Falling back to legacy envelope auth.\n`,
+          }. Falling back to legacy envelope auth for agents without a per-agent override.\n`,
+        );
+      }
+    }
+
+    // Per-agent registries: walk every agent and build a dedicated
+    // registry when `<agentPath>/rpc-peers.yaml` is present. This is
+    // orthogonal to `rpc.auth.enabled` on the agent: the per-agent
+    // file's presence alone is the opt-in signal. Failures on one
+    // agent never poison the others.
+    for (const agent of filteredFleet.agents) {
+      const agentPeersPath = join(agent.path, 'rpc-peers.yaml');
+      if (!existsSync(agentPeersPath)) continue;
+      try {
+        const agentPeers = await loadPeersConfig(agentPeersPath);
+        const registry = await buildAuthVerifyRegistry({
+          peers: agentPeers,
+          secrets: (ref) => resolver.resolve(ref),
+        });
+        authRegistryByAgent.set(agent.id, registry);
+        const registered = agentPeers.config.peers.filter((p) => p.auth !== undefined).length;
+        io.out(
+          `  rpc.auth per-agent: ${agent.id} → ${registered} peer(s) from ${agentPeersPath}\n`,
+        );
+      } catch (err) {
+        io.err(
+          `warning: failed to load per-agent rpc-peers.yaml for ${agent.id} at ${agentPeersPath} — ${
+            err instanceof Error ? err.message : String(err)
+          }. Falling back to fleet-root registry for this agent.\n`,
         );
       }
     }
@@ -1094,6 +1205,7 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     ...(peers !== undefined && { peers }),
     io,
     ...(authRegistry !== undefined && { authRegistry }),
+    ...(authRegistryByAgent.size > 0 && { authRegistryByAgent }),
     ...(auditSink !== undefined && { auditSink }),
     ...(authRejectSink !== undefined && { authRejectSink }),
     ...(peerCapabilities !== undefined && { peerCapabilities }),

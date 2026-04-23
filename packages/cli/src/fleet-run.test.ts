@@ -1296,3 +1296,520 @@ describe('createMemoizedLoadAgent', () => {
     expect(calls).toBe(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST_ENTERPRISE_BACKLOG.md #18 — per-agent auth registry
+//
+// The original 0.7.x wiring built ONE fleet-wide `AuthVerifyRegistry`
+// and passed it to every worker. That collapses when two agents in the
+// same fleet trust disjoint peer sets (e.g. tenant-X signer vs
+// tenant-Y signer) — the fleet-wide registry would let A's peer talk
+// to B.
+//
+// These tests exercise the per-agent override via `authRegistryByAgent`:
+//   1. Two agents with disjoint peer sets → an envelope signed for A's
+//      peer set is rejected when routed to B.
+//   2. Agent with no per-agent entry → falls back to fleet-root
+//      `authRegistry`.
+//   3. Mixed fleet: agent A has per-agent registry, agent B doesn't →
+//      A uses its own, B uses fleet-root.
+//   4. Accessor `daemon.authRegistryFor(agentId)` resolves the same
+//      effective registry the worker is bound to — exposed for the
+//      control-plane Slice 3 fan-out.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Tenant-scoped stub registry: accepts envelopes only from the specific
+ * `trustedPeer` argument. Everything else rejects with `bad-signature`.
+ * Mirrors the pattern used by the existing #4 test — no real IdP.
+ */
+function makeTenantRegistry(trustedPeer: string): AuthVerifyRegistry {
+  return {
+    resolve(peerId) {
+      return {
+        config: {
+          provider: 'oauth2-client',
+          tokenEndpoint: 'https://idp.test/token',
+          clientId: 'test',
+          clientSecretRef: 'env:STUB',
+        } as never,
+        provider: {
+          name: 'oauth2-client',
+          async sign() {
+            return { kind: 'internal' };
+          },
+          async verify() {
+            if (peerId === trustedPeer) {
+              return {
+                ok: true,
+                principal: {
+                  subject: `sub:${peerId}`,
+                  issuer: 'https://idp.test/',
+                  audience: 'agent://rcv',
+                  scopes: [],
+                  claims: {},
+                },
+              };
+            }
+            return {
+              ok: false,
+              reason: 'bad-signature',
+              message: `peer ${peerId} not trusted by this registry`,
+            };
+          },
+        },
+      };
+    },
+  };
+}
+
+describe('fleet-run #18 per-agent auth registry', () => {
+  test('two agents with disjoint peer sets reject cross-tenant envelopes', async () => {
+    const h = mkHarness();
+    try {
+      // Three-agent fleet: alpha trusts tenant-X, beta trusts tenant-Y,
+      // and both expose a memory-transport capability.
+      h.write(
+        'fleet.yaml',
+        `version: 1
+name: disjoint-tenants
+agents:
+  - id: alpha
+    path: ./agents/alpha
+  - id: beta
+    path: ./agents/beta
+  - id: tenant-x-signer
+    path: ./agents/tenant-x-signer
+  - id: tenant-y-signer
+    path: ./agents/tenant-y-signer
+`,
+      );
+      h.write('agents/alpha/agent.yaml', 'name: alpha\n');
+      h.write(
+        'agents/alpha/capabilities.yaml',
+        `version: 1
+agent: agent://alpha
+transports:
+  - kind: memory
+    topics: { requests: agents.alpha.requests }
+capabilities:
+  - name: do-alpha
+`,
+      );
+      h.write('agents/beta/agent.yaml', 'name: beta\n');
+      h.write(
+        'agents/beta/capabilities.yaml',
+        `version: 1
+agent: agent://beta
+transports:
+  - kind: memory
+    topics: { requests: agents.beta.requests }
+capabilities:
+  - name: do-beta
+`,
+      );
+      h.write('agents/tenant-x-signer/agent.yaml', 'name: tenant-x-signer\n');
+      h.write('agents/tenant-y-signer/agent.yaml', 'name: tenant-y-signer\n');
+
+      const fleet = await loadFleet({ root: h.root });
+      const bus = createMemoryBus();
+      const { sink, records } = makeMemoryAuditSink();
+
+      const alphaRegistry = makeTenantRegistry('agent://tenant-x-signer');
+      const betaRegistry = makeTenantRegistry('agent://tenant-y-signer');
+
+      const dlqDrops: Array<{ id: string; reason: string; message: string }> = [];
+      const daemon = await startFleetDaemon({
+        fleet,
+        bus,
+        authRegistryByAgent: new Map([
+          ['alpha', alphaRegistry],
+          ['beta', betaRegistry],
+        ]),
+        auditSink: sink,
+        authRejectSink: (entry) => {
+          dlqDrops.push({
+            id: entry.envelope.messageId,
+            reason: entry.reason,
+            message: entry.message,
+          });
+        },
+        makeHandler: () => defaultHandler,
+      });
+      try {
+        const sender = createMemoryTransport({ bus });
+
+        // Case 1: tenant-Y-signer tries to call alpha (trusts tenant-X only).
+        // Must be rejected — this is the cross-tenant leakage the item
+        // was filed to prevent.
+        await sender.publish('agents.alpha.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-alpha-cross',
+          correlationId: 'corr-alpha-cross',
+          from: 'agent://tenant-y-signer',
+          to: 'agent://alpha',
+          capability: 'do-alpha',
+          payload: {},
+          auth: { kind: 'internal' },
+        });
+
+        // Case 2: tenant-Y-signer calls beta (its legitimate target).
+        // Must be accepted.
+        await sender.publish('agents.beta.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-beta-ok',
+          correlationId: 'corr-beta-ok',
+          from: 'agent://tenant-y-signer',
+          to: 'agent://beta',
+          capability: 'do-beta',
+          payload: {},
+          auth: { kind: 'internal' },
+        });
+
+        await new Promise((r) => setTimeout(r, 50));
+
+        // Cross-tenant drop registered exactly once, on alpha's side.
+        expect(dlqDrops).toHaveLength(1);
+        expect(dlqDrops[0]?.id).toBe('msg-alpha-cross');
+
+        const authChecks = records.filter((r) => r.kind === 'auth_check');
+        const byCorrelation = new Map(authChecks.map((r) => [r.correlationId, r]));
+        expect(byCorrelation.get('corr-alpha-cross')?.decision).toBe('reject');
+        expect(byCorrelation.get('corr-beta-ok')?.decision).toBe('accept');
+
+        // Metrics: alpha short-circuited (handler never ran); beta
+        // processed the one legitimate envelope.
+        expect(daemon.agents.get('alpha')?.metrics().received).toBe(1);
+        expect(daemon.agents.get('alpha')?.metrics().responded).toBe(0);
+        expect(daemon.agents.get('beta')?.metrics().received).toBe(1);
+        expect(daemon.agents.get('beta')?.metrics().responded).toBe(1);
+
+        // Accessor returns the agent-specific registry, not a stand-in.
+        expect(daemon.authRegistryFor('alpha')).toBe(alphaRegistry);
+        expect(daemon.authRegistryFor('beta')).toBe(betaRegistry);
+
+        await sender.close();
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('agent without per-agent entry falls back to fleet-root registry', async () => {
+    const h = mkHarness();
+    try {
+      const fleet = await twoAgentFleet(h);
+      const bus = createMemoryBus();
+
+      const fleetRootRegistry = makeTenantRegistry('agent://concierge');
+
+      const dlqDrops: Array<{ id: string }> = [];
+      const daemon = await startFleetDaemon({
+        fleet,
+        bus,
+        authRegistry: fleetRootRegistry,
+        // Empty map — no per-agent overrides → every agent falls back
+        // to fleetRootRegistry.
+        authRegistryByAgent: new Map(),
+        authRejectSink: (entry) => {
+          dlqDrops.push({ id: entry.envelope.messageId });
+        },
+        makeHandler: () => defaultHandler,
+      });
+      try {
+        const sender = createMemoryTransport({ bus });
+        // concierge is trusted by fleet-root → accepted.
+        await sender.publish('agents.pr-reviewer.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-fallback-ok',
+          correlationId: 'corr-fallback-ok',
+          from: 'agent://concierge',
+          to: 'agent://pr-reviewer',
+          capability: 'review-pr',
+          payload: {},
+          auth: { kind: 'internal' },
+        });
+        // Stranger not trusted → rejected by the same fallback registry.
+        await sender.publish('agents.pr-reviewer.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-fallback-no',
+          correlationId: 'corr-fallback-no',
+          from: 'agent://stranger',
+          to: 'agent://pr-reviewer',
+          capability: 'review-pr',
+          payload: {},
+          auth: { kind: 'internal' },
+        });
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(dlqDrops).toHaveLength(1);
+        expect(dlqDrops[0]?.id).toBe('msg-fallback-no');
+
+        // Fallback is the fleet-root reference, not a clone.
+        expect(daemon.authRegistryFor('pr-reviewer')).toBe(fleetRootRegistry);
+        expect(daemon.authRegistryFor('concierge')).toBe(fleetRootRegistry);
+
+        await sender.close();
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('mixed: agent A uses per-agent registry, agent B uses fleet-root', async () => {
+    const h = mkHarness();
+    try {
+      // Add a second capability-serving agent alongside pr-reviewer.
+      h.write(
+        'fleet.yaml',
+        `version: 1
+name: mixed
+agents:
+  - id: alpha
+    path: ./agents/alpha
+  - id: beta
+    path: ./agents/beta
+`,
+      );
+      h.write('agents/alpha/agent.yaml', 'name: alpha\n');
+      h.write(
+        'agents/alpha/capabilities.yaml',
+        `version: 1
+agent: agent://alpha
+transports:
+  - kind: memory
+    topics: { requests: agents.alpha.requests }
+capabilities:
+  - name: do-alpha
+`,
+      );
+      h.write('agents/beta/agent.yaml', 'name: beta\n');
+      h.write(
+        'agents/beta/capabilities.yaml',
+        `version: 1
+agent: agent://beta
+transports:
+  - kind: memory
+    topics: { requests: agents.beta.requests }
+capabilities:
+  - name: do-beta
+`,
+      );
+      const fleet = await loadFleet({ root: h.root });
+      const bus = createMemoryBus();
+
+      const alphaRegistry = makeTenantRegistry('agent://alpha-peer');
+      const fleetRootRegistry = makeTenantRegistry('agent://root-peer');
+
+      const dlqDrops: string[] = [];
+      const daemon = await startFleetDaemon({
+        fleet,
+        bus,
+        authRegistry: fleetRootRegistry,
+        authRegistryByAgent: new Map([['alpha', alphaRegistry]]),
+        authRejectSink: (entry) => {
+          dlqDrops.push(entry.envelope.messageId);
+        },
+        makeHandler: () => defaultHandler,
+      });
+      try {
+        const sender = createMemoryTransport({ bus });
+
+        // alpha-peer → alpha: alpha's specific registry accepts.
+        await sender.publish('agents.alpha.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-1',
+          correlationId: 'corr-1',
+          from: 'agent://alpha-peer',
+          to: 'agent://alpha',
+          capability: 'do-alpha',
+          payload: {},
+          auth: { kind: 'internal' },
+        });
+        // root-peer → alpha: alpha's specific registry doesn't know
+        // root-peer. Rejected (the per-agent override MUST NOT consult
+        // fleet-root).
+        await sender.publish('agents.alpha.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-2',
+          correlationId: 'corr-2',
+          from: 'agent://root-peer',
+          to: 'agent://alpha',
+          capability: 'do-alpha',
+          payload: {},
+          auth: { kind: 'internal' },
+        });
+        // root-peer → beta: beta falls back to fleet-root → accepted.
+        await sender.publish('agents.beta.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-3',
+          correlationId: 'corr-3',
+          from: 'agent://root-peer',
+          to: 'agent://beta',
+          capability: 'do-beta',
+          payload: {},
+          auth: { kind: 'internal' },
+        });
+        // alpha-peer → beta: beta falls back to fleet-root, which does
+        // NOT trust alpha-peer. Rejected.
+        await sender.publish('agents.beta.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-4',
+          correlationId: 'corr-4',
+          from: 'agent://alpha-peer',
+          to: 'agent://beta',
+          capability: 'do-beta',
+          payload: {},
+          auth: { kind: 'internal' },
+        });
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(dlqDrops.sort()).toEqual(['msg-2', 'msg-4']);
+
+        // Accessor surfaces the effective registry per agent.
+        expect(daemon.authRegistryFor('alpha')).toBe(alphaRegistry);
+        expect(daemon.authRegistryFor('beta')).toBe(fleetRootRegistry);
+
+        await sender.close();
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('rpcContext.authRegistry surfaces the effective registry to handlers', async () => {
+    // Slice-3 (control-plane cross-host fan-out) needs the per-agent
+    // registry reachable from the handler factory's rpcContext so a
+    // fan-out seam can evaluate auth on the same verifier the worker
+    // is bound to.
+    const h = mkHarness();
+    try {
+      const fleet = await twoAgentFleet(h);
+      const prRegistry = makeTenantRegistry('agent://concierge');
+
+      const seen = new Map<string, AuthVerifyRegistry | undefined>();
+      const daemon = await startFleetDaemon({
+        fleet,
+        authRegistryByAgent: new Map([['pr-reviewer', prRegistry]]),
+        makeHandler: (agent, ctx) => {
+          seen.set(agent.id, ctx.authRegistry);
+          return defaultHandler;
+        },
+      });
+      try {
+        // concierge has no per-agent registry AND no fleet-root → undefined.
+        expect(seen.get('concierge')).toBeUndefined();
+        // pr-reviewer's rpcContext carries the per-agent registry.
+        expect(seen.get('pr-reviewer')).toBe(prRegistry);
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe('fleetRun CLI #18 — per-agent rpc-peers.yaml', () => {
+  // Integration-style: writes a per-agent `rpc-peers.yaml` on disk,
+  // asserts `fleetRun` builds a distinct registry for that agent. We
+  // don't actually wire a real OIDC provider — the build-time check is
+  // enough; the runtime reject behaviour is covered by the unit tests
+  // above (which inject registries directly).
+  test('loads <agentPath>/rpc-peers.yaml when present and keys by agent.id', async () => {
+    const h = mkHarness();
+    try {
+      h.write(
+        'fleet.yaml',
+        `version: 1
+name: per-agent-files
+agents:
+  - id: alpha
+    path: ./agents/alpha
+  - id: beta
+    path: ./agents/beta
+`,
+      );
+      // alpha opts into rpc.auth AND has its own per-agent peers file
+      // with an OAuth2 peer entry. beta has no per-agent file and no
+      // opt-in → unchanged behaviour.
+      h.write(
+        'agents/alpha/agent.yaml',
+        `name: alpha
+rpc:
+  auth:
+    enabled: true
+`,
+      );
+      h.write(
+        'agents/alpha/rpc-peers.yaml',
+        `version: 1
+peers:
+  - agent: agent://tenant-x-signer
+    transports:
+      - kind: memory
+        topics: { requests: agents.alpha.requests }
+    auth:
+      provider: oauth2-client
+      tokenEndpoint: https://idp.tenant-x.example/token
+      clientId: alpha-client
+      clientSecretRef: env:ALPHA_SECRET
+      jwksUri: https://idp.tenant-x.example/jwks
+      issuer: https://idp.tenant-x.example/
+      audience: agent://alpha
+`,
+      );
+      h.write('agents/beta/agent.yaml', 'name: beta\n');
+
+      // Stub credentials so fleetRun doesn't need a signed-in provider.
+      process.env.ALPHA_SECRET = 'stub-secret';
+      const { io, out, err } = captureIo();
+      const rc = await fleetRun(
+        {},
+        {
+          io,
+          root: h.root,
+          resolveCredentials: () => ({
+            providerId: 'anthropic',
+            apiKey: 'sk-test',
+            source: 'config',
+          }),
+          // Replace the LLM-backed handler with the echo default so
+          // the run doesn't try to reach a real provider.
+          makeHandler: () => defaultHandler,
+          onStart: async (daemon) => {
+            // The per-agent registry for alpha came from the file we
+            // wrote; beta has no entry → accessor returns undefined
+            // (no fleet-root file either).
+            expect(daemon.authRegistryFor('alpha')).toBeDefined();
+            expect(daemon.authRegistryFor('beta')).toBeUndefined();
+          },
+        },
+      );
+      expect(rc).toBe(0);
+      // Observable log: the per-agent registry load line lists alpha
+      // with one peer.
+      const joined = out.join('');
+      expect(joined).toContain('rpc.auth per-agent: alpha');
+      // No fatal errors.
+      expect(err.join('')).not.toMatch(/registry build failed/);
+    } finally {
+      process.env.ALPHA_SECRET = undefined;
+      h.cleanup();
+    }
+  });
+});
