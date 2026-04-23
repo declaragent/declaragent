@@ -25,6 +25,116 @@ disable). The listener multiplexes five endpoints used by
 Bind is localhost-only by default. Remote bind (Slice 2 of the control-plane
 plan) is gated on an explicit opt-in that isn't wired into the CLI yet.
 
+## Authenticated control plane
+
+> _Shipped in Slice 2 of the Managed Control Plane rollout
+> ([`docs/CONTROL_PLANE_PLAN.md`](https://github.com/declaragent/declaragent/blob/main/docs/CONTROL_PLANE_PLAN.md) §9 PR 2)._
+
+When a remote CLI needs to reach `/status`, `/events`, `/dlq`, `/audit`,
+or `/logs` across hosts, unauthenticated access is no longer enough.
+Declare an OIDC (or OAuth2 Client-Credentials) issuer in `agent.yaml`
+and every non-loopback request must carry a valid `Authorization:
+Bearer <token>` header. Same-host curls and `declaragent ps` keep
+working via the loopback bypass.
+
+```yaml
+# agent.yaml
+controlPlane:
+  auth:
+    enabled: true
+    provider: oidc
+    issuer: "https://dex.example.com"
+    audience: "declaragent-control-plane"
+    # Optional — override auto-discovery via /.well-known/openid-configuration.
+    jwksUri: "https://dex.example.com/keys"
+    # Strict AND semantics — every scope must be present on the token.
+    scopes: ["control:read"]
+    # Optional — flip to `false` to require tokens even on loopback.
+    # allowLoopback: false
+```
+
+OAuth2 Client-Credentials works the same way; the client secret is
+resolved through the standard `env:` / `file:` / `secret:` reference
+pipeline:
+
+```yaml
+controlPlane:
+  auth:
+    enabled: true
+    provider: oauth2-client
+    tokenEndpoint: "https://idp.example.com/oauth/token"
+    clientId: "declaragent-control-plane"
+    clientSecretRef: "env:CP_CLIENT_SECRET"
+    audience: "declaragent-control-plane"
+    issuer: "https://idp.example.com/"
+    jwksUri: "https://idp.example.com/.well-known/jwks.json"
+    scopes: ["control:read"]
+```
+
+### Request flow
+
+1. `GET /status` arrives with `Host: fleet.internal` and `Authorization:
+   Bearer <JWT>`.
+2. The middleware verifies the JWT against the cached JWKS:
+    - Signature validates against an asymmetric key in the JWKS.
+    - `iss`, `aud`, `exp`, `iat` (+ `nbf` if present) match the config
+      with a 60 s clock-skew tolerance.
+    - Every scope declared under `scopes:` is present on the token.
+3. Pass → route dispatch runs normally. Fail → `401` with a typed body:
+
+    ```json
+    { "error": "missing required scope \"control:read\"", "reason": "insufficient-scope" }
+    ```
+
+    The `reason` vocabulary is stable — remote CLIs can branch on it
+    without string-matching `error`.
+
+### Rejection reasons
+
+| `reason`              | When it fires                                                |
+| --------------------- | ------------------------------------------------------------ |
+| `missing-token`       | No `Authorization: Bearer <token>` header.                   |
+| `malformed-token`     | JWT failed structural decode or used `alg: none`.            |
+| `bad-signature`       | Signature didn't verify against the JWKS.                    |
+| `expired`             | `exp` + clock-skew is in the past.                           |
+| `not-yet-valid`       | `iat` (or `nbf`) is in the future beyond the skew tolerance. |
+| `wrong-issuer`        | `iss` doesn't match the configured issuer.                   |
+| `wrong-audience`      | `aud` doesn't include the configured audience.               |
+| `insufficient-scope`  | A required scope was absent from `scope` / `scp`.            |
+| `idp-unreachable`     | JWKS fetch (or OIDC discovery) failed; cache had expired.    |
+| `provider-failed`     | The verifier threw unexpectedly — fail-closed, 401 not 500.  |
+| `config-error`        | Synthetic-envelope construction failure (should never fire). |
+
+### Loopback bypass
+
+`allowLoopback: true` (the default) means requests whose `Host` header
+parses to `127.0.0.1`, `localhost`, or the bracketed `[::1]` form
+bypass auth entirely. That keeps `curl http://localhost:9464/metrics`
+from the same box functional without a token. Zero-trust deployments
+flip this to `false` to require a token on every request — the listener
+is still bound to `127.0.0.1`, so only co-located processes can reach
+it at all.
+
+### Enabling implicitly relaxes the Host-header sniff
+
+`startControlPlaneServer` defaults to `allowRemote: false` — a request
+whose `Host` header isn't loopback normally gets `403 remote
+control-plane disabled` before auth ever runs. When
+`controlPlane.auth.enabled: true` is parsed, the `up` daemon
+automatically flips `allowRemote: true` for the listener, since
+otherwise the middleware is unreachable. The listener still binds to
+`127.0.0.1` — a reverse proxy (nginx / envoy / cloud LB) is expected to
+front the port for remote access and the proxy's `Host` header rewrite
+plumbs the original hostname through.
+
+### Reusing the issuer with RPC auth
+
+The block shape mirrors `rpc-peers.yaml#auth` deliberately — operators
+can issue one IdP integration and point both surfaces at it. Tokens are
+still verified per-surface (envelopes via
+`@declaragent/plugin-agent-rpc/auth`, HTTP via this middleware); only
+the config authoring is shared.
+
 ## `/logs` — live log tail (SSE)
 
 ```

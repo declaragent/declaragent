@@ -176,6 +176,84 @@ describe('loadAgent', () => {
     );
     await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/rateLimit|rps|validation/i);
   });
+
+  test('controlPlaneAuth is undefined when block absent (back-compat)', async () => {
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.controlPlaneAuth).toBeUndefined();
+  });
+
+  test('controlPlaneAuth is undefined when enabled: false', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      `${AGENT_YAML}\ncontrolPlane:\n  auth:\n    enabled: false\n`,
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.controlPlaneAuth).toBeUndefined();
+  });
+
+  test('controlPlaneAuth parses the OIDC branch', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        AGENT_YAML,
+        'controlPlane:',
+        '  auth:',
+        '    enabled: true',
+        '    provider: oidc',
+        '    issuer: "https://dex.example.com"',
+        '    audience: "declaragent-control-plane"',
+        '    scopes: ["control:read"]',
+        '',
+      ].join('\n'),
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.controlPlaneAuth).toEqual({
+      provider: 'oidc',
+      issuer: 'https://dex.example.com',
+      audience: 'declaragent-control-plane',
+      scopes: ['control:read'],
+    });
+  });
+
+  test('controlPlaneAuth parses the oauth2-client branch', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        AGENT_YAML,
+        'controlPlane:',
+        '  auth:',
+        '    enabled: true',
+        '    allowLoopback: false',
+        '    provider: oauth2-client',
+        '    tokenEndpoint: "https://idp.example.com/oauth/token"',
+        '    clientId: "control-plane"',
+        '    clientSecretRef: "env:CP_CLIENT_SECRET"',
+        '    audience: "declaragent-control-plane"',
+        '    scopes: ["control:read"]',
+        '',
+      ].join('\n'),
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.controlPlaneAuth).toEqual({
+      provider: 'oauth2-client',
+      allowLoopback: false,
+      tokenEndpoint: 'https://idp.example.com/oauth/token',
+      clientId: 'control-plane',
+      clientSecretRef: 'env:CP_CLIENT_SECRET',
+      audience: 'declaragent-control-plane',
+      scopes: ['control:read'],
+    });
+  });
+
+  test('controlPlaneAuth rejects OIDC without issuer/audience', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [AGENT_YAML, 'controlPlane:', '  auth:', '    enabled: true', '    provider: oidc', ''].join(
+        '\n',
+      ),
+    );
+    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/issuer|audience|validation/i);
+  });
 });
 
 describe('composeSystemPromptWithSkills', () => {
