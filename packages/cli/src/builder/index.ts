@@ -179,3 +179,14 @@ export type { RedactResult, SecretFinding, SecretPattern } from './secret-guard.
 
 export { builderEnabled, getBuilderTools } from './register.js';
 export type { BuilderRegistrationOptions } from './register.js';
+
+export {
+  createRecordingProvider,
+  defaultRecordingPath,
+  recordingEnabled,
+} from './recording-provider.js';
+export type {
+  RecordedEntry,
+  RecordingProviderHandle,
+  RecordingProviderOptions,
+} from './recording-provider.js';
