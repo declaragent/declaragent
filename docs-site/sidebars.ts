@@ -64,6 +64,17 @@ const sidebars: SidebarsConfig = {
             'cookbook/grafana-tracing',
           ],
         },
+        {
+          type: 'category',
+          label: 'Enterprise',
+          items: [
+            'cookbook/gitops-argocd-flux',
+            'cookbook/siem-audit-export',
+            'cookbook/zero-trust-rpc-migration',
+            'cookbook/cross-host-fleet-kafka',
+            'cookbook/grafana-dashboard-import',
+          ],
+        },
       ],
     },
   ],

@@ -36,6 +36,18 @@ Cross-cutting how-tos built on top of the runtime.
 | [Run two tenants on one daemon](/cookbook/two-tenants-one-daemon) | Isolated state, extensions, and quotas — one process. |
 | [Trace a request in Grafana](/cookbook/grafana-tracing) | End-to-end OTel span from inbound → engine → outbound. |
 
+## Enterprise recipes
+
+Platform / SRE / security paths — built on features enterprise buyers ask about first.
+
+| Recipe | Goal |
+| --- | --- |
+| [GitOps deploy with ArgoCD or Flux](/cookbook/gitops-argocd-flux) | `fleet render` → git → your existing Argo/Flux reconciler. Drift detection + rollback for free. |
+| [Stream audit to Splunk / Elastic / Datadog](/cookbook/siem-audit-export) | Hash-chained audit into your SIEM with back-pressure + adaptive batch. |
+| [Zero-trust RPC migration (0.8.0)](/cookbook/zero-trust-rpc-migration) | Pre-flight `fleet audit-rpc --strict` in CI before the default flip. |
+| [Cross-host fleet on Kafka](/cookbook/cross-host-fleet-kafka) | Split a fleet across regions; observe it as one with `hosts[]` fan-out. |
+| [Import the Grafana dashboard](/cookbook/grafana-dashboard-import) | Three-row importable dashboard covering MCP, audit, rate limits. |
+
 ## Missing something?
 
 Open a discussion at [github.com/declaragent/declaragent/discussions](https://github.com/declaragent/declaragent/discussions) — cookbook pages are the quickest way to ship knowledge back to the community.

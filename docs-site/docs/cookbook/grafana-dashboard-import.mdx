@@ -1,0 +1,133 @@
+---
+id: grafana-dashboard-import
+title: Import the Declaragent Grafana dashboard
+sidebar_label: Grafana dashboard import
+---
+
+# Import the ready-made Grafana dashboard
+
+An importable Grafana dashboard ships in the repo at [`docs/grafana/declaragent-fleet-dashboard.json`](https://github.com/declaragent/declaragent/blob/main/docs/grafana/declaragent-fleet-dashboard.json). It aggregates every Prometheus counter + gauge + histogram the runtime exports through 0.7.6 into three rows — MCP health, audit + SIEM, rate limits + dispatch — and lets you filter by `server_id` / `agent` / `source` from the top of the page.
+
+This recipe is the five-minute path from "zero dashboards" to "full fleet at a glance".
+
+## Prerequisites
+
+- Grafana ≥ 10.
+- A Prometheus data source already wired in Grafana.
+- Prometheus scraping at least one Declaragent host's `/metrics` endpoint.
+
+## Step 1 — Expose `/metrics`
+
+`declaragent up -d` binds `/metrics` on `127.0.0.1:9464` by default. Override with `DECLARAGENT_METRICS_PORT` (set to `0` to disable).
+
+To scrape from a remote Prometheus, bind to `0.0.0.0` **and** require auth (`agent.yaml#controlPlane.bind` + an OIDC/OAuth2 block — see [`/reference/control-plane`](/reference/control-plane)). Don't expose `:9464` to the internet without auth.
+
+## Step 2 — Prometheus scrape config
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: declaragent
+    static_configs:
+      - targets:
+          - declaragent-host-1:9464
+          - declaragent-host-2:9464
+          - declaragent-host-3:9464
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
+
+On Kubernetes, the rendered chart emits a `ServiceMonitor` by default (gate with `declaragent fleet render --no-servicemonitor` if you don't run the Prometheus Operator) — no static config needed.
+
+OTel Collector users: point the scrape at the collector's Prometheus exporter port (`:9464` by convention), not every CLI host.
+
+## Step 3 — Import
+
+### Grafana UI
+
+1. Dashboards → Import → Upload JSON file.
+2. Pick `docs/grafana/declaragent-fleet-dashboard.json`.
+3. Select your Prometheus data source when prompted for `DS_PROMETHEUS`.
+4. Dashboard lands under the `declaragent` tag.
+
+### Grafana HTTP API
+
+```bash
+curl -X POST http://admin:admin@grafana:3000/api/dashboards/db \
+  -H 'Content-Type: application/json' \
+  -d "$(jq '{
+    dashboard: .,
+    overwrite: true,
+    inputs: [{"name":"DS_PROMETHEUS","type":"datasource","pluginId":"prometheus","value":"Prometheus"}]
+  }' docs/grafana/declaragent-fleet-dashboard.json)"
+```
+
+### grafana-operator ConfigMap (GitOps)
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: declaragent-fleet-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  declaragent.json: |-
+    # contents of docs/grafana/declaragent-fleet-dashboard.json
+```
+
+Commit this alongside the [rendered chart](/cookbook/gitops-argocd-flux) and ArgoCD / Flux reconciles both.
+
+## What the three rows show
+
+| Row | Signal | Panels |
+| --- | --- | --- |
+| **1 · MCP health** | Supervisor restarts, drain duration, circuit state, rate-limit rejects | `mcp_server_restarts_total`, `mcp_server_circuit_state`, `mcp_server_circuit_open_total`, `mcp_server_drain_duration_ms`, `mcp_server_rate_limited_total` |
+| **2 · Audit + SIEM** | Back-pressure active/paused, adaptive batch interval, export throughput, chain lag | `declaragent_audit_backpressure_{active,paused_total,backlog_ms}`, `declaragent_audit_batch_{interval_ms,rows}`, `declaragent_audit_export_{acked_total,failures_total,last_seq}` |
+| **3 · Rate limits + dispatch** | Provider + per-tool waits, source throughput, DLQ depth | `declaragent_provider_rate_limit_{waits,wait_ms}`, `declaragent_tool_rate_limit_waits_total`, `source_messages_{received,processed,dlq}`, `source_inflight` |
+
+## Recommended alerts
+
+Wire these in your alertmanager stack. Thresholds are starting points — tune to your SLO.
+
+```yaml
+groups:
+  - name: declaragent
+    rules:
+      - alert: DeclaragentSiemBackpressure
+        expr: rate(declaragent_audit_backpressure_paused_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "SIEM export falling behind on {{ $labels.instance }}"
+          runbook: "https://docs.declaragent.dev/cookbook/siem-audit-export"
+
+      - alert: DeclaragentMcpCircuitOpen
+        expr: sum by (server_id) (mcp_server_circuit_state) > 0
+        for: 2m
+        labels: { severity: critical }
+
+      - alert: DeclaragentDispatchDlqGrowing
+        expr: rate(source_messages_dlq_total{kind="dispatch"}[10m]) > 0
+        for: 10m
+        labels: { severity: warning }
+
+      - alert: DeclaragentToolRateLimitChoked
+        expr: rate(declaragent_tool_rate_limit_waits_total[5m]) > 10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Tool {{ $labels.tool }} repeatedly rate-limited"
+```
+
+## Distributed tracing
+
+The same counters flow through OTel when `OTEL_EXPORTER_OTLP_ENDPOINT` is set — see [Trace a request in Grafana](/cookbook/grafana-tracing) for the end-to-end span recipe that pairs with this dashboard.
+
+## Related
+
+- [Dashboard bundle README](https://github.com/declaragent/declaragent/blob/main/docs/grafana/README.md).
+- [Reference → Observability](/reference/observability).
+- [SIEM audit export](/cookbook/siem-audit-export).
+- [Cross-host fleet on Kafka](/cookbook/cross-host-fleet-kafka).
