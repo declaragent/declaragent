@@ -1,35 +1,41 @@
-# declaragent.dev — landing page
+# declaragent.dev — landing page (internal ops)
+
+Internal playbook for the `declaragent.dev` landing page. The public
+assets live in `website/` at the repo root; the non-public ops docs
+(this file, brand system, OG spec, PostHog setup) live here in
+`docs/website/` so they don't get served by the static deploy.
 
 Static site. No build step. Deploy as-is to Cloudflare Pages.
 
-## Files
+## Deployed files — `website/` at repo root
 
 | File | Purpose |
 | --- | --- |
-| `index.html` | Single-page landing. Hero → install → builder → honest status + "not-yet" rail → capabilities → lifecycle → meta → enterprise → validator → star CTA. |
+| `index.html` | Single-page landing. Hero → install → builder → honest status + just-shipped rail → capabilities → lifecycle → meta → enterprise → validator → star CTA. |
 | `styles.css` | All styles. Dark-default, teal accent, JetBrains Mono + Inter, CSS variables, ✓/◐/○ status chips, receipt pills — the receipts-first visual system. |
-| `app.js` | Typing terminal (with skip button) + install tab switcher + browser-port fleet validator + analytics stub (`track()` routes `data-track="..."` through Plausible once enabled) + IntersectionObserver fade-in. |
+| `app.js` | Typing terminal (with skip button) + install tab switcher + browser-port fleet validator + `track()` analytics helper routing `data-track="..."` clicks through `posthog.capture` + IntersectionObserver fade-in. |
 | `favicon.svg` | Monochrome `d` glyph on accent background. |
-| `og.svg` | 1200×630 social share card (terminal-styled, receipts-first). Replace with `og.png` once a designer lands one — see `OG_IMAGE_SPEC.md`. |
-| `OG_IMAGE_SPEC.md` | Detailed design brief for the PNG export. |
-| `BRAND.md` | Brand system source-of-truth: voice, palette, typography, status chips, forbidden words, copy templates. |
+| `og.svg` | 1200×630 social share card (terminal-styled, receipts-first). Replace with `og.png` once a designer lands one — see [`docs/website/OG_IMAGE_SPEC.md`](./OG_IMAGE_SPEC.md). |
 | `install.sh` | The `curl \| sh` installer. Served as `text/plain` via `_headers`. |
 | `_headers` | Cloudflare Pages HTTP header config (cache + security). |
+| `.gitignore` | Local-only `.env` etc. |
 
 Zero dependencies. Zero build step. Weighs ~22 KB gzipped.
 
-Analytics is **opt-in**: the PostHog loader snippet is commented out
-in `index.html`. To enable:
+## Internal ops docs — `docs/website/` (this folder)
 
-1. Create a PostHog project (cloud or self-hosted).
-2. Copy the project API key (starts with `phc_…`).
-3. In `index.html`, uncomment the `<script>` block and replace
-   `<YOUR_POSTHOG_PROJECT_API_KEY>` with your key.
-4. For EU hosting, swap `us.i.posthog.com` → `eu.i.posthog.com`.
+| File | Purpose |
+| --- | --- |
+| `README.md` | This playbook. |
+| `BRAND.md` | Brand system source-of-truth: voice, palette, typography, status chips, forbidden words, copy templates. |
+| `OG_IMAGE_SPEC.md` | Detailed design brief for the PNG export. |
+| `POSTHOG_SETUP.md` | Wizard report — PostHog dashboard + insight URLs. |
 
-Until enabled, the `track()` helper in `app.js` is a no-op and
-`data-track="..."` clicks do nothing. Event-name convention is
-`<section>:<action>` — see `BRAND.md §8` for the full list.
+These are **not** deployed. `docs/` is internal.
+
+## Analytics
+
+PostHog is live (EU region, `eu.i.posthog.com`, cookieless, `person_profiles=identified_only`). The loader sits inline in `index.html` with the project API key. `track()` helper in `app.js` routes every `data-track="..."` click through `posthog.capture`. Event-name convention is `<section>:<action>` — see [`docs/website/BRAND.md §8`](./BRAND.md) for the full list.
 
 ## Local preview
 
@@ -45,7 +51,7 @@ Open http://localhost:3000 (or :8080).
 ### First time (via dashboard)
 
 1. https://dash.cloudflare.com → Workers & Pages → Create application → Pages → Connect to Git
-2. Pick the `declaragent/declaragent` repo (grant access to the `website/` subfolder if prompted)
+2. Pick the `declaragent/declaragent` repo (grant access to the `website/` subfolder at the repo root if prompted)
 3. Build settings:
    - **Framework preset**: `None`
    - **Build command**: *(empty)*

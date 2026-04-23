@@ -199,7 +199,7 @@ they can't without being as honest).
 
 ## 5 · The OG image
 
-See [`website/OG_IMAGE_SPEC.md`](./OG_IMAGE_SPEC.md) for the detailed
+See [`docs/website/OG_IMAGE_SPEC.md`](./OG_IMAGE_SPEC.md) for the detailed
 1200×630 brief. `og.svg` ships today; replace with `og.png` once a
 designer produces it.
 

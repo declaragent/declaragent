@@ -171,7 +171,7 @@
       >enterprise · 12/12 shipped</text>
     </g>
 
-    <!-- receipt — AGENTS.md -->
+    <!-- receipt — every ✓ links to a public PR -->
     <g transform="translate(452 0)">
       <rect x="0" y="0" width="240" height="40" rx="6" fill="#12161f" stroke="#242b3a" stroke-width="1" />
       <text
@@ -181,7 +181,7 @@
         font-weight="500"
         font-size="13"
         fill="#9aa3b5"
-      >receipts: AGENTS.md · file:line</text>
+      >every ✓ · PR-linked receipt</text>
     </g>
   </g>
 

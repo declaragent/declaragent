@@ -241,8 +241,8 @@
 
           <!-- Stat row — receipts-first design: every claim, a pill.
                Updated 2026-04-23 to reflect 0.7.1 shipping the full
-               12-item enterprise integration plan — see
-               docs/ENTERPRISE_PRODUCTION_PLAN.md §0 banner. -->
+               enterprise stack. Each receipt in the rail below links
+               to the public PR. -->
           <ul class="stat-row" role="list">
             <li class="stat">
               <span class="stat__value">13</span>
@@ -502,12 +502,12 @@ DECLARAGENT_BUILDER=on declaragent     <span class="dim"># short: d9t</span></co
             </span>
           </h2>
           <p class="lede lede--muted">
-            Single-machine production was shipped in 0.6.0. The 12-item enterprise
-            integration plan — multi-host RPC, OIDC/OAuth2, managed control
-            plane, SIEM export, GitOps <code>fleet render</code>, per-tool
-            rate limits, MCP auto-recovery, typed capability schemas — shipped
-            in 0.7.1. Every ✓ below links to the PR. The only open receipt:
-            Pillar 3's 7-consecutive-green weekly soak proof.
+            Single-machine production shipped in 0.6.0. Multi-host RPC,
+            OIDC/OAuth2, a managed control plane, SIEM export, GitOps
+            <code>fleet render</code>, per-tool rate limits, MCP
+            auto-recovery and typed capability schemas shipped in 0.7.1.
+            Every ✓ below links to the PR that shipped it. The only open
+            receipt: the weekly cross-host soak proof for Pillar 3.
           </p>
         </header>
         <div class="ent__grid">
@@ -526,11 +526,11 @@ DECLARAGENT_BUILDER=on declaragent     <span class="dim"># short: d9t</span></co
               <span class="status status--ok">✓ enterprise · typed · v0.7.1</span>
               <a
                 class="receipt-link"
-                href="https://github.com/declaragent/declaragent/blob/main/AGENTS.md"
+                href="https://docs.declaragent.dev/reference/agent-yaml"
                 target="_blank"
                 rel="noopener"
                 data-track="honest:p1"
-                >AGENTS.md →</a
+                >agent.yaml reference →</a
               >
             </footer>
           </article>
@@ -550,11 +550,11 @@ DECLARAGENT_BUILDER=on declaragent     <span class="dim"># short: d9t</span></co
               <span class="status status--ok">✓ enterprise · v0.7.1</span>
               <a
                 class="receipt-link"
-                href="https://github.com/declaragent/declaragent/blob/main/docs/ENTERPRISE_PRODUCTION_PLAN.md"
+                href="https://docs.declaragent.dev/reference/fleet"
                 target="_blank"
                 rel="noopener"
                 data-track="honest:p2"
-                >ENTERPRISE_PLAN →</a
+                >fleet reference →</a
               >
             </footer>
           </article>
@@ -573,11 +573,11 @@ DECLARAGENT_BUILDER=on declaragent     <span class="dim"># short: d9t</span></co
               <span class="status status--wip">◐ enterprise · soak proof pending</span>
               <a
                 class="receipt-link"
-                href="https://github.com/declaragent/declaragent/blob/main/docs/AGENT_RPC_PLAN.md"
+                href="https://docs.declaragent.dev/reference/rpc"
                 target="_blank"
                 rel="noopener"
                 data-track="honest:p3"
-                >AGENT_RPC_PLAN →</a
+                >rpc reference →</a
               >
             </footer>
           </article>
@@ -620,11 +620,11 @@ DECLARAGENT_BUILDER=on declaragent     <span class="dim"># short: d9t</span></co
               <span class="status status--ok">✓ enterprise · regression tests · v0.7.1</span>
               <a
                 class="receipt-link"
-                href="https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_VALIDATION.md"
+                href="https://docs.declaragent.dev/reference/builder"
                 target="_blank"
                 rel="noopener"
                 data-track="honest:p5"
-                >FIRST_PRINCIPLES_VALIDATION →</a
+                >builder reference →</a
               >
             </footer>
           </article>
@@ -634,18 +634,18 @@ DECLARAGENT_BUILDER=on declaragent     <span class="dim"># short: d9t</span></co
               <h3>The honesty clause</h3>
             </header>
             <p>
-              Every ✓ has a test. Every ◐ names the gap and the tracked doc.
-              Read the full audit — file:line evidence for every claim on
-              this page.
+              Every ✓ has a test. Every ◐ names the gap. Each item on
+              the next rail links to the PR that shipped it — the
+              evidence is public, versioned, and reviewable.
             </p>
             <footer class="pillar__foot">
               <a
                 class="btn btn--ghost btn--compact"
-                href="https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_AUDIT.md"
+                href="https://github.com/declaragent/declaragent/releases"
                 target="_blank"
                 rel="noopener"
-                data-track="honest:audit"
-                >Read the audit →</a
+                data-track="honest:releases"
+                >See all releases →</a
               >
             </footer>
           </article>
@@ -818,15 +818,15 @@ DECLARAGENT_BUILDER=on declaragent     <span class="dim"># short: d9t</span></co
             </li>
           </ul>
           <p class="shipped__foot">
-            One last receipt in flight: Pillar 3's 7-consecutive-green
-            <code>weekly-soak.yml</code> run. Tracker:
+            One receipt still in flight: the weekly cross-host soak
+            proof for Pillar 3. Running evidence lives in the
             <a
-              href="https://github.com/declaragent/declaragent/blob/main/docs/ENTERPRISE_PRODUCTION_PLAN.md"
+              href="https://github.com/declaragent/declaragent/blob/main/packages/cli/CHANGELOG.md"
               target="_blank"
               rel="noopener"
-              data-track="shipped:plan"
-              >ENTERPRISE_PRODUCTION_PLAN.md ↗</a
-            >
+              data-track="shipped:changelog"
+              >public changelog ↗</a
+            >.
           </p>
         </aside>
       </section>

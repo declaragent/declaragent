@@ -5,6 +5,22 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: interest-cohort=()
 
+# Markdown + env: historically we deployed a handful of internal
+# ops docs in this directory by mistake. They've been moved to
+# docs/website/ and are no longer in the bundle, but Cloudflare's
+# edge may still have cached copies for up to s-maxage. Force a
+# revalidate on every hit so the next request surfaces the real
+# 404 from origin and evicts the stale object.
+/*.md
+  Cache-Control: public, max-age=0, must-revalidate, s-maxage=0
+  CDN-Cache-Control: public, max-age=0
+  Cloudflare-CDN-Cache-Control: public, max-age=0
+
+/.env
+  Cache-Control: public, max-age=0, must-revalidate, s-maxage=0
+  CDN-Cache-Control: public, max-age=0
+  Cloudflare-CDN-Cache-Control: public, max-age=0
+
 # `immutable` is a trap for un-versioned filenames — browsers never
 # revalidate. Until we hash the filenames (content-addressed build
 # output), use `must-revalidate` so Cloudflare can 304 quickly but
