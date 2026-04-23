@@ -30,9 +30,20 @@ export { createDatadogExporter } from './exporters/datadog.js';
 export type { CreateDatadogExporterOptions } from './exporters/datadog.js';
 export { startAuditExportLoop } from './exporter-loop.js';
 export type {
+  AuditExportLoopBackpressureOptions,
+  AuditExportLoopBatchOptions,
   AuditExportLoopHandle,
   AuditExportLoopOptions,
 } from './exporter-loop.js';
+export {
+  AuditBackpressureError,
+  createBackpressureController,
+} from './backpressure.js';
+export type {
+  BackpressureController,
+  BackpressurePolicy,
+  CreateBackpressureControllerOptions,
+} from './backpressure.js';
 export {
   canonicalizeRecord,
   computeRecordHash,

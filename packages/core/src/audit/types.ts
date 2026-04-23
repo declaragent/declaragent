@@ -338,6 +338,19 @@ export interface TenantAuditSink {
    * @since 0.6.x — Enterprise Production Plan §3 Item #10
    */
   writeExportCursor?(exporterName: string, lastSeq: number): Promise<void>;
+  /**
+   * Timestamp (ms) of the oldest audit row that has not yet been
+   * acknowledged by the named exporter's cursor, or `null` when the
+   * queue is empty. Used by the SIEM back-pressure evaluator on the
+   * export loop.
+   *
+   * Implementations that don't track a cursor may omit this — the
+   * export loop skips back-pressure evaluation when the method is
+   * absent.
+   *
+   * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #11
+   */
+  oldestUnshippedMs?(exporterName: string): Promise<number | null>;
   /** Graceful shutdown. */
   close(): Promise<void> | void;
 }

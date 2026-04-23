@@ -9,7 +9,7 @@ This doc is the honest 0.7.x+ backlog. Every entry was flagged by a shipped PR's
 ## 0 · Summary banner
 
 ```
-Status:               23 open follow-ups from the enterprise push (29 shipped across 0.7.1 + 0.7.2 + 0.7.3 + 0.7.4)
+Status:               21 open follow-ups from the enterprise push (31 shipped across 0.7.1 + 0.7.2 + 0.7.3 + 0.7.4)
 Shipping-gate count:  4 (must land before 0.7.0 cut)
 Security count:       6 (address within 0.7.x)
 Robustness count:     7 (enterprise-nice-to-have)
@@ -44,8 +44,8 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 8 | [x] Add `AUTH_REJECTED` to `RPC_ERROR_CODES` constant (today string literal) | Security | 30 min | Shipped — branch `agent-a/security-sprint-1-items-8-9` | `packages/core/src/rpc/errors.ts` + `errors.test.ts`; `fleet-run.ts` literals swapped for `RPC_ERROR_CODES.AUTH_REJECTED` (wire value preserved) |
 | 9 | [x] Audit cardinality for `capability.schema_violation` — per-envelope vs per-violation | Security | 1 d | Shipped — decision: batched per envelope (pinned) | `packages/plugin-agent-rpc/src/request-agent.ts` JSDoc + multi-violation regression test in `request-agent.test.ts`; inline `POST_ENTERPRISE_BACKLOG.md #9` notes in `audit/types.ts` + `fleet-run.test.ts` |
 | 10 | [ ] Schema-version policy: hard-fail vs soft-warn on breaking capability schema bumps | Security | 3 d | Not started | PR #23 open Q1 |
-| 11 | [ ] SIEM back-pressure policy (pause writes after `>1h` backlog?) | Robustness | 3 d | Not started | PR #22 open Q1 |
-| 12 | [ ] SIEM adaptive batch interval for high-volume fleets (10k tool-calls/sec) | Robustness | 3 d | Not started | PR #22 open Q2 |
+| 11 | [x] SIEM back-pressure policy (pause writes after `>1h` backlog?) | Robustness | 3 d | Shipped (0.7.4) — branch `agent-c/siem-sprint-4-items-11-12` | `packages/core/src/audit/backpressure.ts` introduces `BackpressureController` + `AuditBackpressureError` (fail-fast default; `drop` policy opt-in w/ counter); `createSqliteAuditSink({ backpressure })` gates `record()` before every write; `startAuditExportLoop({ backpressure: { enabled, pauseAfterBacklogMs, evaluateIntervalMs, controller } })` evaluates `sink.oldestUnshippedMs()` on a 30 s timer (configurable) — pauses above 1 h default, auto-resumes when queue drains under threshold. New metrics: `audit.backpressure.paused_total`, `audit.backpressure.active`, `audit.backpressure.drops_total`, `audit.backpressure.backlog_ms`. 9 tests in `backpressure.test.ts`. |
+| 12 | [x] SIEM adaptive batch interval for high-volume fleets (10k tool-calls/sec) | Robustness | 3 d | Shipped (0.7.4) — branch `agent-c/siem-sprint-4-items-11-12` | `startAuditExportLoop({ batch: { minIntervalMs, maxIntervalMs, targetBatchRows } })` replaces fixed cadence with a proportional controller: batch hitting `batchSize` cap halves the interval toward `minIntervalMs` (default 200 ms), idle queues double toward `maxIntervalMs` (default 10 s), steady-state stays put. New metrics: `audit.batch.interval_ms` gauge + `audit.batch.rows` histogram. Opt-in via `batch` option — omitting preserves pre-0.7.4 fixed behaviour. 6 tests in `adaptive-batch.test.ts`. |
 | 13 | [ ] MCP graceful draining of in-flight tool calls across respawn | Robustness | 1 wk | Not started | PR #21 scope-out |
 | 14 | [x] MCP dedicated `mcp_server_circuit_open_total` counter for alertmanager simplicity | Robustness | 1 d | Shipped (0.7.1) | `agent-c/robustness-sprint-1-warmups` — `packages/core/src/mcp/supervisor.ts` |
 | 15 | [ ] `/audit` tail-segment-only hash-chain verification when soak-size evidence justifies it | Robustness | 3 d | Deferred (need soak numbers) | PR #15 open Q1 |
