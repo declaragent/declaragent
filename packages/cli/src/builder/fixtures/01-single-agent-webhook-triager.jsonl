@@ -1,0 +1,9 @@
+# Fixture 1 — Single-agent webhook triager.
+# Exercises: DeclaraProposeChange with addSource (webhook) + addSkill,
+#            then DeclaraApplyChange against a confirmed proposal.
+# Hand-authored; mirrors the canonical tool-call shape emitted by
+# claude-opus-4-7 under the phase-3 builder system prompt.
+{ "role": "user", "text": "build me an agent that triages github webhook events" }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "text", "text": "I'll propose a webhook source plus a triage skill." }, { "type": "tool_use", "id": "call-1", "name": "DeclaraProposeChange", "input": { "summary": "webhook triager with inbound source + triage skill", "steps": [ { "kind": "addSource", "description": "webhook source bound to /gh", "payload": { "type": "webhook", "id": "gh", "config": { "id": "gh", "path": "/gh", "target": { "type": "skill", "name": "triage" } } } }, { "kind": "addSkill", "description": "triage inbound events", "payload": { "name": "triage", "description": "triage github webhook events", "body": "When an event arrives, classify it and respond." } } ] } } ] }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "tool_use", "id": "call-2", "name": "DeclaraApplyChange", "input": { "proposalId": "__LATEST__" } } ] }
+{ "role": "assistant", "stopReason": "end_turn", "content": [ { "type": "text", "text": "Done — webhook source + triage skill are in place." } ] }

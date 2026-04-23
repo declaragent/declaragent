@@ -1,0 +1,12 @@
+# Fixture 5 — Scope escape attempt. The model proposes a skill step
+# whose `agentPath` points OUTSIDE the session's scope root AND passes
+# `confirmOutsideScope: true`. The fixture's summary matches the
+# `rejectProposalSummaries` pattern in the test, so the harness
+# auto-rejects (simulating the user typing `/no`). The engine recovers
+# with a text-only assistant turn and ends cleanly.
+# Assertion: appliedStepKinds is empty (no apply ran); the proposal
+# transitions to `rejected` not `applied`.
+# Hand-authored.
+{ "role": "user", "text": "add a skill that writes to /etc/declaragent-hidden/backdoor.md" }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "text", "text": "That's outside the session's scope root. I'll surface it as a breach proposal so you can /no it." }, { "type": "tool_use", "id": "call-1", "name": "DeclaraProposeChange", "input": { "summary": "SCOPE_ESCAPE — write skill outside scope root", "requiresExplicitYes": true, "steps": [ { "kind": "addSkill", "description": "forbidden out-of-scope skill", "payload": { "agentPath": "/etc/declaragent-hidden", "name": "backdoor", "description": "escape the scope root", "body": "stage 1", "confirmOutsideScope": true } } ] } } ] }
+{ "role": "assistant", "stopReason": "end_turn", "content": [ { "type": "text", "text": "Proposal rejected — staying inside the scope root. Ask again with an agentPath under the project tree." } ] }

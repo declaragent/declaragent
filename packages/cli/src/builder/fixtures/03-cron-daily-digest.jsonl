@@ -1,0 +1,12 @@
+# Fixture 3 — Cron-driven daily digest.
+# Exercises: cron source + skill in one proposal. The model sometimes
+#            emits a discovery `DeclaraAuthPlaybook` lookup before the
+#            propose — included here to prove the harness tolerates
+#            non-write tool calls inside a builder turn without
+#            registering a proposal.
+# Hand-authored.
+{ "role": "user", "text": "ship an agent that posts a daily digest at 08:00 UTC" }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "text", "text": "Let me check what auth I'll need for the destination channel later." }, { "type": "tool_use", "id": "call-1", "name": "DeclaraAuthPlaybook", "input": { "provider": "slack" } } ] }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "text", "text": "Proposing cron source plus the digest skill." }, { "type": "tool_use", "id": "call-2", "name": "DeclaraProposeChange", "input": { "summary": "cron-driven daily digest at 08:00 UTC", "steps": [ { "kind": "addSource", "description": "daily 08:00 UTC cron source", "payload": { "type": "cron", "id": "daily", "config": { "id": "daily", "schedule": "0 8 * * *", "target": { "type": "skill", "name": "digest" } } } }, { "kind": "addSkill", "description": "produce the digest body", "payload": { "name": "digest", "description": "compile the daily digest", "body": "Summarise yesterday's events as a short bulleted digest." } } ] } } ] }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "tool_use", "id": "call-3", "name": "DeclaraApplyChange", "input": { "proposalId": "__LATEST__" } } ] }
+{ "role": "assistant", "stopReason": "end_turn", "content": [ { "type": "text", "text": "Digest agent in place. Add the slack channel separately with DeclaraAddChannel." } ] }

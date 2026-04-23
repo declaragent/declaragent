@@ -1,0 +1,9 @@
+# Fixture 2 — Two-agent fleet: concierge + reviewer with RPC wiring.
+# Exercises: multi-step proposal with addAgent×2 + addPeer, plus
+#            proposal → apply in the same turn sequence.
+# Hand-authored; mirrors the phase-4 target transcript in
+# BUILDER_PLAN §7 (also replayed imperatively in fleet-e2e.test.ts).
+{ "role": "user", "text": "build a concierge + pr-reviewer fleet" }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "text", "text": "I'll scaffold two agents from templates and wire them over memory." }, { "type": "tool_use", "id": "call-1", "name": "DeclaraProposeChange", "input": { "summary": "build a concierge + pr-reviewer fleet", "steps": [ { "kind": "addAgent", "description": "scaffold concierge from template", "payload": { "template": "concierge", "id": "concierge" } }, { "kind": "addAgent", "description": "scaffold pr-reviewer from rpc-server template", "payload": { "template": "rpc-server", "id": "pr-reviewer" } }, { "kind": "addPeer", "description": "wire concierge to pr-reviewer over memory", "payload": { "agent": "agent://pr-reviewer", "transports": [ { "kind": "memory", "topics": { "requests": "agents.pr-reviewer.requests" } } ] } } ] } } ] }
+{ "role": "assistant", "stopReason": "tool_use", "content": [ { "type": "tool_use", "id": "call-2", "name": "DeclaraApplyChange", "input": { "proposalId": "__LATEST__" } } ] }
+{ "role": "assistant", "stopReason": "end_turn", "content": [ { "type": "text", "text": "Fleet scaffolded — concierge calls pr-reviewer over memory." } ] }
