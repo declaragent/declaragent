@@ -18,33 +18,49 @@
  * @since 1.2.0
  */
 
+import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
+  AgentAddress,
   AgentRpcEnvelope,
+  AuthCheckAuditRecord,
+  CapabilitySchemaViolationAuditRecord,
   CapabilityTransport,
+  CapabilityValidatorRegistry,
+  EventStore,
   LoadedAgentEntry,
+  LoadedCapabilities,
   LoadedFleet,
   LoadedPeers,
   RpcError,
   RpcRespondResult,
   RpcTransport,
   RpcTransportKind,
+  TenantAuditSink,
 } from '@declaragent/core';
 import {
   FleetConfigError,
   FleetManifestError,
   RPC_ERROR_CODES,
   checkFleetVersionSkew,
+  createCapabilityValidatorRegistry,
+  createDefaultSecretResolver,
+  createEventStore,
+  createSqliteAuditSink,
   createSqliteSessionStore,
   findFleetRoot,
+  loadAgent,
   loadFleet,
   loadPeersConfig,
   readFleetVersionFromEnv,
   readFleetVersionHeader,
 } from '@declaragent/core';
 import {
+  type AuthVerifyRegistry,
+  type CapabilitySchemaViolationEmitter,
   type MemoryBus,
+  buildAuthVerifyRegistry,
   createMemoryBus,
   createMemoryTransport,
   createRespondHook,
@@ -55,7 +71,7 @@ import {
   loadConfig,
 } from './auth.js';
 import { createLLMHandlerFactory } from './fleet-run-llm-handler.js';
-import { sessionsDbPath } from './paths.js';
+import { auditDbPath, sessionsDbPath } from './paths.js';
 import { createProviderFromCreds } from './provider-factory.js';
 import { getPreset } from './providers-registry.js';
 
@@ -187,6 +203,71 @@ export interface StartFleetDaemonOptions {
    */
   selfFleetVersion?: string;
   io?: FleetRunIO;
+
+  // ── #4 Inline verify-auth (Enterprise Production Plan §3) ──────────
+  /**
+   * Per-peer auth-verify providers, keyed by `agent://` address. When
+   * present, {@link startAgentWorker} verifies every inbound envelope
+   * against the registered provider BEFORE calling the handler. Peers
+   * without an entry (or envelopes from unknown peers) fall through to
+   * the legacy `internal`/`hmac` path for back-compat.
+   *
+   * Tests inject a stub registry so the verify gate fires without
+   * standing up a real IdP.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #4
+   */
+  authRegistry?: AuthVerifyRegistry;
+  /**
+   * Audit sink used for `auth_check` + `capability_schema_violation`
+   * records. Shared across every agent in the fleet — one SQLite handle
+   * per fleet-run process. Absent when neither feature is in use so
+   * unused fleets pay no disk I/O.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Items #4 + #11
+   */
+  auditSink?: TenantAuditSink;
+  /**
+   * Sink for auth-rejected envelopes. Receivers wire this to
+   * `EventStore.upsertRejection` so rejects land in `rejected_events`
+   * under `kind=auth-rejected`. Called once per rejected envelope.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #4
+   */
+  authRejectSink?: (entry: {
+    envelope: AgentRpcEnvelope;
+    reason: string;
+    message: string;
+  }) => Promise<void> | void;
+
+  // ── #11 Typed-capability validation (Enterprise Production Plan §3) ─
+  /**
+   * Peer capability tables, keyed by `agent://` address. Threaded into
+   * `createRequestAgentTool` so outbound calls are validated against
+   * the peer's declared `inputSchema`/`outputSchema`. Absent → legacy
+   * loose-JSON behaviour (back-compat for pre-v1.1 fleets).
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #11
+   */
+  peerCapabilities?: ReadonlyMap<AgentAddress, LoadedCapabilities>;
+  /**
+   * Shared validator cache. Compiled validators live by schema-hash so
+   * every agent shares the same cache entries for a given schema.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #11
+   */
+  validators?: CapabilityValidatorRegistry;
+  /**
+   * Audit hook fired per failing envelope on either side. Writes a
+   * `capability_schema_violation` record to {@link auditSink} in the
+   * production path; tests can inject arbitrary callbacks.
+   *
+   * PR #23 already REJECTS the call pre-wire (status `schema-violation`,
+   * returns early before publish); this emitter is audit-only.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #11
+   */
+  onSchemaViolation?: CapabilitySchemaViolationEmitter;
 }
 
 /**
@@ -202,6 +283,27 @@ export interface FleetAgentRpcContext {
   transports: ReadonlyMap<RpcTransportKind, RpcTransport>;
   /** Absent when `rpc-peers.yaml` was not supplied. */
   peers?: LoadedPeers;
+  /**
+   * Peer capability tables keyed by `agent://` address. Present when
+   * any agent in the fleet declared capabilities with a schema.
+   * Handlers thread this into `createRequestAgentTool` so outbound
+   * calls are validated pre-publish. See §3 Item #11.
+   *
+   * @since 0.7.x
+   */
+  peerCapabilities?: ReadonlyMap<AgentAddress, LoadedCapabilities>;
+  /**
+   * Shared validator cache. Paired with {@link peerCapabilities}.
+   *
+   * @since 0.7.x
+   */
+  validators?: CapabilityValidatorRegistry;
+  /**
+   * Audit hook forwarded from `startFleetDaemon` options.
+   *
+   * @since 0.7.x
+   */
+  onSchemaViolation?: CapabilitySchemaViolationEmitter;
 }
 
 /**
@@ -314,6 +416,15 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
         selfAddress: `agent://${agent.id}`,
         transports,
         ...(options.peers !== undefined && { peers: options.peers }),
+        // #11 typed-capability wiring — threaded into the handler so
+        // `createRequestAgentTool` can validate outbound payloads.
+        ...(options.peerCapabilities !== undefined && {
+          peerCapabilities: options.peerCapabilities,
+        }),
+        ...(options.validators !== undefined && { validators: options.validators }),
+        ...(options.onSchemaViolation !== undefined && {
+          onSchemaViolation: options.onSchemaViolation,
+        }),
       };
       const worker = startAgentWorker({
         agent,
@@ -322,6 +433,14 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
         logger: io,
         ...(selfFleetVersion !== undefined && { selfFleetVersion }),
         ...(minFleetVersion !== undefined && { minFleetVersion }),
+        // #4 inline verify-auth. The registry/sinks are shared across
+        // every agent — the worker only uses them when the inbound
+        // envelope's `from` peer resolves to an entry in the registry.
+        ...(options.authRegistry !== undefined && { authRegistry: options.authRegistry }),
+        ...(options.auditSink !== undefined && { auditSink: options.auditSink }),
+        ...(options.authRejectSink !== undefined && {
+          authRejectSink: options.authRejectSink,
+        }),
       });
       agents.set(agent.id, worker);
     }
@@ -368,6 +487,14 @@ interface StartAgentWorkerOptions {
   selfFleetVersion?: string;
   /** Receiver-side floor from `fleet.yaml → rpc.minFleetVersion`. */
   minFleetVersion?: string;
+  // ── #4 inline verify-auth ─────────────────────────────────────────
+  authRegistry?: AuthVerifyRegistry;
+  auditSink?: TenantAuditSink;
+  authRejectSink?: (entry: {
+    envelope: AgentRpcEnvelope;
+    reason: string;
+    message: string;
+  }) => Promise<void> | void;
 }
 
 function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
@@ -424,6 +551,104 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
       transport: respondTransport,
       selfAgent: `agent://${agent.id}`,
     });
+
+    // ── #4 Inline verify-auth (Enterprise Production Plan §3) ──────
+    // Pragmatic equivalent of `createAgentInboxAdapter`'s verify path:
+    // when an `AuthVerifyRegistry` is wired AND the envelope's peer has
+    // a registered provider, verify the auth block before handing off
+    // to the handler. Peers without a registered provider fall through
+    // to the legacy `internal`/`hmac` path — no change for fleets that
+    // haven't opted in to `rpc.auth.enabled: true`.
+    if (opts.authRegistry !== undefined) {
+      const entry = opts.authRegistry.resolve(envelope.from);
+      if (entry !== undefined) {
+        const { config, provider } = entry;
+        try {
+          const result = await provider.verify(
+            envelope,
+            config as unknown as Parameters<typeof provider.verify>[1],
+          );
+          if (!result.ok) {
+            await writeAuthCheck(
+              opts,
+              envelope,
+              agent.id,
+              'reject',
+              provider.name,
+              undefined,
+              result.reason,
+            );
+            if (opts.authRejectSink !== undefined) {
+              try {
+                await opts.authRejectSink({
+                  envelope,
+                  reason: 'auth-rejected',
+                  message: result.message,
+                });
+              } catch (err) {
+                opts.logger?.err(
+                  `fleet.auth.reject-sink-error agent=${agent.id} ${
+                    err instanceof Error ? err.message : String(err)
+                  }\n`,
+                );
+              }
+            }
+            // Short-circuit: never dispatch to handler, but still emit
+            // a best-effort failure response so sync callers don't spin.
+            const error: RpcError = {
+              code: 'AUTH_REJECTED',
+              message: result.message,
+            };
+            try {
+              await respond({ ok: false, error });
+            } catch {
+              // ignore — caller will time out if transport is dead
+            }
+            return;
+          }
+          await writeAuthCheck(
+            opts,
+            envelope,
+            agent.id,
+            'accept',
+            provider.name,
+            result.principal.subject,
+            undefined,
+          );
+          // Intentionally do NOT mutate envelope — the `principal` is
+          // available for future context threading; today the handler
+          // only needs capability + payload, both already on envelope.
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await writeAuthCheck(
+            opts,
+            envelope,
+            agent.id,
+            'reject',
+            provider.name,
+            undefined,
+            'idp-unreachable',
+          );
+          if (opts.authRejectSink !== undefined) {
+            try {
+              await opts.authRejectSink({ envelope, reason: 'auth-rejected', message });
+            } catch {
+              // already logged on the upstream sink path
+            }
+          }
+          const error: RpcError = {
+            code: 'AUTH_REJECTED',
+            message,
+          };
+          try {
+            await respond({ ok: false, error });
+          } catch {
+            // ignore
+          }
+          return;
+        }
+      }
+    }
 
     // Fleet-version skew gate (§8.3 / §14.8). Opt-in on both sides:
     // caller stamps `x-fleet-version`, receiver configures `minFleetVersion`.
@@ -494,6 +719,45 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
       // daemon shutdown, not per-worker.
     },
   };
+}
+
+/**
+ * Emit an `auth_check` audit record for an inbound envelope. Best-effort:
+ * sink failures log once + continue so audit I/O never blocks the
+ * critical path.
+ *
+ * @since 0.7.x — Enterprise Production Plan §3 Item #4
+ */
+async function writeAuthCheck(
+  opts: StartAgentWorkerOptions,
+  envelope: AgentRpcEnvelope,
+  agentId: string,
+  decision: 'accept' | 'reject',
+  providerName: AuthCheckAuditRecord['provider'],
+  subject: string | undefined,
+  reason: string | undefined,
+): Promise<void> {
+  if (opts.auditSink === undefined) return;
+  const record: AuthCheckAuditRecord = {
+    kind: 'auth_check',
+    ts: Date.now(),
+    tenantId: envelope.tenantId ?? 'default',
+    peerId: envelope.from,
+    provider: providerName,
+    decision,
+    correlationId: envelope.correlationId,
+  };
+  if (reason !== undefined) record.reason = reason;
+  if (subject !== undefined && subject.length > 0) record.subject = subject;
+  try {
+    await opts.auditSink.record(record);
+  } catch (err) {
+    opts.logger?.err(
+      `fleet.auth.audit-sink-error agent=${agentId} ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
 }
 
 /**
@@ -639,7 +903,7 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
   // is silently fine — fleets without cross-agent RPC never need it;
   // the `RequestAgent` tool just won't be wired into handlers.
   const peersPath = join(root, 'rpc-peers.yaml');
-  let peers: import('@declaragent/core').LoadedPeers | undefined;
+  let peers: LoadedPeers | undefined;
   if (existsSync(peersPath)) {
     try {
       peers = await loadPeersConfig(peersPath);
@@ -651,19 +915,207 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     }
   }
 
+  // ── #4 + #11 fleet-wide runtime wiring ────────────────────────────
+  // Mirrors the `up-cli.ts` pattern: open ONE audit sink per fleet-run
+  // process when either `rpc.auth.enabled` opts in OR any loaded
+  // capability declares a schema. Absent both — we skip the SQLite
+  // handle entirely so legacy fleets pay zero disk I/O.
+  //
+  // Why a separate sink from `up` even though the DB path is the same:
+  // `fleet run` and `up` are independent entry points that never
+  // co-exist in a single process. A future refactor can unify both
+  // under a shared platform struct — tracked in §"open decisions".
+  let anyAgentHasRpcAuth = false;
+  for (const agent of filteredFleet.agents) {
+    try {
+      const a = await loadAgent({ agentDir: agent.path });
+      if (a.rpcAuthEnabled) {
+        anyAgentHasRpcAuth = true;
+        break;
+      }
+    } catch {
+      // A broken agent.yaml still fails downstream during engine boot;
+      // we don't want the auth-detection probe to crash fleet-run.
+    }
+  }
+
+  // #11 schema presence check — walk each agent's already-loaded
+  // capabilities (the fleet loader populated them when validating
+  // capabilities.yaml against the memory-transport topology).
+  let anyCapabilityHasSchemas = false;
+  for (const agent of filteredFleet.agents) {
+    if (!agent.capabilities) continue;
+    for (const cap of agent.capabilities.config.capabilities) {
+      if (cap.inputSchema !== undefined || cap.outputSchema !== undefined) {
+        anyCapabilityHasSchemas = true;
+        break;
+      }
+    }
+    if (anyCapabilityHasSchemas) break;
+  }
+
+  const needsAuditSink = anyAgentHasRpcAuth || anyCapabilityHasSchemas;
+  let auditSink: TenantAuditSink | undefined;
+  if (needsAuditSink) {
+    try {
+      auditSink = await createSqliteAuditSink({ path: auditDbPath() });
+    } catch (err) {
+      io.err(
+        `warning: audit sink at ${auditDbPath()} failed to open — ${err instanceof Error ? err.message : String(err)}. auth_check + capability_schema_violation records disabled.\n`,
+      );
+    }
+  }
+
+  // #4 AuthVerifyRegistry build. Requires peers; when the opt-in flag
+  // is set but no peers exist we log a warning and proceed — legacy
+  // envelopes still flow through unchanged.
+  let authRegistry: AuthVerifyRegistry | undefined;
+  let authEventStore: EventStore | undefined;
+  let authEventStoreDb: Database | undefined;
+  let authRejectSink:
+    | ((entry: { envelope: AgentRpcEnvelope; reason: string; message: string }) => Promise<void>)
+    | undefined;
+  if (anyAgentHasRpcAuth) {
+    if (peers === undefined) {
+      io.err(
+        'warning: rpc.auth.enabled=true but no rpc-peers.yaml found — auth registry is empty (every envelope follows the legacy path).\n',
+      );
+    } else {
+      try {
+        const resolver = createDefaultSecretResolver({ fileRoot: root });
+        authRegistry = await buildAuthVerifyRegistry({
+          peers,
+          secrets: (ref) => resolver.resolve(ref),
+        });
+        const registeredPeers = peers.config.peers.filter((p) => p.auth !== undefined).length;
+        io.out(
+          `  rpc.auth enabled (${registeredPeers} peer(s) with verify providers registered)\n`,
+        );
+      } catch (err) {
+        io.err(
+          `warning: rpc.auth.enabled=true but registry build failed — ${
+            err instanceof Error ? err.message : String(err)
+          }. Falling back to legacy envelope auth.\n`,
+        );
+      }
+    }
+
+    // Open an event store so rejected envelopes land in `rejected_events`
+    // under `kind=auth-rejected` — same contract agent-inbox honours.
+    try {
+      authEventStoreDb = new Database(sessionsDbPath(), { create: true });
+      authEventStoreDb.exec('PRAGMA journal_mode = WAL;');
+      authEventStore = createEventStore({ db: authEventStoreDb });
+      const store = authEventStore;
+      authRejectSink = async (entry) => {
+        try {
+          await store.upsertRejection(
+            entry.envelope.messageId,
+            'auth-rejected',
+            entry.message,
+            Date.now(),
+          );
+        } catch (err) {
+          io.err(
+            `warning: rejected_events upsert failed — ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+        }
+      };
+    } catch (err) {
+      io.err(
+        `warning: could not open rejected_events store at ${sessionsDbPath()} — ${
+          err instanceof Error ? err.message : String(err)
+        }. Auth rejects will not be persisted.\n`,
+      );
+    }
+  }
+
+  // #11 Capability-validator registry + per-peer capabilities map. One
+  // registry per fleet-run process — compiled validators are keyed by
+  // `(capabilityName, schemaHash)` so a second agent that calls the
+  // same capability reuses the cached compiled form.
+  let validators: CapabilityValidatorRegistry | undefined;
+  let peerCapabilities: ReadonlyMap<AgentAddress, LoadedCapabilities> | undefined;
+  let onSchemaViolation: CapabilitySchemaViolationEmitter | undefined;
+  if (anyCapabilityHasSchemas) {
+    validators = createCapabilityValidatorRegistry();
+    const peerCapMap = new Map<AgentAddress, LoadedCapabilities>();
+    for (const agent of filteredFleet.agents) {
+      if (agent.capabilities !== undefined) {
+        peerCapMap.set(`agent://${agent.id}` as AgentAddress, agent.capabilities);
+      }
+    }
+    peerCapabilities = peerCapMap;
+    if (auditSink !== undefined) {
+      const sink = auditSink;
+      onSchemaViolation = async (event) => {
+        const record: CapabilitySchemaViolationAuditRecord = {
+          kind: 'capability_schema_violation',
+          ts: Date.now(),
+          tenantId: event.tenantId ?? 'default',
+          capabilityName: event.capabilityName,
+          peerId: event.peerId,
+          side: event.side,
+          violations: event.violations,
+          correlationId: event.correlationId,
+        };
+        if (event.sessionId !== undefined) record.sessionId = event.sessionId;
+        try {
+          await sink.record(record);
+        } catch (err) {
+          io.err(
+            `warning: capability_schema_violation audit-sink error — ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+        }
+      };
+    }
+  }
+
   const daemon = await startFleetDaemon({
     fleet: filteredFleet,
     ...(makeHandler !== undefined && { makeHandler }),
     ...(peers !== undefined && { peers }),
     io,
+    ...(authRegistry !== undefined && { authRegistry }),
+    ...(auditSink !== undefined && { auditSink }),
+    ...(authRejectSink !== undefined && { authRejectSink }),
+    ...(peerCapabilities !== undefined && { peerCapabilities }),
+    ...(validators !== undefined && { validators }),
+    ...(onSchemaViolation !== undefined && { onSchemaViolation }),
   });
 
   // Close the session DB handle together with the daemon so subsequent
   // invocations don't hit WAL lock contention (sqlite keeps the handle
-  // open for the process lifetime otherwise).
+  // open for the process lifetime otherwise). The audit sink + optional
+  // event-store handle are closed on the same boundary.
+  //
+  // Idempotent: the SIGINT path triggers `stop()` which calls
+  // `shutdownDaemon`, then `daemon.waitForShutdown()` resolves and the
+  // outer code would otherwise close again.
+  let shutdownRan = false;
   const shutdownDaemon = async (): Promise<void> => {
+    if (shutdownRan) return;
+    shutdownRan = true;
     await daemon.shutdown();
     sessionStore?.close();
+    if (auditSink !== undefined) {
+      try {
+        await auditSink.close();
+      } catch {
+        // best-effort
+      }
+    }
+    if (authEventStoreDb !== undefined) {
+      try {
+        authEventStoreDb.close();
+      } catch {
+        // best-effort
+      }
+    }
   };
 
   io.out(`fleet: ${fleet.manifest.name}\n`);
@@ -705,7 +1157,7 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     void stop();
   });
   await daemon.waitForShutdown();
-  sessionStore?.close();
+  await shutdownDaemon();
   return 0;
 }
 

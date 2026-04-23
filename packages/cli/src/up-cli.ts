@@ -270,11 +270,13 @@ interface RunningAgent {
   logger: AgentLogger;
   /**
    * RPC auth verify registry, built from `rpc-peers.yaml` when
-   * `agent.yaml#rpc.auth.enabled: true`. Exposed so future wiring that
-   * constructs an `agent-inbox` source adapter inside `up` can pass it
-   * to `createAgentInboxAdapter({ authRegistry })`. Today the `up`
-   * path does not itself construct agent-inbox (fleet-run does), so
-   * this field is held for symmetry + inspection via `/status`.
+   * `agent.yaml#rpc.auth.enabled: true`. The `authRegistry` is built
+   * here for future agent-inbox consumers; neither `up` nor `fleet-run`
+   * today constructs `createAgentInboxAdapter` (that would require a
+   * per-agent `EventBus` + `SourceDependencies` shim). `fleet-run`
+   * verifies envelopes inline in `startAgentWorker.onRequest` as a
+   * pragmatic equivalent — see `packages/cli/src/fleet-run.ts`. `up`
+   * holds this field for symmetry + inspection via `/status`.
    *
    * @since 0.7.x — Enterprise Production Plan §3 Item #4 follow-up
    */
