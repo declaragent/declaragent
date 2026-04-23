@@ -120,6 +120,62 @@ const agentYamlSchema = z
       .passthrough()
       .optional(),
     /**
+     * Enterprise Production Plan §3 Item #5 — Managed control plane,
+     * Slice 2 (CONTROL_PLANE_PLAN.md §9 PR 2). Optional OIDC / OAuth2
+     * Client-Credentials middleware in front of the control-plane HTTP
+     * listener. Default `enabled: false` preserves the current no-auth
+     * posture; flipping to `true` means remote requests to `/metrics`,
+     * `/status`, `/events`, `/dlq`, `/audit`, and `/logs` must carry a
+     * Bearer token that validates against the configured issuer +
+     * audience + scopes. Loopback requests bypass by default — set
+     * `allowLoopback: false` for a zero-trust localhost posture.
+     *
+     * Shape mirrors `rpc-peers.yaml#auth` so operators can reuse the
+     * same IdP for RPC envelope auth and control-plane auth without
+     * learning two schemas.
+     *
+     * @since 0.7.x
+     */
+    controlPlane: z
+      .object({
+        auth: z
+          .union([
+            z
+              .object({
+                enabled: z.literal(false).optional(),
+              })
+              .passthrough(),
+            z
+              .object({
+                enabled: z.literal(true),
+                allowLoopback: z.boolean().optional(),
+                provider: z.literal('oidc'),
+                issuer: z.string().min(1),
+                audience: z.string().min(1),
+                jwksUri: z.string().min(1).optional(),
+                scopes: z.array(z.string().min(1)).optional(),
+              })
+              .strict(),
+            z
+              .object({
+                enabled: z.literal(true),
+                allowLoopback: z.boolean().optional(),
+                provider: z.literal('oauth2-client'),
+                tokenEndpoint: z.string().min(1),
+                clientId: z.string().min(1),
+                clientSecretRef: z.string().min(1),
+                jwksUri: z.string().min(1).optional(),
+                issuer: z.string().min(1).optional(),
+                audience: z.string().min(1).optional(),
+                scopes: z.array(z.string().min(1)).optional(),
+              })
+              .strict(),
+          ])
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+    /**
      * Enterprise Production Plan §3 Item #8 — MCP supervisor wiring. The
      * supervisor wraps each MCP server with auto-recovery (ping health
      * check, exponential backoff, circuit breaker) and re-registers
@@ -273,6 +329,38 @@ export type LoadedAuditExport =
  */
 export type LoadedMCPSupervised = 'all' | 'none' | readonly string[];
 
+/**
+ * Parsed + validated `agent.yaml#controlPlane.auth` block. Only present
+ * when `enabled: true`; a disabled / absent block resolves to
+ * `undefined` on {@link LoadedAgent.controlPlaneAuth} so callers can do
+ * a single truthiness check.
+ *
+ * Shape mirrors `rpc-peers.yaml#auth` so operators can reuse the same
+ * IdP for RPC envelope auth and control-plane auth.
+ *
+ * @since 0.7.x — Enterprise Production Plan §3 Item #5 Slice 2
+ */
+export type LoadedControlPlaneAuth =
+  | {
+      provider: 'oidc';
+      allowLoopback?: boolean;
+      issuer: string;
+      audience: string;
+      jwksUri?: string;
+      scopes?: readonly string[];
+    }
+  | {
+      provider: 'oauth2-client';
+      allowLoopback?: boolean;
+      tokenEndpoint: string;
+      clientId: string;
+      clientSecretRef: string;
+      jwksUri?: string;
+      issuer?: string;
+      audience?: string;
+      scopes?: readonly string[];
+    };
+
 export interface LoadedAgent {
   readonly spec: AgentSpec;
   readonly skills: readonly Skill[];
@@ -305,6 +393,15 @@ export interface LoadedAgent {
    * @since 0.7.x — Enterprise Production Plan §3 Item #8
    */
   readonly mcpSupervised: LoadedMCPSupervised;
+  /**
+   * Parsed `controlPlane.auth` block when `enabled: true`. `undefined`
+   * when the block is absent or `enabled: false`, in which case the
+   * CLI boots the control-plane listener without auth middleware
+   * (back-compat).
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #5 Slice 2
+   */
+  readonly controlPlaneAuth?: LoadedControlPlaneAuth;
   readonly agentDir: string;
   readonly agentYamlPath: string;
   /** Lookup-name collisions surfaced by the skill loader; callers may warn. */
@@ -413,6 +510,41 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
   // failure.
   const mcpSupervised: LoadedMCPSupervised = cfg.mcp?.supervised ?? 'all';
 
+  // Control-plane auth opt-in. Zod already normalised the discriminated
+  // union; we only care about the `enabled: true` branches which carry
+  // the provider-specific fields. Disabled / absent → undefined so the
+  // CLI's truthiness check keeps the back-compat (no-middleware) path.
+  const cpAuthCfg = cfg.controlPlane?.auth;
+  let controlPlaneAuth: LoadedControlPlaneAuth | undefined;
+  if (cpAuthCfg && cpAuthCfg.enabled === true && 'provider' in cpAuthCfg) {
+    if (cpAuthCfg.provider === 'oidc') {
+      controlPlaneAuth = {
+        provider: 'oidc',
+        ...(cpAuthCfg.allowLoopback !== undefined && {
+          allowLoopback: cpAuthCfg.allowLoopback,
+        }),
+        issuer: cpAuthCfg.issuer,
+        audience: cpAuthCfg.audience,
+        ...(cpAuthCfg.jwksUri !== undefined && { jwksUri: cpAuthCfg.jwksUri }),
+        ...(cpAuthCfg.scopes !== undefined && { scopes: cpAuthCfg.scopes }),
+      };
+    } else {
+      controlPlaneAuth = {
+        provider: 'oauth2-client',
+        ...(cpAuthCfg.allowLoopback !== undefined && {
+          allowLoopback: cpAuthCfg.allowLoopback,
+        }),
+        tokenEndpoint: cpAuthCfg.tokenEndpoint,
+        clientId: cpAuthCfg.clientId,
+        clientSecretRef: cpAuthCfg.clientSecretRef,
+        ...(cpAuthCfg.jwksUri !== undefined && { jwksUri: cpAuthCfg.jwksUri }),
+        ...(cpAuthCfg.issuer !== undefined && { issuer: cpAuthCfg.issuer }),
+        ...(cpAuthCfg.audience !== undefined && { audience: cpAuthCfg.audience }),
+        ...(cpAuthCfg.scopes !== undefined && { scopes: cpAuthCfg.scopes }),
+      };
+    }
+  }
+
   return {
     spec,
     skills: skillLoad.skills,
@@ -421,6 +553,7 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
     ...(auditExport !== undefined && { auditExport }),
     rpcAuthEnabled,
     mcpSupervised,
+    ...(controlPlaneAuth !== undefined && { controlPlaneAuth }),
     agentDir,
     agentYamlPath,
     skillConflicts: skillLoad.conflicts,

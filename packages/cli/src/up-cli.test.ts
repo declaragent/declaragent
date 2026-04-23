@@ -259,6 +259,209 @@ describe('up verb — single agent', () => {
     }
   });
 
+  test('control-plane auth: rejects unauthenticated remote requests, accepts a valid OIDC token', async () => {
+    // End-to-end integration test for Slice 2 of the Managed Control
+    // Plane (CONTROL_PLANE_PLAN.md §9 PR 2). We:
+    //   1. Spin up a stub OIDC JWKS endpoint on an ephemeral port.
+    //   2. Boot `up` with `controlPlane.auth.enabled: true` pointing at
+    //      the stub.
+    //   3. From the same process, craft requests that masquerade as
+    //      remote (Host header != loopback) and assert:
+    //        - no token → 401
+    //        - valid token → 200
+    //        - bad audience token → 401
+    //   4. Also assert the default loopback bypass keeps `/metrics`
+    //      reachable without a token when the Host header IS loopback.
+    const port = await freePort();
+    const originalPort = process.env.DECLARAGENT_METRICS_PORT;
+    process.env.DECLARAGENT_METRICS_PORT = String(port);
+
+    // ── Stub JWKS server ─────────────────────────────────────────────
+    interface SubtleLike {
+      generateKey(
+        alg: unknown,
+        extractable: boolean,
+        usages: readonly string[],
+      ): Promise<{ publicKey: unknown; privateKey: unknown }>;
+      exportKey(format: 'jwk', key: unknown): Promise<Record<string, unknown>>;
+      sign(alg: unknown, key: unknown, data: Uint8Array): Promise<ArrayBuffer>;
+    }
+    const subtle = (): SubtleLike => (crypto as unknown as { subtle: SubtleLike }).subtle;
+    const b64url = (bytes: Uint8Array | string): string => {
+      const u8 = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
+      let s = '';
+      for (let i = 0; i < u8.length; i += 1) s += String.fromCharCode(u8[i] as number);
+      return btoa(s).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    };
+    const pair = await subtle().generateKey(
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: 'SHA-256',
+      },
+      true,
+      ['sign', 'verify'],
+    );
+    const publicJwk = {
+      ...(await subtle().exportKey('jwk', pair.publicKey)),
+      kid: 'test-kid',
+      alg: 'RS256',
+      use: 'sig',
+    };
+    const signToken = async (claims: Record<string, unknown>): Promise<string> => {
+      const header = { alg: 'RS256', typ: 'JWT', kid: 'test-kid' };
+      const hEnc = b64url(JSON.stringify(header));
+      const cEnc = b64url(JSON.stringify(claims));
+      const signingInput = `${hEnc}.${cEnc}`;
+      const sig = await subtle().sign(
+        { name: 'RSASSA-PKCS1-v1_5' },
+        pair.privateKey,
+        new TextEncoder().encode(signingInput),
+      );
+      return `${signingInput}.${b64url(new Uint8Array(sig))}`;
+    };
+
+    const jwksPort = await freePort();
+    // biome-ignore lint/suspicious/noExplicitAny: Bun.serve isn't typed here.
+    const bun = (globalThis as any).Bun;
+    const jwksServer = bun.serve({
+      port: jwksPort,
+      hostname: '127.0.0.1',
+      fetch: () =>
+        new Response(JSON.stringify({ keys: [publicJwk] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    });
+
+    // Agent yaml with controlPlane.auth.enabled
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        AGENT_YAML,
+        'controlPlane:',
+        '  auth:',
+        '    enabled: true',
+        '    provider: oidc',
+        '    issuer: "https://dex.test.local"',
+        '    audience: "declaragent-control-plane"',
+        `    jwksUri: "http://127.0.0.1:${jwksPort}/"`,
+        '    scopes: ["control:read"]',
+        '',
+      ].join('\n'),
+    );
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const goodToken = await signToken({
+      iss: 'https://dex.test.local',
+      aud: 'declaragent-control-plane',
+      sub: 'svc:prom',
+      iat: nowSec,
+      exp: nowSec + 300,
+      scope: 'control:read',
+    });
+    const badAudToken = await signToken({
+      iss: 'https://dex.test.local',
+      aud: 'other-audience',
+      sub: 'svc:prom',
+      iat: nowSec,
+      exp: nowSec + 300,
+      scope: 'control:read',
+    });
+
+    try {
+      const cap = captureIo();
+      let loopbackStatus = 0;
+      let remoteMissingStatus = 0;
+      let remoteValidStatus = 0;
+      let remoteBadAudStatus = 0;
+      let driverErr: unknown = undefined;
+
+      const deferredShutdown: (onShutdown: () => Promise<void>) => () => void = (onShutdown) => {
+        void (async () => {
+          try {
+            for (let i = 0; i < 100; i += 1) {
+              if (cap.out.join('').includes('control-plane auth enabled')) break;
+              await new Promise((r) => setTimeout(r, 20));
+            }
+            // Loopback bypass (default) — same-host curl, no token.
+            const loopRes = await fetch(`http://127.0.0.1:${port}/status`);
+            loopbackStatus = loopRes.status;
+            await loopRes.body?.cancel();
+
+            // Remote, no token → 401.
+            const missRes = await fetch(`http://127.0.0.1:${port}/status`, {
+              headers: { host: 'fleet.internal:9464' },
+            });
+            remoteMissingStatus = missRes.status;
+            await missRes.body?.cancel();
+
+            // Remote, valid token → 200.
+            const okRes = await fetch(`http://127.0.0.1:${port}/status`, {
+              headers: {
+                host: 'fleet.internal:9464',
+                authorization: `Bearer ${goodToken}`,
+              },
+            });
+            remoteValidStatus = okRes.status;
+            await okRes.body?.cancel();
+
+            // Remote, wrong-audience token → 401.
+            const badRes = await fetch(`http://127.0.0.1:${port}/status`, {
+              headers: {
+                host: 'fleet.internal:9464',
+                authorization: `Bearer ${badAudToken}`,
+              },
+            });
+            remoteBadAudStatus = badRes.status;
+            await badRes.body?.cancel();
+          } catch (err) {
+            driverErr = err;
+          } finally {
+            await onShutdown();
+          }
+        })();
+        return () => {};
+      };
+
+      const code = await up(
+        {},
+        {
+          io: cap.io,
+          cwd: dir,
+          startSources: stubSources().fn,
+          installSignals: deferredShutdown,
+        },
+      );
+      if (driverErr !== undefined) throw driverErr;
+      expect(code).toBe(0);
+      expect(cap.out.join('')).toContain('control-plane auth enabled');
+      // Loopback bypass — /status served without a token.
+      expect(loopbackStatus).toBe(200);
+      // Remote without token — 401.
+      expect(remoteMissingStatus).toBe(401);
+      // Remote with a good token — 200.
+      expect(remoteValidStatus).toBe(200);
+      // Remote with a bad-audience token — 401.
+      expect(remoteBadAudStatus).toBe(401);
+    } finally {
+      try {
+        jwksServer.stop();
+      } catch {
+        // best effort
+      }
+      if (originalPort === undefined) {
+        // biome-ignore lint/performance/noDelete: restore pre-test env.
+        delete process.env.DECLARAGENT_METRICS_PORT;
+      } else {
+        process.env.DECLARAGENT_METRICS_PORT = originalPort;
+      }
+      // Restore the agent yaml so subsequent tests aren't affected.
+      writeFileSync(join(dir, 'agent.yaml'), AGENT_YAML);
+    }
+  });
+
   test('exposes a Prometheus /metrics endpoint when DECLARAGENT_METRICS_PORT is set', async () => {
     const port = await freePort();
     const originalPort = process.env.DECLARAGENT_METRICS_PORT;

@@ -33,6 +33,7 @@
  * @since 0.7.0-slice.1
  */
 
+import { type ControlPlaneAuth, applyControlPlaneAuth } from './control-plane-auth.js';
 import type { PrometheusRegistry } from './prometheus.js';
 
 // ── Route contract ─────────────────────────────────────────────────────────
@@ -86,6 +87,15 @@ export interface ControlPlaneServerOptions {
    * this to `agent.yaml#observability.bindAddress`.
    */
   allowRemote?: boolean;
+  /**
+   * Optional auth middleware. When supplied, every request passes
+   * through {@link applyControlPlaneAuth} before route dispatch.
+   * Missing / bad tokens produce a typed 401 before the router sees
+   * the request. Omit for back-compat (no auth; existing behaviour).
+   *
+   * @since 0.7.0-slice.2
+   */
+  auth?: ControlPlaneAuth;
   /** Test override. Replace Bun.serve with a fake listener. */
   listen?: (opts: ControlPlaneServerListenOptions) => Promise<ControlPlaneServerInstance>;
 }
@@ -105,12 +115,21 @@ export async function startControlPlaneServer(
   const allowRemote = opts.allowRemote ?? false;
   const listen = opts.listen ?? defaultListen;
   const routes = opts.routes;
+  const auth = opts.auth;
 
   assertUniquePaths(routes);
 
   async function fetch(req: Request): Promise<Response> {
     if (!allowRemote && !isLocalClient(req)) {
       return new Response('remote control-plane disabled', { status: 403 });
+    }
+    // Auth fires BEFORE route dispatch. Loopback bypass (the default)
+    // keeps same-host curls + `declaragent ps` working without a token;
+    // a non-loopback request with a bad / missing token gets a typed
+    // 401 straight from the middleware.
+    if (auth) {
+      const result = await applyControlPlaneAuth(auth, req);
+      if (!result.ok) return result.response;
     }
     const url = new URL(req.url);
     for (const route of routes) {

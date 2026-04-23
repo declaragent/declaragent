@@ -177,6 +177,67 @@ work.
   `kind=auth-rejected` so `declaragent dlq list --kind rejected` surfaces
   the specific peer + reason.
 
+## `controlPlane.auth` — OIDC / OAuth2 on the HTTP listener
+
+*Added 0.7.x (Enterprise Production Plan §3 Item #5, Slice 2 of `docs/CONTROL_PLANE_PLAN.md`).*
+
+The control-plane listener (`/metrics`, `/status`, `/events`, `/dlq`,
+`/audit`, `/logs`) binds to `127.0.0.1:9464` by default. Enable this
+block and remote callers (a reverse-proxied `declaragent fleet ps`, a
+Prometheus federation) must present a valid Bearer token:
+
+```yaml
+controlPlane:
+  auth:
+    enabled: true                           # default false (back-compat)
+    provider: oidc                          # or 'oauth2-client'
+    issuer: "https://dex.acme.example"
+    audience: "declaragent-control-plane"
+    jwksUri: "https://dex.acme.example/keys"    # optional — derived from issuer discovery
+    scopes: ["control:read"]                # strict AND — every scope required
+    # allowLoopback: false                  # optional — default true; flip for zero-trust
+```
+
+**Defaults.**
+
+- `controlPlane.auth.enabled` defaults to `false`. Legacy single-host
+  fleets keep working unchanged.
+- `allowLoopback` defaults to `true`: requests whose `Host` header is
+  `127.0.0.1` / `localhost` bypass the verifier so same-host curls and
+  `declaragent ps` work without a token. Zero-trust deployments set
+  `false` to require a token on every request.
+- When `enabled: true`, the `up` daemon implicitly flips the listener's
+  `allowRemote: true` — otherwise non-loopback requests would hit the
+  pre-auth 403 before the middleware ever runs. The bind address stays
+  `127.0.0.1`; a reverse proxy is expected to front the port.
+
+**OAuth2 Client-Credentials** uses the same shape as
+`rpc-peers.yaml#auth` for that flow:
+
+```yaml
+controlPlane:
+  auth:
+    enabled: true
+    provider: oauth2-client
+    tokenEndpoint: "https://idp.acme.example/oauth/token"
+    clientId: "declaragent-control-plane"
+    clientSecretRef: "env:CP_CLIENT_SECRET"  # also accepts file:/secret: refs
+    audience: "declaragent-control-plane"
+    issuer: "https://idp.acme.example/"
+    jwksUri: "https://idp.acme.example/.well-known/jwks.json"
+    scopes: ["control:read"]
+```
+
+**Rejection reasons.** Failed requests return `401` with a typed body
+`{ "error": "...", "reason": "..." }`. The `reason` vocabulary
+(`missing-token`, `malformed-token`, `bad-signature`, `expired`,
+`wrong-issuer`, `wrong-audience`, `insufficient-scope`,
+`idp-unreachable`, `provider-failed`) is stable so remote CLIs can
+branch without parsing free-form `error` text.
+
+See [Authenticated control plane](/reference/control-plane#authenticated-control-plane)
+for the full request flow + rejection-reason table.
+
 ## `mcp.supervised` — MCP auto-recovery opt-in
 
 *Added 0.7.x (Enterprise Production Plan §3 Item #8).*

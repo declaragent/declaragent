@@ -35,6 +35,7 @@ import {
   type AuditExporter,
   CircuitBreaker,
   type CircuitBreakerTransitionEvent,
+  type ControlPlaneAuth,
   type ControlPlaneRoute,
   type ControlPlaneServerHandle,
   type ControlSocketContext,
@@ -45,6 +46,7 @@ import {
   type LLMProvider,
   type LoadedAgent,
   type LoadedAuditExport,
+  type LoadedControlPlaneAuth,
   type Logger,
   type PrometheusRegistry,
   type TenantAuditSink,
@@ -86,6 +88,7 @@ import { type AuthVerifyRegistry, buildAuthVerifyRegistry } from '@declaragent/p
 import { resolveCredentials } from './auth.js';
 import { buildRuntimeTools } from './builtin-tools.js';
 import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
+import { buildControlPlaneAuth } from './control-plane-auth-factory.js';
 import {
   type ConsentResolver,
   type MCPRuntime,
@@ -276,6 +279,16 @@ interface RunningAgent {
    * @since 0.7.x — Enterprise Production Plan §3 Item #4 follow-up
    */
   authRegistry?: AuthVerifyRegistry;
+  /**
+   * Parsed `controlPlane.auth` block when `enabled: true`. Collected on
+   * every RunningAgent; `up` then picks the first opt-in config and
+   * installs it as middleware in front of the shared control-plane
+   * HTTP listener. Multi-agent fleets that set different blocks are
+   * warned at bind time — the listener is process-wide.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #5 Slice 2
+   */
+  controlPlaneAuthCfg?: LoadedControlPlaneAuth;
   /** MCP servers spawned for this agent; shutdown on stopAll. */
   mcp?: MCPRuntime;
   /** Channel registry + mailbox for this agent; shutdown on stopAll. */
@@ -548,11 +561,67 @@ async function runForeground(
       };
     };
     routes.push(logsRoute({ resolvePaths: resolveLogPaths }));
+
+    // Control-plane auth middleware (§3 Item #5 Slice 2 —
+    // CONTROL_PLANE_PLAN.md §9 PR 2). The listener is process-wide, so
+    // we pick the first agent whose `agent.yaml#controlPlane.auth.enabled`
+    // is true and use that provider block. Multi-agent fleets with
+    // conflicting blocks emit a warning (the first wins) — a future
+    // slice can promote this to a fleet-level config in `fleet.yaml`.
+    const cpAuthCandidates = running
+      .map((r) => ({ id: r.summary.id, cfg: r.controlPlaneAuthCfg }))
+      .filter((x): x is { id: string; cfg: LoadedControlPlaneAuth } => x.cfg !== undefined);
+    let controlPlaneAuth: ControlPlaneAuth | undefined;
+    if (cpAuthCandidates.length > 0) {
+      const first = cpAuthCandidates[0];
+      if (first === undefined) {
+        // Unreachable — `length > 0` guarantees the element exists. The
+        // guard keeps TypeScript's `noUncheckedIndexedAccess` happy.
+      } else {
+        if (cpAuthCandidates.length > 1) {
+          const others = cpAuthCandidates
+            .slice(1)
+            .map((x) => x.id)
+            .join(', ');
+          io.err(
+            `⚠ multiple agents set controlPlane.auth.enabled=true (${others}). Using ${first.id}'s config for the process-wide listener.\n`,
+          );
+        }
+        try {
+          const resolver = createDefaultSecretResolver({
+            fileRoot: agentDirs[0] ?? manifestDir(manifestPath),
+          });
+          controlPlaneAuth = await buildControlPlaneAuth({
+            config: first.cfg,
+            secrets: (ref) => resolver.resolve(ref),
+          });
+          io.out(
+            `  control-plane auth enabled (provider: ${first.cfg.provider}, allowLoopback: ${first.cfg.allowLoopback ?? true})\n`,
+          );
+        } catch (err) {
+          io.err(
+            `⚠ control-plane auth failed to initialise — ${err instanceof Error ? err.message : String(err)}. Falling back to no-auth (loopback-only bind still protects the port).\n`,
+          );
+        }
+      }
+    }
+
     try {
       controlPlaneHandle = await startControlPlaneServer({
         routes,
         port: metricsPort,
         hostname: '127.0.0.1',
+        // Authenticated listener implicitly accepts non-loopback Host
+        // headers — otherwise the middleware is unreachable for the
+        // remote callers it was installed to protect. Bind remains
+        // `127.0.0.1` (kernel-level firewall) until operators flip the
+        // future `observability.bindAddress` knob; this only relaxes
+        // the in-process Host-header sniff so a reverse-proxied remote
+        // request can complete the token handshake.
+        ...(controlPlaneAuth !== undefined && {
+          auth: controlPlaneAuth,
+          allowRemote: true,
+        }),
       });
       io.out(`  metrics: http://127.0.0.1:${controlPlaneHandle.port}/metrics\n`);
       io.out(`  status:  http://127.0.0.1:${controlPlaneHandle.port}/status\n`);
@@ -777,6 +846,9 @@ async function bringUp(
       logger,
       mcp,
       ...(loaded.auditExport !== undefined && { auditExport: loaded.auditExport }),
+      ...(loaded.controlPlaneAuth !== undefined && {
+        controlPlaneAuthCfg: loaded.controlPlaneAuth,
+      }),
     };
   }
 
@@ -892,6 +964,9 @@ async function bringUp(
     ...(detachDispatcher !== undefined && { detachDispatcher }),
     ...(loaded.auditExport !== undefined && { auditExport: loaded.auditExport }),
     ...(authRegistry !== undefined && { authRegistry }),
+    ...(loaded.controlPlaneAuth !== undefined && {
+      controlPlaneAuthCfg: loaded.controlPlaneAuth,
+    }),
   };
 
   // Bind the control socket (§3 item #6 of the Enterprise Production

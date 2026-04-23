@@ -1,4 +1,17 @@
 export {
+  applyControlPlaneAuth,
+  extractBearerToken,
+  isLoopbackRequest,
+} from './control-plane-auth.js';
+export type {
+  ControlPlaneAuth,
+  ControlPlaneAuthRejectReason,
+  ControlPlaneAuthResult,
+  ControlPlanePrincipal,
+  ControlPlaneTokenVerifier,
+  ControlPlaneTokenVerifyResult,
+} from './control-plane-auth.js';
+export {
   metricsRoute,
   startControlPlaneServer,
   statusRoute,
