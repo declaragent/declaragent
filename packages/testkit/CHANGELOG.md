@@ -1,5 +1,14 @@
 # @declaragent/testkit
 
+## 4.0.2
+
+### Patch Changes
+
+- Updated dependencies [cfb5dbe]
+- Updated dependencies [eda26e5]
+  - @declaragent/plugin-agent-rpc@4.0.2
+  - @declaragent/core@0.5.2
+
 ## 4.0.1
 
 ### Patch Changes

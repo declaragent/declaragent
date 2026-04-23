@@ -1,5 +1,13 @@
 # @declaragent-examples/phase5-demo
 
+## 0.0.9
+
+### Patch Changes
+
+- Updated dependencies [eda26e5]
+  - @declaragent/core@0.5.2
+  - @declaragent/testkit@4.0.2
+
 ## 0.0.8
 
 ### Patch Changes

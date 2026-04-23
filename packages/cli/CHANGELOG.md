@@ -1,5 +1,55 @@
 # @declaragent/cli
 
+## 0.7.3
+
+### Patch Changes
+
+- aa93017: feat(rpc): `declaragent fleet audit-rpc [--suggest-enable] [--strict] [--json]` — pre-flight inspector for `rpc.auth.enabled` across every agent in the fleet
+
+  Adds a new read-only fleet verb that walks `fleet.yaml` + each per-agent `agent.yaml` + `rpc-peers.yaml` and reports which agents have RPC envelope auth on, off, or unconfigured. Three output modes:
+
+  - **default** — human-readable table with one line per agent and a hint to re-run with `--suggest-enable` for a copy-pasteable migration snippet.
+  - `--suggest-enable` — emits the exact YAML diff operators paste into each agent's `agent.yaml` to opt in. When a matching peer entry in `rpc-peers.yaml` already specifies an auth provider, the snippet echoes that provider in a comment so the suggestion is actionable, not a stub.
+  - `--strict` — exits non-zero on any agent whose `rpc.auth.enabled` is absent or false. Safe for CI pre-flight gates.
+  - `--json` — structured report for programmatic consumers.
+
+  **Scope note:** This ships Part A of `docs/POST_ENTERPRISE_BACKLOG.md` row #5. Part B (flipping the `rpc.auth.enabled: false` default to `true`) is **deferred to a 0.8.0 minor** — a behavioural-default flip in a patch would surprise consumers that don't yet configure an IdP in `rpc-peers.yaml`. Shipping the inspector first gives operators at least one release cycle to run `declaragent fleet audit-rpc --suggest-enable` in CI, close the gap in config, then pick up the default flip without a downtime surprise. Row #5 in the backlog has been split to reflect this.
+
+- e7e487d: fleet render: ServiceMonitor splits into `agents/<id>-servicemonitor.yaml` so operators on vanilla Prometheus can delete the Prometheus Operator CRD without touching core workload manifests. Default-on preserved; `--no-servicemonitor` still opts out, and `--with-servicemonitor` is documented as the explicit positive form. (#31)
+
+  audit sink: `TenantAuditSink` handle is now ref-counted across `up` and `fleet run`. The new `acquireTenantAuditSink({ path, owner })` / `releaseTenantAuditSink({ path, owner })` API in `audit-sink-singleton.ts` keeps same-path callers on ONE SQLite connection; the underlying sink closes only after the last owner releases. (#40)
+
+  CI: `prod smoke — kafka source end-to-end` workflow was failing on every push-to-main because its inline `event-sources.yaml` lacked the `delivery` + `limits` blocks that the kafka source config validator has required since 0.6.x. Both blocks now supplied. (#47)
+
+- eda26e5: control-plane: multi-agent fan-out for `/events` + `/dlq` + `/logs` via
+  `?all=1`, plus `idleTimeout` narrowing so only `/logs` holds long-lived
+  streams (backlog #19, #20, #21).
+
+  - `/events` + `/dlq` accept `?all=1` when a `fanOut` provider is wired.
+    Rows are merged DESC by timestamp across every hosted agent's store
+    and tagged with `agentId`. Single-agent responses stay byte-identical
+    to the pre-0.7.3 wire shape (no `agentId` key, back-compat).
+  - `/logs` accepts `?all=1` and enforces a `fanOutLimit` soft cap
+    (default 50) — returns HTTP 413 with `{error, limit, requested}` when
+    the hosted-agent count exceeds the cap. Operators raise the cap via
+    `logs.fanOutLimit`. Per-agent chunk emission is coalesced within a
+    configurable `coalescePerAgentMs` window (CLI default 25ms) so a
+    chatty agent can't saturate the SSE socket during a fan-out.
+  - Fan-out scope gating: the server surfaces a synthetic
+    `${path}?all=1` key to the auth middleware so operators can require
+    a dedicated scope on the fan-out variant via
+    `controlPlane.auth.routeScopes: { "/events?all=1": ["control:fan-out"] }`
+    without tightening the single-agent floor.
+  - `idleTimeout` narrowed from a global `0` (every route) to `30s`
+    server-level with `server.timeout(req, 0)` applied per-request only
+    for streaming routes in `STREAMING_ROUTE_PATHS` (today just `/logs`).
+    Short-lived JSON routes now get idle-abort protection back.
+
+- Updated dependencies [cfb5dbe]
+- Updated dependencies [eda26e5]
+  - @declaragent/plugin-agent-rpc@4.0.2
+  - @declaragent/core@0.5.2
+
 ## 0.7.2
 
 ### Patch Changes
