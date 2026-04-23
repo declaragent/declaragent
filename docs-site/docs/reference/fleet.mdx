@@ -235,6 +235,7 @@ Every fleet-aware verb is under `declaragent fleet <subcommand>`:
 | `fleet demote [<id>]` | Inverse of promote. Refuses when the fleet has more than one agent. |
 | `fleet run [--agent <id>...]` | Single-process dev loop. Boots every agent over a shared in-memory RPC bus. |
 | `fleet deploy [--target <name>] [--agent <id>...] [--strategy <s>]` | Coordinated deploy. `--dry-run` / `--rollback` / `--target-config <path>`. |
+| `fleet render --target <k8s\|helm> [--out <dir>]` | GitOps-friendly render. Emits raw k8s manifests or a Helm chart from `fleet.yaml`. No cluster calls. |
 | `fleet list [--json]` | Agents + env + capability counts. |
 | `fleet validate [--json]` | Schema + peer-graph dry-run. Non-zero exit on any error-severity finding. |
 | `fleet capabilities [--json]` | Aggregated capability table across every agent. |
@@ -244,6 +245,100 @@ Every fleet-aware verb is under `declaragent fleet <subcommand>`:
 
 Outside a fleet directory, every `fleet` verb errors with a hint at
 `declaragent init --fleet <name>`.
+
+## GitOps render
+
+`declaragent fleet render` turns a `fleet.yaml` into Kubernetes
+manifests or a Helm chart on disk. It never calls the cluster — the
+operator commits the output to their GitOps repo and lets Argo CD /
+Flux reconcile:
+
+```bash
+# Raw manifests. Default out dir: ./rendered
+declaragent fleet render --target k8s --out ./k8s
+
+# Helm chart. Default out dir: ./chart
+declaragent fleet render --target helm --out ./chart
+```
+
+### What each target emits
+
+**`--target k8s`** — one `Namespace` per fleet plus, per agent:
+
+- `ConfigMap` containing the agent's `agent.yaml` verbatim (mounted at
+  `/etc/declaragent/agent.yaml`).
+- `Deployment` (image, probes, resource limits, env vars).
+- `Service` (ClusterIP, port 9464 for `/metrics` + `/healthz`).
+- `ServiceMonitor` (Prometheus Operator CRD — pass
+  `--no-servicemonitor` on vanilla-Prometheus clusters).
+
+If any agent's `agent.yaml` references a `${secret:<ref>}`, a single
+fleet-wide `Secret` is emitted with **keys only, empty values** —
+operators populate values out-of-band (Sealed Secrets, External
+Secrets, Vault). `fleet render` never emits secret values.
+
+**`--target helm`** — a Helm v2 chart:
+
+```
+<chart>/
+├── Chart.yaml
+├── values.yaml            # replicas / image / namespace / secrets map
+├── .helmignore
+└── templates/
+    ├── _helpers.tpl
+    ├── namespace.yaml
+    ├── secret.yaml
+    └── agents/<id>.yaml
+```
+
+`values.yaml` exposes `image`, `namespace`, `replicas.default` +
+per-agent overrides, `serviceMonitor.enabled`, `metricsPort`,
+`healthProbePath`, and a `secrets` map. Install with:
+
+```bash
+helm install my-fleet ./chart \
+  --namespace my-fleet \
+  --set-string secrets.SLACK_BOT_TOKEN="$SLACK_BOT_TOKEN" \
+  --set-string secrets.GITHUB_REPO_PAT="$GITHUB_PAT"
+```
+
+### Flags
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--target <k8s\|helm>` | — | **Required.** Renderer selector. |
+| `--out <dir>` | `./rendered` (k8s) / `./chart` (helm) | Output directory. Created if absent. |
+| `--image <ref>` | `declaragent/agent:latest` | Container image used on every Deployment. |
+| `--replicas <n>` | `1` | Default replica count. Per-agent `deploy.minInstances` in `fleet.yaml` wins. |
+| `--namespace <ns>` | Sanitized fleet name | Kubernetes namespace stamped on every resource. |
+| `--no-servicemonitor` | off | Skip `ServiceMonitor` emission for clusters without Prometheus Operator. |
+| `--json` | off | Machine-readable summary (file list) for CI. |
+
+### Determinism + golden files
+
+`fleet render` is **pure**: same input yields byte-identical output.
+The CLI test suite checks in golden renderings of
+`templates/fleet-starter/` and diffs them on every PR — unintended
+output drift fails CI. When you legitimately change renderer output,
+regenerate the snapshots in `packages/cli/src/fleet-render/__snapshots__/`
+and commit.
+
+Validation in CI:
+
+- `kubectl apply --dry-run=client -R -f <out>` must succeed for every
+  resource except `ServiceMonitor` (requires the CRD). The test
+  harness parses each emitted doc through the `yaml` library and
+  asserts `kind`, selector-subset, and YAML validity without requiring
+  a live `kubectl`.
+- `helm lint <out>` and `helm template <release> <out>` must both
+  succeed. The same pure-TS validity checks run when helm isn't
+  installed (degradation path documented on the tests).
+
+### Scope out
+
+- Kustomize output. Helm covers the common case; revisit if customers ask.
+- Auto-pushing to a git remote. The operator commits the render output
+  to their GitOps repo themselves — that's the whole point.
 
 ## Promote + demote
 

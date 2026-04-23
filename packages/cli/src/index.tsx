@@ -35,6 +35,7 @@ import { type GraphFormat, fleetGraph } from './fleet-graph-cli.js';
 import { fleetInit } from './fleet-init-cli.js';
 import { fleetPeers } from './fleet-peers-cli.js';
 import { fleetDemote, fleetPromote } from './fleet-promote-cli.js';
+import { fleetRender } from './fleet-render-cli.js';
 import { fleetRun } from './fleet-run.js';
 import { fleetStatus } from './fleet-status-cli.js';
 import { type InitOptions, InitWizard, type WizardResult, runInit } from './init-wizard.js';
@@ -170,6 +171,7 @@ Usage:
   declaragent fleet run [--agent <id>...]
   declaragent fleet deploy [--target <name>] [--agent <id>...] [--strategy <rolling|all-or-nothing|per-agent>]
   declaragent fleet deploy --dry-run | --rollback | --target-config <path>
+  declaragent fleet render --target <k8s|helm> [--out <dir>] [--image <ref>] [--replicas <n>] [--namespace <ns>] [--no-servicemonitor]
   declaragent fleet graph [--format <mermaid|dot|json>]
   declaragent fleet peers [--verify] [--json]
   declaragent fleet status [--history] [--limit <n>] [--json]
@@ -966,6 +968,24 @@ async function runFleetSubcommand(
       fmtRaw === 'mermaid' || fmtRaw === 'dot' || fmtRaw === 'json' ? fmtRaw : undefined;
     return fleetGraph(format !== undefined ? { format } : {});
   }
+  if (action === 'render') {
+    const target = flagValue(rest, '--target');
+    const out = flagValue(rest, '--out', '-o');
+    const image = flagValue(rest, '--image');
+    const namespace = flagValue(rest, '--namespace');
+    const replicasRaw = flagValue(rest, '--replicas');
+    const replicas = replicasRaw !== undefined ? Number.parseInt(replicasRaw, 10) : undefined;
+    const noServiceMonitor = flagSet(rest, '--no-servicemonitor', '--no-service-monitor');
+    return fleetRender({
+      ...(target !== undefined && { target }),
+      ...(out !== undefined && { out }),
+      ...(image !== undefined && { image }),
+      ...(namespace !== undefined && { namespace }),
+      ...(replicas !== undefined && Number.isFinite(replicas) && replicas > 0 && { replicas }),
+      ...(noServiceMonitor && { noServiceMonitor: true }),
+      ...(json && { json: true }),
+    });
+  }
   if (action === 'peers') {
     const verify = flagSet(rest, '--verify');
     return fleetPeers({
@@ -985,7 +1005,7 @@ async function runFleetSubcommand(
   }
   process.stderr.write(`unknown fleet subcommand: ${action ?? '(none)'}\n`);
   process.stderr.write(
-    'usage: declaragent fleet <new|add|run|promote|demote|deploy|graph|peers|status|list|validate|capabilities> [options]\n',
+    'usage: declaragent fleet <new|add|run|promote|demote|deploy|render|graph|peers|status|list|validate|capabilities> [options]\n',
   );
   return 1;
 }
