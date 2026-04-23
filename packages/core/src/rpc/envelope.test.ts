@@ -101,6 +101,53 @@ describe('AgentRpcEnvelope', () => {
     ).toThrow(RpcEnvelopeValidationError);
   });
 
+  test('oidc auth accepts token + optional keyId (Item #4)', () => {
+    expect(() =>
+      parseEnvelope({
+        ...baseRequest(),
+        auth: { kind: 'oidc', token: 'eyJhbGciOi.eyJpc3Mi.sig' },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      parseEnvelope({
+        ...baseRequest(),
+        auth: { kind: 'oidc', token: 'tok', keyId: 'kid-1' },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      parseEnvelope({
+        ...baseRequest(),
+        auth: { kind: 'oidc', token: '' } as never,
+      }),
+    ).toThrow(RpcEnvelopeValidationError);
+  });
+
+  test('oauth2-client auth accepts token + optional scope (Item #4)', () => {
+    expect(() =>
+      parseEnvelope({
+        ...baseRequest(),
+        auth: { kind: 'oauth2-client', token: 'eyJ.eyJ.sig' },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      parseEnvelope({
+        ...baseRequest(),
+        auth: { kind: 'oauth2-client', token: 't', scope: 'rpc:invoke' },
+      }),
+    ).not.toThrow();
+  });
+
+  test('canonicalizeForSigning still omits auth for new variants', () => {
+    const env = baseRequest({
+      auth: { kind: 'oidc', token: 'eyJ.eyJ.sig' },
+    });
+    expect(canonicalizeForSigning(env)).not.toContain('"auth"');
+    expect(canonicalizeForSigning(env)).not.toContain('"token"');
+  });
+
   test('canonicalizeForSigning omits auth and orders keys deterministically', () => {
     const env = baseRequest({
       auth: { kind: 'hmac', keyId: 'k1', signature: 'sig' },

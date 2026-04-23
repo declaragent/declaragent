@@ -291,6 +291,8 @@ declaragent rpc capabilities       # print this agent's capabilities
 | --- | --- |
 | `auth: { kind: 'internal' }` | Intra-cluster deployments that trust the bus scope + broker ACLs. Default. |
 | `auth: { kind: 'hmac', keyId, signature }` | Shared-secret envelope integrity. Receiver canonicalizes via `canonicalizeForSigning` and compares SHA-256. |
+| `auth: { kind: 'oidc', token, keyId? }` | Bearer JWT from an enterprise OIDC IdP (Okta / Azure AD / Auth0 / Dex). Verified against a cached JWKS. |
+| `auth: { kind: 'oauth2-client', token, scope? }` | OAuth2 Client-Credentials access token. For service-to-service calls where no user is present. |
 
 Agents that require signed envelopes declare it in `agent.yaml`:
 
@@ -301,8 +303,93 @@ rpc:
     keysRef: ${secret:vault:kv/acme/rpc-keys}
 ```
 
-mTLS / JWT / SPIFFE are transport-layer concerns — each transport
-plugin exposes a `validateAuth(envelope, raw, transportCtx)` hook.
+mTLS / SPIFFE are transport-layer concerns — each transport plugin
+exposes a `validateAuth(envelope, raw, transportCtx)` hook.
+
+### Authenticated RPC (OIDC / OAuth2) — since 1.2.0
+
+Enterprise deployments usually require every inter-agent RPC to carry a
+verifiable bearer token rather than relying on trusted-network
+assumptions. Declaragent ships two providers for this:
+
+- **OIDC** (`@declaragent/plugin-agent-rpc` → `createOidcAuthProvider`)
+  — validates a JWT signed by an OIDC issuer's JWKS. Supports
+  `RS{256,384,512}`, `PS{256,384,512}`, `ES{256,384,512}`. `alg: none`
+  is always rejected. JWKS is fetched from
+  `/.well-known/openid-configuration` (or a pinned `jwksUri`) and
+  cached for 5 minutes.
+- **OAuth2 Client-Credentials** (`createOAuth2ClientAuthProvider`) —
+  mints an access token via `grant_type=client_credentials`, caches it
+  until `expires_in - 30s`, and verifies incoming tokens via the same
+  JWKS path.
+
+Configure a receiver's peer with an `auth` block in `rpc-peers.yaml`:
+
+```yaml
+version: 1
+peers:
+  - agent: agent://peer-b
+    transports:
+      - kind: kafka
+        brokers: ["kafka.internal:9092"]
+        topics: { requests: agents.peer-b.requests }
+    auth:
+      provider: oidc
+      issuer: "https://dex.example.com"
+      audience: "declaragent-peer-b"
+      jwksUri: "https://dex.example.com/keys"   # optional; derived from issuer when omitted
+      scopes: ["rpc:invoke"]                    # strict AND — every scope must be present
+  - agent: agent://peer-c
+    transports:
+      - kind: kafka
+        brokers: ["kafka.internal:9092"]
+        topics: { requests: agents.peer-c.requests }
+    auth:
+      provider: oauth2-client
+      tokenEndpoint: "https://idp.example.com/oauth2/token"
+      clientId: "decl-agent-a"
+      clientSecretRef: "secret://platform/decl-agent-a-client-secret"
+      scopes: ["rpc:invoke"]
+```
+
+**Rejection semantics.** Envelopes that fail verify are routed to the
+local DLQ under `kind=auth-rejected` with a typed reason code:
+
+- `missing-auth` — envelope has no `auth` block.
+- `wrong-kind` — `auth.kind` doesn't match the peer's configured
+  provider.
+- `malformed-token` — JWT parse failed.
+- `alg-none` — token advertised `alg: none`.
+- `expired` / `not-yet-valid` — outside `exp`/`iat`/`nbf` with a 60s
+  clock-skew tolerance.
+- `wrong-issuer` / `wrong-audience` — claim mismatch.
+- `insufficient-scope` — one or more required scopes missing.
+- `idp-unreachable` — JWKS fetch failed AND cache is empty / expired.
+  Fail-closed — we never admit a token we can't verify.
+- `bad-signature` — JWKS signature verify failed.
+
+**Audit.** Every verify decision (accept or reject) emits an
+`auth_check` record on the hash-chained audit log. Inspect via
+`declaragent audit list --kind auth_check`; each row carries
+`peerId`, `provider`, `decision`, `subject` (when accepted), and
+`reason` (when rejected).
+
+**Secret handling.** `clientSecretRef` is resolved through the
+Declaragent secret pipeline (`secret://`, `vault:`, `aws-sm:`, …).
+The raw value is never inlined into the config or logged.
+
+**Operational notes.**
+
+- JWKS is cached for 5 minutes. Graceful stale-fallback during IdP
+  outage is a follow-up; the current policy fails closed if the cache
+  expires while the IdP is unreachable.
+- Tokens are bound to the peer, not to envelope content, so HMAC
+  canonicalization (`canonicalizeForSigning`) continues to exclude the
+  `auth` field. Rotating a token does not invalidate any in-flight
+  envelopes.
+- Unit coverage: `packages/plugin-agent-rpc/src/auth/oidc.test.ts`
+  and `oauth2-client.test.ts`. Integration: `packages/testkit/src/fleet-integration/rpc-auth.test.ts`
+  (gated by `RPC_AUTH_INTEGRATION=1`, uses `dex` under docker-compose).
 
 ## Error codes
 

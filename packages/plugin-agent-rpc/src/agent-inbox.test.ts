@@ -189,4 +189,153 @@ describe('agent-inbox adapter', () => {
     } as unknown as AgentRpcEnvelope);
     await instance.stop();
   });
+
+  test('auth registry rejects envelopes + routes to reject sink (Item #4)', async () => {
+    const transport = createMemoryTransport();
+    const deps = baseDeps();
+    const published: AgentEvent[] = [];
+    deps.bus.subscribe('*', (ev) => {
+      published.push(ev);
+    });
+
+    const rejects: { reason: string; from: string }[] = [];
+    const audits: { decision: string; reason?: string; subject?: string }[] = [];
+
+    const instance = await createAgentInboxAdapter({
+      transport,
+      authRegistry: {
+        resolve() {
+          return {
+            config: {
+              provider: 'oidc' as const,
+              issuer: 'https://dex.example.com',
+              audience: 'aud',
+            },
+            provider: {
+              name: 'oidc' as const,
+              async sign() {
+                return { kind: 'oidc', token: 'tok' };
+              },
+              async verify() {
+                return { ok: false, reason: 'expired', message: 'token expired' } as const;
+              },
+            },
+          };
+        },
+      },
+      authRejectSink: ({ envelope, reason }) => {
+        rejects.push({ reason, from: envelope.from });
+      },
+      auditSink: {
+        async record(r) {
+          if (r.kind === 'auth_check') {
+            const row: { decision: string; reason?: string; subject?: string } = {
+              decision: r.decision,
+            };
+            if (r.reason !== undefined) row.reason = r.reason;
+            if (r.subject !== undefined) row.subject = r.subject;
+            audits.push(row);
+          }
+        },
+        async query() {
+          return [];
+        },
+        async erase() {
+          return 0;
+        },
+        async verify() {
+          return { ok: true, totalEntries: 0, verifiedEntries: 0, violations: [] };
+        },
+        async prune() {
+          return 0;
+        },
+        close() {},
+      },
+    }).create({ id: 'inbox', agentId: 'pr-reviewer' }, deps);
+    await instance.start();
+    await transport.publish('agents.pr-reviewer.requests', {
+      ...requestEnvelope(),
+      auth: { kind: 'oidc', token: 'expired-token' },
+    });
+    expect(published).toHaveLength(0);
+    expect(rejects).toHaveLength(1);
+    expect(rejects[0]?.reason).toBe('expired');
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.decision).toBe('reject');
+    expect(audits[0]?.reason).toBe('expired');
+    await instance.stop();
+  });
+
+  test('auth registry accepts + emits an auth_check=accept record (Item #4)', async () => {
+    const transport = createMemoryTransport();
+    const deps = baseDeps();
+    const published: AgentEvent[] = [];
+    deps.bus.subscribe('*', (ev) => {
+      published.push(ev);
+    });
+    const audits: { decision: string; subject?: string }[] = [];
+    const instance = await createAgentInboxAdapter({
+      transport,
+      authRegistry: {
+        resolve() {
+          return {
+            config: {
+              provider: 'oidc' as const,
+              issuer: 'https://dex.example.com',
+              audience: 'aud',
+            },
+            provider: {
+              name: 'oidc' as const,
+              async sign() {
+                return { kind: 'oidc', token: 't' };
+              },
+              async verify() {
+                return {
+                  ok: true,
+                  principal: {
+                    subject: 'peer-a',
+                    issuer: 'https://dex.example.com',
+                    audience: 'aud',
+                    scopes: ['rpc:invoke'],
+                    claims: {},
+                  },
+                } as const;
+              },
+            },
+          };
+        },
+      },
+      auditSink: {
+        async record(r) {
+          if (r.kind === 'auth_check') {
+            const row: { decision: string; subject?: string } = { decision: r.decision };
+            if (r.subject !== undefined) row.subject = r.subject;
+            audits.push(row);
+          }
+        },
+        async query() {
+          return [];
+        },
+        async erase() {
+          return 0;
+        },
+        async verify() {
+          return { ok: true, totalEntries: 0, verifiedEntries: 0, violations: [] };
+        },
+        async prune() {
+          return 0;
+        },
+        close() {},
+      },
+    }).create({ id: 'inbox', agentId: 'pr-reviewer' }, deps);
+    await instance.start();
+    await transport.publish('agents.pr-reviewer.requests', {
+      ...requestEnvelope(),
+      auth: { kind: 'oidc', token: 'valid' },
+    });
+    expect(published).toHaveLength(1);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toEqual({ decision: 'accept', subject: 'peer-a' });
+    await instance.stop();
+  });
 });

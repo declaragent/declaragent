@@ -18,17 +18,41 @@
 import {
   type AgentEvent,
   type AgentRpcEnvelope,
+  type AuthCheckAuditRecord,
   type BrokerAddress,
   type EventSourceAdapter,
   type EventSourceInstance,
+  type PeerAuthConfig,
   type RpcSubscriptionHandler,
   type RpcTransport,
   type SourceDependencies,
   type SourceHealth,
   type SourceMetrics,
+  type TenantAuditSink,
   decodeEnvelope,
 } from '@declaragent/core';
+import type { RpcAuthProvider, RpcAuthRejectReason } from './auth/types.js';
 import type { PendingRegistry } from './pending-registry.js';
+
+/**
+ * Callback invoked when an envelope fails auth verify. Receivers wire
+ * this to the event-store's `upsertRejection` so the envelope lands on
+ * the `rejected_events` table under `kind=auth-rejected`.
+ */
+export type AuthRejectSink = (entry: {
+  envelope: AgentRpcEnvelope;
+  reason: RpcAuthRejectReason;
+  message: string;
+}) => Promise<void> | void;
+
+/**
+ * Map from `agent://` peer id to its verify config + the provider that
+ * knows how to verify it. Receivers look up by `envelope.from`.
+ */
+export interface AuthVerifyRegistry {
+  /** Return verify config for this peer, or `undefined` when auth is not required. */
+  resolve(peerId: string): { config: PeerAuthConfig; provider: RpcAuthProvider } | undefined;
+}
 
 export interface AgentInboxConfig {
   id: string;
@@ -63,6 +87,29 @@ export interface CreateAgentInboxAdapterOptions {
    * default hook publishes an `AgentEvent` with `target: { type: 'broadcast' }`.
    */
   onEvent?(envelope: AgentRpcEnvelope, event: AgentEvent): Promise<void> | void;
+  /**
+   * Per-peer auth registry. When present, every inbound envelope is
+   * verified against the registered {@link RpcAuthProvider}. Peers
+   * without an entry remain on the legacy `internal`/`hmac` path
+   * (envelope passes through unchanged).
+   *
+   * @since 1.2.0
+   */
+  authRegistry?: AuthVerifyRegistry;
+  /**
+   * Sink for auth-rejected envelopes. Receivers wire this to
+   * `EventStore.upsertRejection` so rejects land in `rejected_events`
+   * under `kind=auth-rejected`.
+   */
+  authRejectSink?: AuthRejectSink;
+  /**
+   * Audit sink for `auth_check` records. One record is emitted per
+   * envelope — accept OR reject — so operators can audit authentication
+   * decisions on the hash chain.
+   */
+  auditSink?: TenantAuditSink;
+  /** Injected clock for audit record timestamps. */
+  now?(): number;
 }
 
 interface AgentInboxMetrics {
@@ -71,6 +118,8 @@ interface AgentInboxMetrics {
   failed: number;
   dlq: number;
   tenantRejects: number;
+  authAccepted: number;
+  authRejected: number;
   responsesMatched: number;
   responsesStale: number;
   lastMessageAt: number | null;
@@ -116,6 +165,8 @@ class AgentInboxInstance implements EventSourceInstance {
     failed: 0,
     dlq: 0,
     tenantRejects: 0,
+    authAccepted: 0,
+    authRejected: 0,
     responsesMatched: 0,
     responsesStale: 0,
     lastMessageAt: null,
@@ -212,6 +263,15 @@ class AgentInboxInstance implements EventSourceInstance {
       return;
     }
 
+    // Auth verify (Item #4). Only runs for peers the registry knows about;
+    // peers without a registered provider fall back to the legacy path.
+    if (this.opts.authRegistry) {
+      const authOk = await this.verifyAuth(envelope);
+      if (!authOk) return;
+    } else {
+      await this.emitAuthCheck(envelope, 'accept', envelope.auth?.kind ?? 'none');
+    }
+
     try {
       switch (envelope.kind) {
         case 'request':
@@ -231,6 +291,119 @@ class AgentInboxInstance implements EventSourceInstance {
         id: this.id,
         topic,
         messageId: envelope.messageId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Returns `true` when the envelope passes auth verify (including the
+   * no-registry-entry fallback), `false` when rejected. Rejected
+   * envelopes are dispatched to the reject sink + increment the
+   * authRejected metric.
+   */
+  private async verifyAuth(envelope: AgentRpcEnvelope): Promise<boolean> {
+    const registry = this.opts.authRegistry;
+    if (!registry) {
+      await this.emitAuthCheck(envelope, 'accept', envelope.auth?.kind ?? 'none');
+      return true;
+    }
+    const entry = registry.resolve(envelope.from);
+    if (!entry) {
+      // Peer not registered → fall through to legacy path. We still
+      // emit an accept audit record so ops can see which peers bypass.
+      await this.emitAuthCheck(envelope, 'accept', envelope.auth?.kind ?? 'none');
+      return true;
+    }
+    const { config, provider } = entry;
+    try {
+      const result = await provider.verify(
+        envelope,
+        // The provider contract is parameterised on its own peer config
+        // shape; at the registry boundary we just hand the discriminated
+        // union through. Each provider's verify narrows by `provider.name`.
+        config as unknown as Parameters<typeof provider.verify>[1],
+      );
+      if (result.ok) {
+        this.metrics_.authAccepted += 1;
+        await this.emitAuthCheck(envelope, 'accept', provider.name, result.principal.subject);
+        return true;
+      }
+      this.metrics_.authRejected += 1;
+      this.deps.logger.warn('agent-inbox.auth-rejected', {
+        id: this.id,
+        from: envelope.from,
+        provider: provider.name,
+        reason: result.reason,
+        messageId: envelope.messageId,
+      });
+      await this.emitAuthCheck(envelope, 'reject', provider.name, undefined, result.reason);
+      if (this.opts.authRejectSink) {
+        try {
+          await this.opts.authRejectSink({
+            envelope,
+            reason: result.reason,
+            message: result.message,
+          });
+        } catch (err) {
+          this.deps.logger.error('agent-inbox.auth-reject-sink-error', {
+            id: this.id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      return false;
+    } catch (err) {
+      this.metrics_.authRejected += 1;
+      const message = err instanceof Error ? err.message : String(err);
+      this.deps.logger.error('agent-inbox.auth-verify-error', {
+        id: this.id,
+        from: envelope.from,
+        provider: provider.name,
+        err: message,
+        messageId: envelope.messageId,
+      });
+      await this.emitAuthCheck(envelope, 'reject', provider.name, undefined, 'idp-unreachable');
+      if (this.opts.authRejectSink) {
+        try {
+          await this.opts.authRejectSink({
+            envelope,
+            reason: 'idp-unreachable',
+            message,
+          });
+        } catch {
+          // already logged
+        }
+      }
+      return false;
+    }
+  }
+
+  private async emitAuthCheck(
+    envelope: AgentRpcEnvelope,
+    decision: 'accept' | 'reject',
+    provider: AuthCheckAuditRecord['provider'],
+    subject?: string,
+    reason?: string,
+  ): Promise<void> {
+    if (!this.opts.auditSink) return;
+    const now = this.opts.now ?? Date.now;
+    const record: AuthCheckAuditRecord = {
+      kind: 'auth_check',
+      ts: now(),
+      tenantId: envelope.tenantId ?? this.deps.tenant?.id ?? 'default',
+      peerId: envelope.from,
+      provider,
+      decision,
+      correlationId: envelope.correlationId,
+    };
+    if (reason !== undefined) record.reason = reason;
+    if (subject !== undefined && subject.length > 0) record.subject = subject;
+    try {
+      await this.opts.auditSink.record(record);
+    } catch (err) {
+      this.deps.logger.error('agent-inbox.audit-sink-error', {
+        id: this.id,
         err: err instanceof Error ? err.message : String(err),
       });
     }

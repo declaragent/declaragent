@@ -21,12 +21,29 @@ export type BrokerAddress =
   | `memory://${string}`;
 
 /**
- * Envelope authenticator. `internal` is the default for intra-cluster
- * deployments that trust the bus scope. `hmac` opts in to shared-secret
- * signing — the canonical envelope form (minus the `auth` field) is
- * hashed with SHA-256 and compared on the receiver.
+ * Envelope authenticator.
+ *
+ *   - `internal`       — intra-cluster trust, no crypto.
+ *   - `hmac`           — shared-secret signing over the canonical envelope
+ *                        form (see {@link canonicalizeForSigning}).
+ *   - `oidc`           — bearer JWT issued by an OIDC IdP, verified against
+ *                        a cached JWKS on the receiver (see
+ *                        `@declaragent/plugin-agent-rpc/auth/oidc`).
+ *   - `oauth2-client`  — bearer access token minted via OAuth2
+ *                        Client-Credentials. Verified the same way as OIDC.
+ *
+ * Soft-compat within `version: 1`: receivers that don't recognise one of
+ * the additive variants fail envelope decode and the transport routes
+ * the message to the local DLQ — no silent accept.
+ *
+ * @since 1.1.0 — `internal`, `hmac`
+ * @since 1.2.0 — `oidc`, `oauth2-client`
  */
-export type RpcAuth = { kind: 'internal' } | { kind: 'hmac'; keyId: string; signature: string };
+export type RpcAuth =
+  | { kind: 'internal' }
+  | { kind: 'hmac'; keyId: string; signature: string }
+  | { kind: 'oidc'; token: string; keyId?: string }
+  | { kind: 'oauth2-client'; token: string; scope?: string };
 
 /** Typed error body used on `response` envelopes with `status !== 'ok'`. */
 export interface RpcError {
@@ -88,6 +105,16 @@ const RpcAuthSchema = z.union([
     kind: z.literal('hmac'),
     keyId: z.string().min(1),
     signature: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('oidc'),
+    token: z.string().min(1),
+    keyId: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal('oauth2-client'),
+    token: z.string().min(1),
+    scope: z.string().min(1).optional(),
   }),
 ]);
 

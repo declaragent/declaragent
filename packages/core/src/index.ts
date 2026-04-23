@@ -111,6 +111,7 @@ export {
   verifyEntries as verifyAuditEntries,
 } from './audit/index.js';
 export type {
+  AuthCheckAuditRecord,
   CreateSqliteAuditSinkOptions,
   EraseByCorrelationOptions,
   EraseBySessionOptions,
@@ -828,6 +829,7 @@ export {
   parseCapabilitiesConfig,
   parseEnvelope,
   parsePeersConfig,
+  peerAuthSchema,
   peersConfigSchema,
   resolvePeerTransport,
 } from './rpc/index.js';
@@ -841,6 +843,7 @@ export type {
   EnvelopeKind,
   LoadedCapabilities,
   LoadedPeers,
+  PeerAuthConfig,
   PeerEntry,
   PeerTransport,
   PeersConfig,
