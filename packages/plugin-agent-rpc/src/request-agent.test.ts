@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import type { AgentRpcEnvelope, RpcTransport, RpcTransportKind } from '@declaragent/core';
-import { parsePeersConfig } from '@declaragent/core';
+import {
+  createCapabilityValidatorRegistry,
+  parseCapabilitiesConfig,
+  parsePeersConfig,
+} from '@declaragent/core';
 import { createPendingRegistry } from './pending-registry.js';
 import { createRequestAgentTool } from './request-agent.js';
 import { collectEvents, makeToolContext } from './test-helpers.js';
@@ -232,6 +236,156 @@ describe('createRequestAgentTool', () => {
     expect(transport.published).toHaveLength(1);
     // The new registration's promise timed out (no response came).
     expect(events.result?.status).toBe('timeout');
+  });
+
+  test('schema-violation on request short-circuits before publish (acceptance #1)', async () => {
+    const transport = stubTransport();
+    const caps = parseCapabilitiesConfig({
+      version: 1,
+      agent: 'agent://pr-reviewer',
+      transports: [{ kind: 'memory', topics: { requests: 'agents.pr-reviewer.requests' } }],
+      capabilities: [
+        {
+          name: 'review',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              severity: { enum: ['low', 'med', 'high'] },
+            },
+            required: ['title', 'severity'],
+          },
+        },
+      ],
+    });
+    const violations: Array<{ side: string; count: number }> = [];
+    const tool = createRequestAgentTool({
+      selfAgent: 'agent://concierge',
+      peers: singlePeer(),
+      transports: new Map([['memory', transport]]),
+      pending: createPendingRegistry(),
+      peerCapabilities: new Map([['agent://pr-reviewer', caps]]),
+      validators: createCapabilityValidatorRegistry(),
+      onSchemaViolation: ({ side, violations: v }) => {
+        violations.push({ side, count: v.length });
+      },
+    });
+    const events = await collectEvents(
+      tool.execute(
+        {
+          to: 'agent://pr-reviewer',
+          capability: 'review',
+          payload: { title: 'bad sev', severity: 'critical' },
+        },
+        makeToolContext(),
+      ),
+    );
+    expect(events.result?.status).toBe('schema-violation');
+    expect(events.result?.schemaSide).toBe('request');
+    expect(events.result?.error?.code).toBe('EAGENTRPC_SCHEMA_VIOLATION');
+    // Nothing went on the wire.
+    expect(transport.published).toHaveLength(0);
+    // Audit hook fired exactly once.
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toEqual({ side: 'request', count: 1 });
+  });
+
+  test('valid request passes through + validates response on return', async () => {
+    const transport = stubTransport();
+    const pending = createPendingRegistry();
+    const caps = parseCapabilitiesConfig({
+      version: 1,
+      agent: 'agent://pr-reviewer',
+      transports: [{ kind: 'memory', topics: { requests: 'agents.pr-reviewer.requests' } }],
+      capabilities: [
+        {
+          name: 'review',
+          inputSchema: {
+            type: 'object',
+            properties: { title: { type: 'string' } },
+            required: ['title'],
+          },
+          outputSchema: {
+            type: 'object',
+            properties: { ok: { type: 'boolean' } },
+            required: ['ok'],
+          },
+        },
+      ],
+    });
+    const hits: Array<{ side: string }> = [];
+    const tool = createRequestAgentTool({
+      selfAgent: 'agent://concierge',
+      peers: singlePeer(),
+      transports: new Map([['memory', transport]]),
+      pending,
+      replyTo: 'memory://agents.concierge.responses',
+      peerCapabilities: new Map([['agent://pr-reviewer', caps]]),
+      validators: createCapabilityValidatorRegistry(),
+      onSchemaViolation: ({ side }) => {
+        hits.push({ side });
+      },
+    });
+    const run = collectEvents(
+      tool.execute(
+        { to: 'agent://pr-reviewer', capability: 'review', payload: { title: 'ok' } },
+        makeToolContext(),
+      ),
+    );
+    await Promise.resolve();
+    expect(transport.published).toHaveLength(1);
+    const env = transport.published[0]?.envelope;
+    pending.settle(env?.correlationId ?? '', {
+      status: 'ok',
+      // Malformed response: missing `ok` field.
+      data: { notOk: true },
+    });
+    const events = await run;
+    expect(events.result?.status).toBe('schema-violation');
+    expect(events.result?.schemaSide).toBe('response');
+    expect(hits).toEqual([{ side: 'response' }]);
+  });
+
+  test('back-compat: capabilities without schemas behave exactly like pre-1.2', async () => {
+    const transport = stubTransport();
+    const pending = createPendingRegistry();
+    // capabilities.yaml that declares no inputSchema / outputSchema at all.
+    const caps = parseCapabilitiesConfig({
+      version: 1,
+      agent: 'agent://pr-reviewer',
+      transports: [{ kind: 'memory', topics: { requests: 'agents.pr-reviewer.requests' } }],
+      capabilities: [{ name: 'review' }],
+    });
+    const tool = createRequestAgentTool({
+      selfAgent: 'agent://concierge',
+      peers: singlePeer(),
+      transports: new Map([['memory', transport]]),
+      pending,
+      replyTo: 'memory://agents.concierge.responses',
+      peerCapabilities: new Map([['agent://pr-reviewer', caps]]),
+      validators: createCapabilityValidatorRegistry(),
+    });
+    const run = collectEvents(
+      tool.execute(
+        {
+          to: 'agent://pr-reviewer',
+          capability: 'review',
+          // Totally arbitrary payload — no schema means no validation.
+          payload: { anything: { goes: [1, 2, 3] } },
+        },
+        makeToolContext(),
+      ),
+    );
+    await Promise.resolve();
+    expect(transport.published).toHaveLength(1);
+    const env = transport.published[0]?.envelope;
+    pending.settle(env?.correlationId ?? '', {
+      status: 'ok',
+      data: { whatever: true },
+    });
+    const events = await run;
+    expect(events.result?.status).toBe('ok');
+    expect(events.result?.response).toEqual({ whatever: true });
   });
 
   test('stamps tenantId from ctx.tenant', async () => {

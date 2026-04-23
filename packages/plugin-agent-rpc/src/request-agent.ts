@@ -11,6 +11,9 @@ import {
   type AgentAddress,
   type AgentRpcEnvelope,
   type BrokerAddress,
+  type CapabilitySchemaViolation,
+  type CapabilityValidatorRegistry,
+  type LoadedCapabilities,
   type LoadedPeers,
   RpcAbandonedError,
   RpcBusyError,
@@ -47,12 +50,44 @@ export interface RequestAgentInput {
 }
 
 export interface RequestAgentOutput {
-  status: 'ok' | 'error' | 'timeout' | 'abandoned' | 'busy';
+  status: 'ok' | 'error' | 'timeout' | 'abandoned' | 'busy' | 'schema-violation';
   correlationId: string;
   latencyMs: number;
   response?: unknown;
   error?: RpcError;
+  /**
+   * Populated on `status === 'schema-violation'` — each entry pinpoints
+   * the JSON-pointer path and failure reason. Present on both outbound
+   * (request schema) and inbound (response schema) violations; disambiguate
+   * via {@link RequestAgentOutput.schemaSide}.
+   *
+   * @since 1.2.0 — Enterprise Production Plan §3 Item #11
+   */
+  violations?: ReadonlyArray<{ path: string; message: string }>;
+  /** Present when `status === 'schema-violation'`. */
+  schemaSide?: 'request' | 'response';
 }
+
+/**
+ * Callback invoked whenever a capability schema check fails. Intended
+ * to be wired to a {@link TenantAuditSink} so `capability_schema_violation`
+ * records land on the hash chain for post-hoc debugging + SIEM export.
+ *
+ * Emission cardinality: one callback per envelope, carrying the full
+ * violation list (not one-per-path). Keeps audit volume bounded even if
+ * the payload has many bad fields.
+ *
+ * @since 1.2.0 — Enterprise Production Plan §3 Item #11
+ */
+export type CapabilitySchemaViolationEmitter = (event: {
+  capabilityName: string;
+  peerId: AgentAddress;
+  side: 'request' | 'response';
+  violations: readonly CapabilitySchemaViolation[];
+  correlationId: string;
+  tenantId?: string;
+  sessionId?: string;
+}) => void | Promise<void>;
 
 export interface CreateRequestAgentToolOptions {
   /** Local agent-id. Stamped on every envelope's `from`. */
@@ -79,6 +114,26 @@ export interface CreateRequestAgentToolOptions {
   now?: () => number;
   /** UUID generator. Default `crypto.randomUUID`. */
   randomUUID?: () => string;
+  /**
+   * Per-peer capability tables — keyed by peer address (`agent://...`).
+   * When present, the tool looks up `<to>` → capability → `inputSchema` /
+   * `outputSchema` and validates payload + response via the registry.
+   * Capabilities without a declared schema fall through to legacy loose
+   * JSON behaviour — no regression for fleets that predate v1.1.
+   *
+   * @since 1.2.0 — Enterprise Production Plan §3 Item #11
+   */
+  peerCapabilities?: ReadonlyMap<AgentAddress, LoadedCapabilities>;
+  /**
+   * Shared validator cache. Optional — when omitted, schema validation is
+   * a no-op (matches pre-1.2 behaviour). Callers that wire this also
+   * typically wire {@link onSchemaViolation} for auditing.
+   *
+   * @since 1.2.0
+   */
+  validators?: CapabilityValidatorRegistry;
+  /** Audit hook. Invoked once per failing envelope on either side. @since 1.2.0 */
+  onSchemaViolation?: CapabilitySchemaViolationEmitter;
 }
 
 export function createRequestAgentTool(
@@ -117,6 +172,51 @@ export function createRequestAgentTool(
       const started = now();
       const correlationId = ctx.correlationId ?? randomUUID();
       const messageId = randomUUID();
+
+      // ── request-side schema validation (before wire) ───────────────
+      // Legacy fleets without `peerCapabilities` / `validators` wired
+      // skip straight through — this preserves the pre-1.2 contract.
+      if (opts.peerCapabilities && opts.validators) {
+        const peerCaps = opts.peerCapabilities.get(input.to);
+        const cap = peerCaps?.byName.get(input.capability);
+        const inputSchema = cap?.inputSchema;
+        const requestValidator = opts.validators.get(input.capability, 'request', inputSchema);
+        if (requestValidator) {
+          const result = requestValidator.validate(input.payload);
+          if (!result.ok) {
+            if (opts.onSchemaViolation) {
+              try {
+                await opts.onSchemaViolation({
+                  capabilityName: input.capability,
+                  peerId: input.to,
+                  side: 'request',
+                  violations: result.violations,
+                  correlationId,
+                  ...(ctx.tenant?.id !== undefined && { tenantId: ctx.tenant.id }),
+                  ...(ctx.session?.id !== undefined && { sessionId: ctx.session.id }),
+                });
+              } catch {
+                // Audit hook throwing must not mask the original error.
+              }
+            }
+            yield {
+              type: 'result',
+              output: {
+                status: 'schema-violation',
+                correlationId,
+                latencyMs: now() - started,
+                schemaSide: 'request',
+                violations: result.violations,
+                error: {
+                  code: 'EAGENTRPC_SCHEMA_VIOLATION',
+                  message: `capability "${input.capability}" request failed schema validation`,
+                },
+              },
+            };
+            return;
+          }
+        }
+      }
 
       const resolution = resolveTarget(input, opts.peers);
       if (!resolution) {
@@ -248,6 +348,53 @@ export function createRequestAgentTool(
         const settled = await pendingPromise;
         const latencyMs = now() - started;
         if (settled.status === 'ok') {
+          // ── response-side schema validation (after wire) ────────────
+          if (opts.peerCapabilities && opts.validators) {
+            const peerCaps = opts.peerCapabilities.get(input.to);
+            const cap = peerCaps?.byName.get(input.capability);
+            const outputSchema = cap?.outputSchema;
+            const responseValidator = opts.validators.get(
+              input.capability,
+              'response',
+              outputSchema,
+            );
+            if (responseValidator) {
+              const result = responseValidator.validate(settled.data);
+              if (!result.ok) {
+                if (opts.onSchemaViolation) {
+                  try {
+                    await opts.onSchemaViolation({
+                      capabilityName: input.capability,
+                      peerId: input.to,
+                      side: 'response',
+                      violations: result.violations,
+                      correlationId,
+                      ...(ctx.tenant?.id !== undefined && { tenantId: ctx.tenant.id }),
+                      ...(ctx.session?.id !== undefined && { sessionId: ctx.session.id }),
+                    });
+                  } catch {
+                    /* see request-side note */
+                  }
+                }
+                yield {
+                  type: 'result',
+                  output: {
+                    status: 'schema-violation',
+                    correlationId,
+                    latencyMs,
+                    schemaSide: 'response',
+                    violations: result.violations,
+                    response: settled.data,
+                    error: {
+                      code: 'EAGENTRPC_SCHEMA_VIOLATION',
+                      message: `capability "${input.capability}" response failed schema validation`,
+                    },
+                  },
+                };
+                return;
+              }
+            }
+          }
           yield {
             type: 'result',
             output: { status: 'ok', correlationId, latencyMs, response: settled.data },

@@ -1,5 +1,6 @@
 export type {
   AuthCheckAuditRecord,
+  CapabilitySchemaViolationAuditRecord,
   EraseOptions,
   ErasedAuditRecord,
   ExportCursor,

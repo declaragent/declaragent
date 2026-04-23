@@ -15,6 +15,7 @@ import {
   resolveCredentials,
   setProviderCreds,
 } from './auth.js';
+import { capabilitiesGen } from './capabilities-gen-cli.js';
 import { daemonReload, daemonShutdown, daemonStart, daemonStatus } from './daemon-cli.js';
 import { deployGcpCloudRun, verifyGcpCloudRunDeploy } from './deploy-cli.js';
 import { dlqList, dlqRedrive, dlqShow } from './dlq-cli.js';
@@ -178,6 +179,9 @@ Usage:
   declaragent fleet list [--json]
   declaragent fleet validate [--json]
   declaragent fleet capabilities [--json]
+
+  declaragent capabilities gen --peer <id> [--out <dir>]
+  declaragent capabilities gen --capabilities <path> [--out <dir>] [--json]
 
   declaragent init --fleet <name> [--out <dir>] [--force]   # shortcut for \`fleet new\`
 
@@ -1341,6 +1345,26 @@ if (subcommand === 'mailbox') {
 if (subcommand === 'fleet') {
   const code = await runFleetSubcommand(argv[1], argv.slice(2));
   process.exit(code);
+}
+if (subcommand === 'capabilities') {
+  const action = argv[1];
+  if (action === 'gen') {
+    const rest = argv.slice(2);
+    const peer = flagValue(rest, '--peer');
+    const caps = flagValue(rest, '--capabilities');
+    const out = flagValue(rest, '--out', '-o');
+    const json = flagSet(rest, '--json');
+    const code = await capabilitiesGen({
+      ...(peer !== undefined && { peer }),
+      ...(caps !== undefined && { capabilities: caps }),
+      ...(out !== undefined && { out }),
+      ...(json && { json: true }),
+    });
+    process.exit(code);
+  }
+  process.stderr.write(`unknown capabilities subcommand: ${action ?? '(none)'}\n`);
+  process.stderr.write('usage: declaragent capabilities gen --peer <id> [--out <dir>]\n');
+  process.exit(1);
 }
 if (subcommand === 'tenants') {
   const code = await runTenantsSubcommand(argv[1], argv.slice(2));

@@ -13,6 +13,10 @@ import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import {
+  CapabilitySchemaCompileError,
+  compileCapabilityValidator,
+} from './capability-validator.js';
 
 export class CapabilitiesConfigError extends Error {
   constructor(message: string) {
@@ -144,7 +148,23 @@ export interface LoadedCapabilities {
   readonly sourcePath?: string;
 }
 
-export function parseCapabilitiesConfig(raw: unknown): LoadedCapabilities {
+export interface ParseCapabilitiesConfigOptions {
+  /**
+   * When `true` (default), compile each declared `inputSchema`/`outputSchema`
+   * via {@link compileCapabilityValidator} at load-time so malformed schemas
+   * surface before the agent starts serving traffic. Capabilities with
+   * neither schema declared are treated as legacy "loose JSON" and skipped
+   * (back-compat for fleets that predate the v1.1 typed-capability work).
+   *
+   * @since 1.2.0 — Enterprise Production Plan §3 Item #11
+   */
+  validateSchemas?: boolean;
+}
+
+export function parseCapabilitiesConfig(
+  raw: unknown,
+  options: ParseCapabilitiesConfigOptions = {},
+): LoadedCapabilities {
   const result = capabilitiesConfigSchema.safeParse(raw);
   if (!result.success) {
     throw new CapabilitiesConfigError(formatZodError(result.error));
@@ -154,10 +174,49 @@ export function parseCapabilitiesConfig(raw: unknown): LoadedCapabilities {
   if (byName.size !== config.capabilities.length) {
     throw new CapabilitiesConfigError('duplicate capability name');
   }
+  if (options.validateSchemas !== false) {
+    for (const cap of config.capabilities) {
+      if (cap.inputSchema !== undefined) {
+        try {
+          compileCapabilityValidator({
+            capabilityName: cap.name,
+            side: 'request',
+            schema: cap.inputSchema,
+          });
+        } catch (err) {
+          if (err instanceof CapabilitySchemaCompileError) {
+            throw new CapabilitiesConfigError(
+              `capability "${cap.name}" inputSchema: ${err.message}`,
+            );
+          }
+          throw err;
+        }
+      }
+      if (cap.outputSchema !== undefined) {
+        try {
+          compileCapabilityValidator({
+            capabilityName: cap.name,
+            side: 'response',
+            schema: cap.outputSchema,
+          });
+        } catch (err) {
+          if (err instanceof CapabilitySchemaCompileError) {
+            throw new CapabilitiesConfigError(
+              `capability "${cap.name}" outputSchema: ${err.message}`,
+            );
+          }
+          throw err;
+        }
+      }
+    }
+  }
   return { config, byName };
 }
 
-export async function loadCapabilitiesConfig(path: string): Promise<LoadedCapabilities> {
+export async function loadCapabilitiesConfig(
+  path: string,
+  options: ParseCapabilitiesConfigOptions = {},
+): Promise<LoadedCapabilities> {
   let raw: string;
   try {
     raw = await readFile(path, 'utf-8');
@@ -168,7 +227,7 @@ export async function loadCapabilitiesConfig(path: string): Promise<LoadedCapabi
     throw err;
   }
   const parsed = parseFileContent(path, raw);
-  const loaded = parseCapabilitiesConfig(parsed);
+  const loaded = parseCapabilitiesConfig(parsed, options);
   return { ...loaded, sourcePath: path };
 }
 
