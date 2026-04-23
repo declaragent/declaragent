@@ -1,5 +1,37 @@
 # @declaragent/cli
 
+## 0.7.1
+
+### Patch Changes
+
+- 1bc842d: **Extract `packages/cli/src/control-socket-client.ts` shared helper (backlog #42).**
+
+  The connect → call → close dance for the per-agent control socket bound by `declaragent up` was inlined across `ps-cli.ts` (silent `status` probe with ~500ms timeout + snapshot fallback) and `dlq-dispatch-cli.ts` (`dlq.requeue` with rich exit-code semantics). Slice 3 of `docs/CONTROL_PLANE_PLAN.md` adds a third caller for cross-host fleet status fan-out; before that lands, fold the duplicated pattern into one module.
+
+  New module exposes:
+
+  - `resolveAgentControlSocketPath` — re-export of `controlSocketPath` so every CLI caller imports one module for "talk to a control socket."
+  - `withControlSocketClient(socketPath, options, fn)` — connect → invoke `fn` → always close (even on throw). Replaces the hand-rolled `try/finally` both callers duplicated.
+  - `tryFetchControlSocketStatus(socketPath, options)` — the silent-probe pattern from `ps-cli`: any error collapses to `null` so the caller falls back to the on-disk `up-state.json` snapshot.
+  - `unwrapOpResult(expected, response)` — typed narrowing helper that returns the response's `result` slot if the op matches and no error was set, else `null`.
+
+  Both existing callers refactored to consume the helper. No behavior change — `ps` still falls back to snapshot on a silent timeout; `dlqDispatchRequeue` preserves its four-exit-code contract (0/1/2/3/4). Test delta: +6 focused tests in `control-socket-client.test.ts` exercising the three surfaces against a real `startControlSocket`-bound daemon.
+
+- 2e60de4: **Security sprint follow-ups from `POST_ENTERPRISE_BACKLOG.md` — items #8 + #9.**
+
+  - **#8 — `AUTH_REJECTED` promoted to `RPC_ERROR_CODES`.** Previously the envelope auth-reject path in `packages/cli/src/fleet-run.ts` stamped a bare `'AUTH_REJECTED'` string on the response envelope. The constant now lives on `@declaragent/core`'s canonical `RPC_ERROR_CODES` map alongside `AUTH_FAILED`, `VERSION_SKEW`, etc. The wire value is intentionally preserved (unprefixed `'AUTH_REJECTED'`) for back-compat with 3.0.0 receivers that pattern-match the literal — callers migrating should import `RPC_ERROR_CODES.AUTH_REJECTED` from `@declaragent/core`. Covered by `packages/core/src/rpc/errors.test.ts`.
+
+  - **#9 — Capability schema-violation audit cardinality pinned per-envelope.** The emit contract on `CapabilitySchemaViolationEmitter` (in `@declaragent/plugin-agent-rpc`) + the `capability_schema_violation` audit record (in `@declaragent/core`) was already batched per envelope, but the decision was only implicit. Added explicit `POST_ENTERPRISE_BACKLOG.md #9` JSDoc + a regression test in `request-agent.test.ts` that trips 3 violations in one payload and asserts the emitter fires exactly once with all violations in the array. This caps SIEM volume under bad-actor / mass-rejection traffic — a single misconfigured envelope can trip every field in a large schema, and a per-violation emit would multiply audit rows by the schema's field count.
+
+  No breaking changes. `@declaragent/cli` patch bump picks up the `RPC_ERROR_CODES.AUTH_REJECTED` wire swap in `fleet-run.ts`.
+
+- Updated dependencies [1bc842d]
+- Updated dependencies [8651c54]
+- Updated dependencies [b69d717]
+- Updated dependencies [2e60de4]
+  - @declaragent/core@0.5.0
+  - @declaragent/plugin-agent-rpc@4.0.0
+
 ## 0.6.0
 
 ### Minor Changes

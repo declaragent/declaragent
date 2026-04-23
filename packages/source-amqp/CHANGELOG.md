@@ -1,5 +1,14 @@
 # @declaragent/source-amqp
 
+## 4.0.0
+
+### Patch Changes
+
+- Updated dependencies [1bc842d]
+- Updated dependencies [b69d717]
+- Updated dependencies [2e60de4]
+  - @declaragent/core@0.5.0
+
 ## 3.0.0
 
 ### Patch Changes

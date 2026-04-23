@@ -1,5 +1,26 @@
 # @declaragent/plugin-agent-rpc
 
+## 4.0.0
+
+### Patch Changes
+
+- 8651c54: `createNatsTransport` now accepts `queueGroups` as either a blanket string (same semantics as the legacy `queueGroup`) or a per-topic `Record<topic, group>` map. Real fleets routinely mix load-balanced and fan-out topologies on one NATS cluster — `agents.beta.requests` needs a shared queue so replicas load-balance, while `agents.broadcast.health` needs no queue so every replica sees the heartbeat. A single construction-time queue group can't express both; the new shape does.
+
+  Backward compatible: the pre-existing `queueGroup` option keeps working and now acts as the fallback for topics unlisted in `queueGroups`. An explicit empty-string entry opts that topic out of any queue group. Addresses post-enterprise backlog item #25.
+
+- 2e60de4: **Security sprint follow-ups from `POST_ENTERPRISE_BACKLOG.md` — items #8 + #9.**
+
+  - **#8 — `AUTH_REJECTED` promoted to `RPC_ERROR_CODES`.** Previously the envelope auth-reject path in `packages/cli/src/fleet-run.ts` stamped a bare `'AUTH_REJECTED'` string on the response envelope. The constant now lives on `@declaragent/core`'s canonical `RPC_ERROR_CODES` map alongside `AUTH_FAILED`, `VERSION_SKEW`, etc. The wire value is intentionally preserved (unprefixed `'AUTH_REJECTED'`) for back-compat with 3.0.0 receivers that pattern-match the literal — callers migrating should import `RPC_ERROR_CODES.AUTH_REJECTED` from `@declaragent/core`. Covered by `packages/core/src/rpc/errors.test.ts`.
+
+  - **#9 — Capability schema-violation audit cardinality pinned per-envelope.** The emit contract on `CapabilitySchemaViolationEmitter` (in `@declaragent/plugin-agent-rpc`) + the `capability_schema_violation` audit record (in `@declaragent/core`) was already batched per envelope, but the decision was only implicit. Added explicit `POST_ENTERPRISE_BACKLOG.md #9` JSDoc + a regression test in `request-agent.test.ts` that trips 3 violations in one payload and asserts the emitter fires exactly once with all violations in the array. This caps SIEM volume under bad-actor / mass-rejection traffic — a single misconfigured envelope can trip every field in a large schema, and a per-violation emit would multiply audit rows by the schema's field count.
+
+  No breaking changes. `@declaragent/cli` patch bump picks up the `RPC_ERROR_CODES.AUTH_REJECTED` wire swap in `fleet-run.ts`.
+
+- Updated dependencies [1bc842d]
+- Updated dependencies [b69d717]
+- Updated dependencies [2e60de4]
+  - @declaragent/core@0.5.0
+
 ## 3.0.0
 
 ### Minor Changes
