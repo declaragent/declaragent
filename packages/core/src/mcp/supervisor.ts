@@ -40,7 +40,8 @@
  */
 
 import { CircuitBreaker, type CircuitBreakerState } from '../events/circuit-breaker.js';
-import type { Counter, Gauge, MetricsRegistry } from '../events/types.js';
+import type { Counter, Gauge, Histogram, MetricsRegistry } from '../events/types.js';
+import { ProviderTokenBucket } from '../providers/rate-limit.js';
 import type { Logger } from '../types/logger.js';
 import type { MCPLifecycleExitReason, MCPLifecycleHandlers } from './stdio-client.js';
 import type { MCPClient, MCPServerInfo, MCPTool, MCPToolResult } from './types.js';
@@ -69,11 +70,88 @@ export class MCPServerCrashedError extends Error {
   }
 }
 
+/**
+ * Thrown when an in-flight tool call exceeds the supervisor's
+ * `drainTimeoutMs` window during a respawn and the caller has NOT
+ * opted in to `resubmitOnRespawn`. Carries enough context — tool
+ * name + `argSnapshot` — that the caller can decide whether to
+ * retry, surface a user-facing error, or escalate.
+ *
+ * The supervisor preserves the original arg via a deep-ish shallow
+ * snapshot (JSON-stringify with a fallback); callers should not
+ * mutate the snapshot.
+ *
+ * @since 0.7.5 — Post-Enterprise Backlog #13
+ */
+export class ToolCallDrainedError extends Error {
+  readonly code = 'EMCPDRAINED';
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly argSnapshot: unknown;
+  /** Ms the supervisor waited before giving up. Equals `drainTimeoutMs`. */
+  readonly drainTimeoutMs: number;
+  constructor(
+    serverId: string,
+    toolName: string,
+    argSnapshot: unknown,
+    drainTimeoutMs: number,
+    message?: string,
+  ) {
+    super(
+      message ??
+        `MCP tool call "${toolName}" on server "${serverId}" exceeded drain window ${drainTimeoutMs}ms during respawn`,
+    );
+    this.name = 'ToolCallDrainedError';
+    this.serverId = serverId;
+    this.toolName = toolName;
+    this.argSnapshot = argSnapshot;
+    this.drainTimeoutMs = drainTimeoutMs;
+  }
+}
+
+/**
+ * Thrown when a tool call is rejected because the MCP server's
+ * aggregate rate-limit cap (`mcp.rateLimit`) is exhausted. Fails
+ * fast — no token wait — so the LLM tool-use loop sees a typed
+ * error and can back off rather than stacking concurrent calls on
+ * a flaky server.
+ *
+ * @since 0.7.5 — Post-Enterprise Backlog #27
+ */
+export class MCPServerRateLimitedError extends Error {
+  readonly code = 'MCP_RATE_LIMITED';
+  readonly serverId: string;
+  /** Configured steady-state rate. */
+  readonly rps: number;
+  /** Configured burst capacity. */
+  readonly burst: number;
+  constructor(serverId: string, rps: number, burst: number, message?: string) {
+    super(
+      message ??
+        `MCP server "${serverId}" aggregate rate limit exhausted (rps=${rps}, burst=${burst})`,
+    );
+    this.name = 'MCPServerRateLimitedError';
+    this.serverId = serverId;
+    this.rps = rps;
+    this.burst = burst;
+  }
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export type MCPSupervisorState =
   | 'starting'
   | 'ready'
+  /**
+   * A respawn trigger has fired; the supervisor is waiting for
+   * in-flight tool calls to complete up to `drainTimeoutMs`. NEW
+   * tool calls are rejected. Once the drain resolves (via
+   * completion or timeout), the supervisor tears down the client
+   * and transitions to `reconnecting`.
+   *
+   * @since 0.7.5 — Post-Enterprise Backlog #13
+   */
+  | 'draining'
   | 'reconnecting'
   /** Circuit open: will not try again until the reset timeout elapses. */
   | 'circuit-open'
@@ -116,6 +194,36 @@ export type MCPRestartReason =
   | 'init-failed'
   | 'probe';
 
+/**
+ * Aggregate rate-limit cap that sits ABOVE any per-tool gates.
+ *
+ * Per-tool limits (see `ToolRateLimitGate`) cap a single tool's
+ * throughput. But a slow spike distributed across many tools of a
+ * flaky MCP server can still hammer the server into oblivion. This
+ * server-level cap is checked FIRST: if it fails, the supervisor
+ * rejects the call with {@link MCPServerRateLimitedError} before
+ * the per-tool gate is even consulted.
+ *
+ * Unlike the provider / per-tool limiters, this gate FAILS FAST —
+ * it does not wait for a token to refill. That choice matches the
+ * use case (shed load on a flaky server, let the LLM back off)
+ * rather than the smooth-out-bursts use case that per-tool
+ * implements.
+ *
+ * @since 0.7.5 — Post-Enterprise Backlog #27
+ */
+export interface MCPServerRateLimitConfig {
+  /** Steady-state rate in calls per second across ALL tools. Must be > 0. */
+  rps: number;
+  /**
+   * Max calls the aggregate bucket can absorb without throttling.
+   * Defaults to `max(rps, 1)` — a conservative default that opens
+   * exactly one steady-state second of headroom. Operators with
+   * well-behaved tool suites can raise it.
+   */
+  burst?: number;
+}
+
 export interface CreateMCPSupervisorOptions {
   /** Server id; namespaces tool names, labels metrics. */
   serverId: string;
@@ -127,6 +235,39 @@ export interface CreateMCPSupervisorOptions {
   metrics?: MetricsRegistry;
   /** Logger. Defaults to a no-op. */
   logger?: Logger;
+  /**
+   * Aggregate per-server rate-limit cap. When set, checked first on
+   * every `callTool`; exhaustion yields {@link MCPServerRateLimitedError}.
+   *
+   * @since 0.7.5 — Post-Enterprise Backlog #27
+   */
+  rateLimit?: MCPServerRateLimitConfig;
+  /**
+   * How long to wait for in-flight tool calls to complete before
+   * tearing down the current client during a respawn. Default:
+   * 5_000ms. Calls that finish inside the window return their
+   * response normally; calls that exceed the window are handled
+   * per `resubmitOnRespawn`.
+   *
+   * @since 0.7.5 — Post-Enterprise Backlog #13
+   */
+  drainTimeoutMs?: number;
+  /**
+   * When true, calls that exceed the drain window are transparently
+   * re-attempted on the fresh client after respawn completes. The
+   * caller's promise doesn't resolve until the retry does.
+   *
+   * Default: `false`. Safer default — tool calls may have side
+   * effects (writes, payments, external API calls) where duplicate
+   * delivery is worse than a one-shot failure. Operators who know
+   * their tools are idempotent opt in.
+   *
+   * When false, overflow calls reject with {@link ToolCallDrainedError}
+   * and the supervisor proceeds with respawn unblocked.
+   *
+   * @since 0.7.5 — Post-Enterprise Backlog #13
+   */
+  resubmitOnRespawn?: boolean;
   /** Health-check ping interval. Default: 10_000ms. */
   pingIntervalMs?: number;
   /** Consecutive ping failures before we declare the server dead. Default: 2. */
@@ -196,8 +337,18 @@ const DEFAULT_PING_TIMEOUT_MS = 5_000;
 const DEFAULT_PING_FAILURE_THRESHOLD = 2;
 const DEFAULT_CIRCUIT_THRESHOLD = 5;
 const DEFAULT_CIRCUIT_RESET_MS = 30_000;
+const DEFAULT_DRAIN_TIMEOUT_MS = 5_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
+/**
+ * Histogram buckets for `mcp_server_drain_duration_ms`. Optimised
+ * for the 0–5 s default drain window, with generous headroom past
+ * the upper bound so operators who bump `drainTimeoutMs` to 30 s
+ * still get meaningful distributions.
+ */
+const DRAIN_DURATION_BUCKETS_MS: readonly number[] = [
+  10, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000,
+];
 /**
  * The inner-client give-up threshold when driven by the supervisor.
  * We want the inner client to never retry on its own — we retry from
@@ -257,6 +408,32 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
   const sleep = opts.sleep ?? defaultSleep;
   const now = opts.now ?? Date.now;
   const setTimer = opts.setTimer ?? defaultTimer;
+  // Drain-during-respawn knobs (#13). Negative / zero → no grace window.
+  const drainTimeoutMs = Math.max(0, opts.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS);
+  const resubmitOnRespawn = opts.resubmitOnRespawn === true;
+
+  // Aggregate per-server rate-limit gate (#27). Fails fast when
+  // exhausted — does NOT wait for tokens to refill. The bucket
+  // implementation shared with the per-tool gate exposes
+  // `tryTake()` for exactly this pattern.
+  let aggregateBucket: ProviderTokenBucket | undefined;
+  let aggregateConfig: { rps: number; burst: number } | undefined;
+  if (opts.rateLimit) {
+    const { rps } = opts.rateLimit;
+    if (!(rps > 0)) {
+      throw new Error(
+        `MCP supervisor "${opts.serverId}": rateLimit.rps must be > 0 (got ${String(rps)})`,
+      );
+    }
+    const burst = Math.max(1, opts.rateLimit.burst ?? Math.ceil(rps));
+    aggregateBucket = new ProviderTokenBucket({
+      ratePerSec: rps,
+      burst,
+      now,
+      sleep,
+    });
+    aggregateConfig = { rps, burst };
+  }
 
   // Metrics registration. The supervisor can still run without metrics
   // — the counter/gauge stubs below become no-ops. This lets tests
@@ -287,6 +464,25 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
         'Count of MCP supervisor circuit-open transitions per server.',
       )
     : { inc() {} };
+  // Drain duration histogram (#13). `outcome=completed|timeout` lets
+  // operators separate healthy drains from ones that blew through
+  // the window.
+  const drainDurationHistogram: Histogram = opts.metrics
+    ? opts.metrics.histogram(
+        'mcp_server_drain_duration_ms',
+        'Time in ms the MCP supervisor spent waiting for in-flight tool calls to complete before respawn, labeled by server_id and outcome.',
+        DRAIN_DURATION_BUCKETS_MS,
+      )
+    : { observe() {} };
+  // Aggregate rate-limit rejections (#27). Label `reason` is always
+  // `"aggregate"` today — placeholder for per-tool counters if we
+  // consolidate later.
+  const rateLimitedCounter: Counter = opts.metrics
+    ? opts.metrics.counter(
+        'mcp_server_rate_limited_total',
+        'Count of MCP tool calls rejected by the aggregate per-server rate-limit cap, labeled by server_id and reason.',
+      )
+    : { inc() {} };
 
   const serverLabels: Readonly<Record<string, string>> = { server_id: opts.serverId };
 
@@ -307,6 +503,56 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
   let stopped = false;
   let pingHandle: (() => void) | undefined;
   let restartLoopPromise: Promise<void> | undefined;
+
+  // ── In-flight call tracking (#13) ──────────────────────────────────
+  //
+  // Each in-flight tool call registers itself so the drain loop can
+  // observe completion. `snapshot` is the caller's original input,
+  // captured via a best-effort structured clone (JSON round-trip with
+  // a symbol+function safe fallback). The same map also powers the
+  // "resubmit-on-respawn" path: entries that miss the drain window
+  // stay registered so the post-respawn loop can re-issue them.
+  interface InFlightCall {
+    readonly id: number;
+    readonly toolName: string;
+    readonly argSnapshot: unknown;
+    /** Registered generation — lets us discard stale entries. */
+    readonly generation: number;
+    /**
+     * Signal fired when the underlying call resolves (success OR
+     * typed error). The drain loop awaits this.
+     */
+    readonly done: Promise<void>;
+    /** Resolves the caller's returned promise with a successful result. */
+    resolve(result: MCPToolResult): void;
+    /** Rejects the caller's returned promise. */
+    reject(err: unknown): void;
+    /** Flipped once `resolve` or `reject` has been invoked. */
+    settled: boolean;
+  }
+  const inFlight = new Map<number, InFlightCall>();
+  let nextCallId = 1;
+
+  function cloneArgs(input: unknown): unknown {
+    // Tool inputs are almost always plain JSON (schema-validated
+    // upstream). A JSON round-trip is the honest default: snapshot
+    // the value so caller mutations after dispatch don't leak. If
+    // it's not serialisable (circular ref, BigInt, function), fall
+    // back to the reference — better than throwing.
+    try {
+      return JSON.parse(JSON.stringify(input));
+    } catch {
+      return input;
+    }
+  }
+
+  /**
+   * Drain mid-flight: second respawn trigger arrives before the
+   * current drain wait resolves. We signal the drain loop to exit
+   * early so the current respawn can finish its teardown and the
+   * new trigger can start from scratch.
+   */
+  let cancelActiveDrain: (() => void) | undefined;
   /**
    * Generation counter — incremented every time we tear down the
    * current client. Lets async callbacks (lifecycle events arriving
@@ -464,20 +710,164 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
   function triggerRestart(reason: MCPRestartReason): void {
     if (stopped) return;
     if (state === 'reconnecting') return;
+    if (state === 'draining') {
+      // Second respawn trigger arrived while the first is still
+      // waiting on the drain. Short-circuit the drain — the caller
+      // wants a fresh client NOW, and the drain outcomes have
+      // already been set up to reject/resubmit the same way on
+      // timeout. This preserves safety: no drain ever resolves
+      // twice; we just take the timeout branch sooner.
+      logger.debug('mcp.supervisor.drain.superseded', {
+        serverId: opts.serverId,
+        superseding: reason,
+      });
+      cancelActiveDrain?.();
+      return;
+    }
     if (!circuit.allow()) {
       setState('circuit-open');
       return;
     }
+    setState('draining');
+    // Run the whole drain-then-respawn pipeline async so the caller
+    // of `triggerRestart` (often a microtask from `onExit`) isn't
+    // blocked on the drain window.
+    restartLoopPromise = drainThenRespawn(reason);
+  }
+
+  /**
+   * Wait up to `drainTimeoutMs` for every registered in-flight
+   * call to resolve. Returns the list of calls that DID NOT finish
+   * in time — the caller decides their fate (reject vs resubmit).
+   * Resolves immediately when {@link cancelActiveDrain} fires.
+   */
+  function drainInFlightCalls(): Promise<{ overflow: InFlightCall[]; durationMs: number }> {
+    const start = now();
+    // Snapshot current-generation in-flight list. Calls registered
+    // after this point race `generationEnded` via the normal
+    // `callTool` path.
+    const currentGen = generation;
+    const active = [...inFlight.values()].filter((c) => c.generation === currentGen && !c.settled);
+    if (active.length === 0 || drainTimeoutMs === 0) {
+      return Promise.resolve({ overflow: active, durationMs: now() - start });
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      // Forward-declare the timer canceller so both branches (timeout
+      // / early-completion) can cancel it. `biome/useConst` otherwise
+      // complains because only the assignment on line 2 below writes
+      // to it.
+      const timerState: { cancel?: () => void } = {};
+      const onCancelOrTimeout = (): void => {
+        if (settled) return;
+        settled = true;
+        timerState.cancel?.();
+        cancelActiveDrain = undefined;
+        const overflow = active.filter((c) => !c.settled);
+        resolve({ overflow, durationMs: now() - start });
+      };
+      cancelActiveDrain = onCancelOrTimeout;
+      timerState.cancel = setTimer(onCancelOrTimeout, drainTimeoutMs);
+      // Resolve early when every call settles.
+      void Promise.allSettled(active.map((c) => c.done)).then(() => {
+        if (settled) return;
+        settled = true;
+        timerState.cancel?.();
+        cancelActiveDrain = undefined;
+        resolve({ overflow: [], durationMs: now() - start });
+      });
+    });
+  }
+
+  /**
+   * Orchestrate: drain → teardown → respawn-loop. Split from
+   * `triggerRestart` for readability.
+   */
+  async function drainThenRespawn(reason: MCPRestartReason): Promise<void> {
+    const { overflow, durationMs } = await drainInFlightCalls();
+    const timedOut = overflow.length > 0;
+    drainDurationHistogram.observe(durationMs, {
+      server_id: opts.serverId,
+      outcome: timedOut ? 'timeout' : 'completed',
+    });
+    if (timedOut) {
+      logger.warn('mcp.supervisor.drain.timeout', {
+        serverId: opts.serverId,
+        overflow: overflow.length,
+        durationMs,
+        resubmitOnRespawn,
+      });
+    } else if (overflow.length === 0) {
+      logger.debug('mcp.supervisor.drain.complete', {
+        serverId: opts.serverId,
+        durationMs,
+      });
+    }
+
+    // Now tear down + respawn. Swap `client` BEFORE signalling
+    // generation-end so no new call starts against a half-torn
+    // client.
     generation += 1;
     const dying = client;
     client = undefined;
     latestTools = [];
     stopPingLoop();
-    // Unblock every in-flight `callTool` waiting on the old generation.
+    // Reject any still-active calls from the OLD generation that
+    // didn't complete during drain, UNLESS resubmit is enabled.
+    for (const call of overflow) {
+      if (call.settled) continue;
+      if (resubmitOnRespawn) {
+        // Leave registered — post-respawn loop will re-issue it
+        // once the new client is ready. Note: it intentionally
+        // stays in `inFlight` so a second respawn mid-recovery
+        // picks it up again.
+        continue;
+      }
+      call.settled = true;
+      call.reject(
+        new ToolCallDrainedError(opts.serverId, call.toolName, call.argSnapshot, drainTimeoutMs),
+      );
+      inFlight.delete(call.id);
+    }
+    // Unblock every in-flight `callTool` waiting on the old generation
+    // sentinel (e.g. resubmit-off calls that already got rejected, or
+    // new-generation calls racing the sentinel).
     signalGenerationEnd();
     resetGenerationEndSignal();
     setState('reconnecting');
-    restartLoopPromise = runRestartLoop(reason, dying);
+    await runRestartLoop(reason, dying);
+    // After a successful respawn, if resubmit is enabled, drain the
+    // stash onto the fresh client.
+    if (resubmitOnRespawn && state === 'ready' && client !== undefined) {
+      await resubmitStashedCalls();
+    }
+  }
+
+  /**
+   * Re-issue calls that exceeded the drain window when
+   * `resubmitOnRespawn: true`. Runs after `runRestartLoop` has
+   * installed a fresh client.
+   */
+  async function resubmitStashedCalls(): Promise<void> {
+    const active = client;
+    if (!active) return;
+    const stash = [...inFlight.values()].filter((c) => !c.settled);
+    for (const call of stash) {
+      void (async () => {
+        try {
+          const result = await active.callTool(call.toolName, call.argSnapshot);
+          if (call.settled) return;
+          call.settled = true;
+          call.resolve(result);
+        } catch (err) {
+          if (call.settled) return;
+          call.settled = true;
+          call.reject(err);
+        } finally {
+          inFlight.delete(call.id);
+        }
+      })();
+    }
   }
 
   function scheduleProbe(): void {
@@ -614,11 +1004,23 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
       if (stopped) return;
       stopped = true;
       stopPingLoop();
+      // Force-cancel any active drain wait so `drainThenRespawn`
+      // doesn't block `stop()` by the full drain window.
+      cancelActiveDrain?.();
       setState('stopped');
       const dying = client;
       client = undefined;
       // Unblock in-flight calls so they don't hang past shutdown.
       signalGenerationEnd();
+      // Reject every still-registered in-flight call — if we got
+      // here via stop() bypassing the drain path, callers would
+      // otherwise hang on returnPromise forever.
+      for (const entry of [...inFlight.values()]) {
+        if (entry.settled) continue;
+        entry.settled = true;
+        entry.reject(new MCPServerCrashedError(opts.serverId, circuit.state, 'supervisor stopped'));
+      }
+      inFlight.clear();
       await teardownClient(dying);
       await restartLoopPromise?.catch(() => {});
     },
@@ -626,11 +1028,29 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
       if (stopped) {
         throw new MCPServerCrashedError(opts.serverId, circuit.state, 'supervisor stopped');
       }
+      // #27 — aggregate per-server rate-limit check FIRST. Saves
+      // cycles vs. letting the request burn through per-tool gates
+      // when the whole server is the bottleneck. Fails fast (no
+      // sleep).
+      if (aggregateBucket && aggregateConfig) {
+        const ok = aggregateBucket.tryTake();
+        if (!ok) {
+          rateLimitedCounter.inc(1, { server_id: opts.serverId, reason: 'aggregate' });
+          throw new MCPServerRateLimitedError(
+            opts.serverId,
+            aggregateConfig.rps,
+            aggregateConfig.burst,
+          );
+        }
+      }
       if (!circuit.allow()) {
         throw new MCPServerCrashedError(opts.serverId, circuit.state);
       }
       const active = client;
       if (!active || state !== 'ready') {
+        // While `draining`, new calls are refused so the drain
+        // window isn't extended by freshly-arrived calls. Caller
+        // sees the same typed error it already understands.
         throw new MCPServerCrashedError(
           opts.serverId,
           circuit.state,
@@ -638,35 +1058,93 @@ export function createMCPSupervisor(opts: CreateMCPSupervisorOptions): MCPSuperv
         );
       }
       const callGen = generation;
+      // Register with the in-flight tracker (#13). The tracker lets
+      // the drain loop observe completion AND remembers args for
+      // a possible resubmit-on-respawn.
+      const id = nextCallId++;
+      let resolveReturn!: (r: MCPToolResult) => void;
+      let rejectReturn!: (err: unknown) => void;
+      const returnPromise = new Promise<MCPToolResult>((res, rej) => {
+        resolveReturn = res;
+        rejectReturn = rej;
+      });
+      let settleDone!: () => void;
+      const done = new Promise<void>((r) => {
+        settleDone = r;
+      });
+      const entry: InFlightCall = {
+        id,
+        toolName: name,
+        argSnapshot: cloneArgs(input),
+        generation: callGen,
+        done,
+        settled: false,
+        resolve(result) {
+          resolveReturn(result);
+          settleDone();
+        },
+        reject(err) {
+          rejectReturn(err);
+          settleDone();
+        },
+      };
+      inFlight.set(id, entry);
+
       // Race the underlying call against the current generation's
       // "ended" signal. If the client crashes / the supervisor
       // tears it down mid-call, the race resolves first and we
       // surface a typed `EMCPCRASHED` rather than hanging.
       const endSignal = generationEnded;
       const crashSentinel = Symbol('crashed');
-      const result = await Promise.race([
-        active.callTool(name, input, signal).catch((err: unknown) => ({
-          __callError: true,
-          err,
-        })),
-        endSignal.then(() => crashSentinel),
-      ]);
-      if (result === crashSentinel || callGen !== generation || stopped) {
-        throw new MCPServerCrashedError(
-          opts.serverId,
-          circuit.state,
-          `MCP server "${opts.serverId}" crashed during tool call "${name}"`,
-        );
-      }
-      if (
-        typeof result === 'object' &&
-        result !== null &&
-        '__callError' in result &&
-        (result as { __callError: true }).__callError === true
-      ) {
-        throw (result as { err: unknown }).err;
-      }
-      return result as MCPToolResult;
+      void (async () => {
+        const raceResult = await Promise.race([
+          active.callTool(name, input, signal).catch((err: unknown) => ({
+            __callError: true,
+            err,
+          })),
+          endSignal.then(() => crashSentinel),
+        ]);
+        if (entry.settled) return; // resubmit path already resolved us
+        if (raceResult === crashSentinel || callGen !== generation || stopped) {
+          // The drain path will either reject this entry with
+          // ToolCallDrainedError (when resubmitOnRespawn=false) or
+          // leave it registered for resubmit. Only surface the
+          // crash here if the entry is no longer tracked (e.g.
+          // crash arrived between ready and draining states).
+          if (inFlight.has(id)) {
+            // Drain path owns the final disposition; defer.
+            return;
+          }
+          entry.settled = true;
+          rejectReturn(
+            new MCPServerCrashedError(
+              opts.serverId,
+              circuit.state,
+              `MCP server "${opts.serverId}" crashed during tool call "${name}"`,
+            ),
+          );
+          settleDone();
+          return;
+        }
+        if (
+          typeof raceResult === 'object' &&
+          raceResult !== null &&
+          '__callError' in raceResult &&
+          (raceResult as { __callError: true }).__callError === true
+        ) {
+          entry.settled = true;
+          inFlight.delete(id);
+          rejectReturn((raceResult as { err: unknown }).err);
+          settleDone();
+          return;
+        }
+        entry.settled = true;
+        inFlight.delete(id);
+        resolveReturn(raceResult as MCPToolResult);
+        settleDone();
+      })();
+
+      return returnPromise;
     },
     currentTools() {
       return latestTools;
