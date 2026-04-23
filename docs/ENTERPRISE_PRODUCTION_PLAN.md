@@ -9,9 +9,9 @@ This is the **tracking doc**. Keep the status board (§1) accurate. Detailed spe
 ## 0 · Summary banner
 
 ```
-Enterprise pillars status:  ▓▓▓▓▓▓▓  ( 6 / 12 items complete; #5 slice 1 fully landed; 5 items remain )
-Latest release:             @declaragent/cli@0.6.0 (items #1/#2/#3/#4/#6/#7 + #5-slice-1 all merged 2026-04-23; unreleased)
-Next milestone:             Round 4 — #8 MCP auto-recovery · #9 GitOps render · #10 SIEM export
+Enterprise pillars status:  ▓▓▓▓▓▓▓▓▓  ( 9 / 12 items complete; #5 slice 1 fully landed; 2 items remain )
+Latest release:             @declaragent/cli@0.6.0 (items #1/#2/#3/#4/#6/#7/#8/#9/#10 + #5-slice-1 all merged 2026-04-23; unreleased)
+Next milestone:             Final round — #11 v1.1 Agent Graph typed capabilities · #12 Recorded-conversation builder regression tests · #5 Slice 2 control-plane auth
 Active blocker:             none
 ```
 
@@ -32,9 +32,9 @@ Tick checkboxes as work lands. One line per item. If the scope changes, **edit t
 | 5 | [~] Managed control plane (aggregator over N `up`) | M4 | 4 wk | In-progress (Slice 1 fully shipped — 1a + 1b + 1c; Slice 2 auth next) | Eng-C | [PR #12](https://github.com/declaragent/declaragent/pull/12) · `3cafaaa` (1a) · [PR #15](https://github.com/declaragent/declaragent/pull/15) · `af684cf` (1b) · [PR #19](https://github.com/declaragent/declaragent/pull/19) · `06dc6e3` (1c /logs SSE) |
 | 6 | [x] Control socket on `up` daemon | M5 | 2 d | Shipped | Eng-B | [PR #11](https://github.com/declaragent/declaragent/pull/11) · `d53baed` — `reload` op still stubbed as `unsupported` |
 | 7 | [x] Per-tool rate limit | M5 | 3 d | Shipped | Eng-B | [PR #18](https://github.com/declaragent/declaragent/pull/18) · `10da017` — follow-up: wire `TenantAuditSink` into `up-cli` so `rate_limited` records land |
-| 8 | [ ] Auto-recovery for crashed MCP servers | M5 | 4 d | Not started | — | — |
-| 9 | [ ] GitOps `fleet render` — k8s manifests + Helm | M3 | 1 wk | Not started | — | — |
-| 10 | [ ] SIEM audit export — Splunk / Elastic / Datadog adapter | M3 | 1 wk | Not started | — | — |
+| 8 | [x] Auto-recovery for crashed MCP servers | M5 | 4 d | Shipped | Eng-B | [PR #21](https://github.com/declaragent/declaragent/pull/21) · `1a120f8` — follow-up: wire supervisor into `packages/cli/src/mcp-runtime.ts` + product decision on default-supervised vs opt-in |
+| 9 | [x] GitOps `fleet render` — k8s manifests + Helm | M3 | 1 wk | Shipped | Eng-A | [PR #20](https://github.com/declaragent/declaragent/pull/20) · `98c120a` — `--no-servicemonitor` for non-Prometheus-Operator clusters; follow-up: optional ServiceMonitor file split + channel/source/plugin ConfigMap fan-out |
+| 10 | [x] SIEM audit export — Splunk / Elastic / Datadog adapter | M3 | 1 wk | Shipped | Eng-C | [PR #22](https://github.com/declaragent/declaragent/pull/22) · `b8f6f94` — cursor-held across restarts; follow-up: back-pressure policy, adaptive batch interval, shared audit sink |
 | 11 | [ ] v1.1 Agent Graph typed capabilities | M6 | 2 wk | Not started | — | — |
 | 12 | [ ] Recorded-conversation regression tests for the builder | M6 | 3 d | Not started | — | — |
 
