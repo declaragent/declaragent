@@ -101,8 +101,10 @@ export type {
   VaultTokenAuth,
 } from './secrets/index.js';
 export {
+  AuditBackpressureError,
   canonicalizeRecord as canonicalizeAuditRecord,
   computeRecordHash as computeAuditRecordHash,
+  createBackpressureController,
   createDatadogExporter,
   createElasticExporter,
   createSplunkExporter,
@@ -116,11 +118,16 @@ export {
 } from './audit/index.js';
 export type {
   AuditExportEntry,
+  AuditExportLoopBackpressureOptions,
+  AuditExportLoopBatchOptions,
   AuditExportLoopHandle,
   AuditExportLoopOptions,
   AuditExporter,
   AuthCheckAuditRecord,
+  BackpressureController,
+  BackpressurePolicy,
   CapabilitySchemaViolationAuditRecord,
+  CreateBackpressureControllerOptions,
   CreateDatadogExporterOptions,
   CreateElasticExporterOptions,
   CreateSplunkExporterOptions,

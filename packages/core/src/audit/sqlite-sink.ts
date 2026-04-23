@@ -1,4 +1,6 @@
 import { Database } from 'bun:sqlite';
+import type { Logger } from '../types/logger.js';
+import { AuditBackpressureError, type BackpressureController } from './backpressure.js';
 import { canonicalizeRecord, computeRecordHash, verifyEntries } from './chain-verify.js';
 import type {
   EraseOptions,
@@ -32,6 +34,26 @@ export interface CreateSqliteAuditSinkOptions {
   path: string;
   /** Injected clock (only used for timestamps the caller omits). */
   now?: () => number;
+  /**
+   * Optional SIEM back-pressure controller. When supplied, `record()`
+   * consults {@link BackpressureController.isPaused} before every write:
+   *
+   *   - `policy = 'fail-fast'` (default): throws {@link AuditBackpressureError}.
+   *   - `policy = 'drop'`:   silently drops + increments the controller's
+   *     drop counter (see {@link createBackpressureController}).
+   *
+   * Opt-in — undefined preserves pre-0.7.4 behaviour (unbounded intake).
+   *
+   * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #11
+   */
+  backpressure?: BackpressureController;
+  /**
+   * Optional logger threaded into the back-pressure `'drop'` path. The
+   * controller uses this for transition logs too, so most deployments
+   * will pass the same logger to the controller itself; this is here
+   * for the rare case where the sink wants extra visibility on drops.
+   */
+  logger?: Logger;
 }
 
 interface RowShape {
@@ -87,6 +109,8 @@ export async function createSqliteAuditSink(
   db.exec('PRAGMA synchronous = NORMAL;');
   db.exec(SCHEMA);
   const now = options.now ?? Date.now;
+  const backpressure = options.backpressure;
+  const logger = options.logger;
 
   const tailStmt = db.prepare('SELECT record_hash FROM audit_records ORDER BY seq DESC LIMIT 1');
   function latestHash(): string {
@@ -100,6 +124,26 @@ export async function createSqliteAuditSink(
   );
 
   async function record(input: TenantAuditRecord): Promise<void> {
+    // Back-pressure gate — when the SIEM backlog is too old, either
+    // fail-fast to surface the outage or drop + log depending on the
+    // controller's configured policy. See `backpressure.ts`.
+    if (backpressure?.isPaused()) {
+      const { reasonMs } = backpressure.state();
+      if (backpressure.policy() === 'drop') {
+        backpressure.recordDrop();
+        logger?.warn('audit.backpressure.drop', {
+          kind: input.kind,
+          backlogMs: reasonMs,
+        });
+        return;
+      }
+      throw new AuditBackpressureError(
+        `audit sink paused — SIEM export backlog exceeds threshold${
+          reasonMs !== undefined ? ` (oldest unshipped row age ${reasonMs}ms)` : ''
+        }`,
+        reasonMs,
+      );
+    }
     const ts = (input as { ts?: number }).ts ?? now();
     const stamped: TenantAuditRecord = { ...input, ts } as TenantAuditRecord;
     const json = canonicalizeRecord(stamped);
@@ -222,6 +266,15 @@ export async function createSqliteAuditSink(
                          ELSE audit_export_cursor.updated_at END`,
   );
 
+  const oldestUnshippedStmt = db.prepare('SELECT MIN(ts) AS ts FROM audit_records WHERE seq > ?');
+  async function oldestUnshippedMs(exporterName: string): Promise<number | null> {
+    const cursor = await readExportCursor(exporterName);
+    const sinceSeq = cursor?.lastSeq ?? 0;
+    const row = oldestUnshippedStmt.get(sinceSeq) as { ts: number | null } | null;
+    if (!row || row.ts === null) return null;
+    return row.ts;
+  }
+
   async function readExportCursor(exporterName: string): Promise<ExportCursor | null> {
     const row = readCursorStmt.get(exporterName) as {
       exporter_name: string;
@@ -244,7 +297,17 @@ export async function createSqliteAuditSink(
     db.close();
   }
 
-  return { record, query, erase, verify, prune, readExportCursor, writeExportCursor, close };
+  return {
+    record,
+    query,
+    erase,
+    verify,
+    prune,
+    readExportCursor,
+    writeExportCursor,
+    oldestUnshippedMs,
+    close,
+  };
 }
 
 /**
