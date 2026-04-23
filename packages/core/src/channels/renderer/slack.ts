@@ -1,4 +1,4 @@
-import type { Button, MessageContent, RichBlock } from '../types.js';
+import type { Button, ChannelMessageContent, RichBlock } from '../types.js';
 import { validateBlockKit } from './block-kit-validator.js';
 import { capabilitiesAwareRender } from './capabilities-degrade.js';
 import { blockToFallbackText } from './fallback.js';
@@ -106,7 +106,7 @@ const ACTIONS_CAP = 5;
  * The output is validated via `validateBlockKit` so a shape problem
  * surfaces here (with a path pointer) rather than as Slack's terse 400.
  */
-export function renderSlack(content: MessageContent, ctx: RendererContext): SlackPayload {
+export function renderSlack(content: ChannelMessageContent, ctx: RendererContext): SlackPayload {
   const degraded = capabilitiesAwareRender(content, ctx.capabilities);
   switch (degraded.kind) {
     case 'text':

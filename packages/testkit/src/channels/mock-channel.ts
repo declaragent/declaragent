@@ -26,11 +26,11 @@ import {
   type ChannelCapabilities,
   type ChannelDependencies,
   type ChannelInstance,
+  type ChannelMessageContent,
   ChannelRateLimitError,
   type ConversationRef,
   type FileRef,
   type FileUpload,
-  type MessageContent,
   type MessageRef,
   type SendMessageParams,
   type SentMessage,
@@ -63,7 +63,7 @@ export interface MockChannelCalls {
   send: SendMessageParams[];
   setTyping: { conversation: ConversationRef; durationMs?: number }[];
   react: { ref: MessageRef; emoji: string }[];
-  edit: { ref: MessageRef; content: MessageContent }[];
+  edit: { ref: MessageRef; content: ChannelMessageContent }[];
   delete: MessageRef[];
   uploadFile: { file: FileUpload; conversation: ConversationRef }[];
   performAction: ChannelAction[];
@@ -206,7 +206,7 @@ export function createMockChannelInstance(options: MockChannelOptions = {}): Moc
     async react(ref: MessageRef, emoji: string) {
       calls.react.push({ ref, emoji });
     },
-    async edit(ref: MessageRef, content: MessageContent) {
+    async edit(ref: MessageRef, content: ChannelMessageContent) {
       calls.edit.push({ ref, content });
     },
     async delete(ref: MessageRef) {

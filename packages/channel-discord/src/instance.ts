@@ -3,6 +3,7 @@ import {
   type BaseChannelOptions,
   type ChannelAction,
   type ChannelDependencies,
+  type ChannelMessageContent,
   ChannelRateLimitError,
   type ConversationRef,
   type DiscordActionRow,
@@ -10,7 +11,6 @@ import {
   type DiscordPayload,
   type FileRef,
   type FileUpload,
-  type MessageContent,
   type MessageRef,
   type SendMessageParams,
   type SentMessage,
@@ -66,7 +66,7 @@ export interface DiscordChannelInstanceOptions {
  * - Register global slash commands once at start (content-hash dedupe).
  * - Ack interactions within the 3-second window via a deferred
  *   callback; the bridge delivers the real reply as a follow-up.
- * - Render outbound `MessageContent` through `renderDiscord` and issue
+ * - Render outbound `ChannelMessageContent` through `renderDiscord` and issue
  *   the appropriate REST call.
  * - Auto-unarchive archived threads before sending, per
  *   `archivedThreadPolicy`.
@@ -644,7 +644,7 @@ export class DiscordChannelInstance extends BaseChannelInstance {
     });
   };
 
-  override edit = async (ref: MessageRef, content: MessageContent): Promise<void> => {
+  override edit = async (ref: MessageRef, content: ChannelMessageContent): Promise<void> => {
     const payload = renderDiscord(content, { capabilities: this.capabilities });
     const channelId = ref.conversation.threadId ?? ref.conversation.conversationId;
     switch (payload.kind) {

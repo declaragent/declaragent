@@ -24,8 +24,8 @@ import { createChannelRegistry } from './registry.js';
 import type {
   ChannelCapabilities,
   ChannelDependencies,
+  ChannelMessageContent,
   ConversationRef,
-  MessageContent,
   MessageRef,
   SendMessageParams,
   SentMessage,
@@ -88,8 +88,8 @@ class TestChannel extends BaseChannelInstance {
   rateLimitRetryMs = 0;
   started = 0;
   stopped = 0;
-  renderedContents: MessageContent[] = [];
-  editCalls: { ref: MessageRef; content: MessageContent }[] = [];
+  renderedContents: ChannelMessageContent[] = [];
+  editCalls: { ref: MessageRef; content: ChannelMessageContent }[] = [];
   typingCalls: { conversation: ConversationRef; durationMs?: number }[] = [];
   reactCalls: { ref: MessageRef; emoji: string }[] = [];
 
@@ -140,7 +140,7 @@ class TestChannel extends BaseChannelInstance {
     this.reactCalls.push({ ref, emoji });
   };
 
-  override edit = async (ref: MessageRef, content: MessageContent): Promise<void> => {
+  override edit = async (ref: MessageRef, content: ChannelMessageContent): Promise<void> => {
     this.editCalls.push({ ref, content });
   };
 
@@ -300,7 +300,7 @@ describe('BaseChannelInstance.send', () => {
 
   test('capabilitiesAwareRender is applied to doSend (slice 2 pass-through)', async () => {
     const { channel } = buildChannel();
-    const content: MessageContent = { kind: 'text', text: 'hello world' };
+    const content: ChannelMessageContent = { kind: 'text', text: 'hello world' };
     await channel.send({ conversation: CONV, content, idempotencyKey: 'c-1' });
     expect(channel.renderedContents[0]).toEqual(content);
   });

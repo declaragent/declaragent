@@ -19,10 +19,10 @@ import type {
   ChannelCapabilities,
   ChannelDependencies,
   ChannelInstance,
+  ChannelMessageContent,
   ConversationRef,
   FileRef,
   FileUpload,
-  MessageContent,
   MessageRef,
   SendMessageParams,
   SentMessage,
@@ -370,7 +370,7 @@ export abstract class BaseChannelInstance extends BaseSourceInstance implements 
 
   setTyping?(conversation: ConversationRef, durationMs?: number): Promise<void>;
   react?(ref: MessageRef, emoji: string): Promise<void>;
-  edit?(ref: MessageRef, content: MessageContent): Promise<void>;
+  edit?(ref: MessageRef, content: ChannelMessageContent): Promise<void>;
   delete?(ref: MessageRef): Promise<void>;
   uploadFile?(file: FileUpload, conversation: ConversationRef): Promise<FileRef>;
   performAction?(action: ChannelAction): Promise<void>;
@@ -412,7 +412,7 @@ export abstract class BaseChannelInstance extends BaseSourceInstance implements 
 
     if (typeof this.edit === 'function') {
       const original = this.edit.bind(this);
-      this.edit = async (ref: MessageRef, content: MessageContent): Promise<void> => {
+      this.edit = async (ref: MessageRef, content: ChannelMessageContent): Promise<void> => {
         const tracer = this.channelDeps.tracer;
         const span: Span | undefined = tracer?.startSpan('channel.outbound.edit', {
           ...this.channelLabels,
@@ -469,7 +469,7 @@ export abstract class BaseChannelInstance extends BaseSourceInstance implements 
    * blocks. Platform-specific serialization happens inside the adapter's
    * `doSend` via the matching renderer.
    */
-  protected capabilitiesAwareRender(content: MessageContent): MessageContent {
+  protected capabilitiesAwareRender(content: ChannelMessageContent): ChannelMessageContent {
     return renderWithCapabilities(content, this.capabilities);
   }
 }

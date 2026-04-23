@@ -1,7 +1,7 @@
 import type {
+  ChannelMessageContent,
   ChannelRegistry,
   ConversationRef,
-  MessageContent,
   MessageRef,
 } from '../channels/types.js';
 import type { Mailbox } from '../events/mailbox.js';
@@ -41,7 +41,7 @@ export type SendMessageInput =
       channelId: string;
       conversationId: string;
       threadId?: string;
-      content: MessageContent;
+      content: ChannelMessageContent;
       replyTo?: MessageRef;
       /**
        * Optional override. When absent the tool derives a deterministic
@@ -133,7 +133,7 @@ export function createSendMessageTool(
             threadId: { type: 'string', description: 'Optional thread id.' },
             content: {
               type: 'object',
-              description: 'MessageContent union (text / rich / template / file / voice).',
+              description: 'ChannelMessageContent union (text / rich / template / file / voice).',
             },
             replyTo: {
               type: 'object',

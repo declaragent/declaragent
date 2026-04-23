@@ -22,7 +22,8 @@
 import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
 import type { EventRejectionListFilter, EventStore } from '@declaragent/core';
-import { connectControlSocket, controlSocketPath, createEventStore } from '@declaragent/core';
+import { createEventStore } from '@declaragent/core';
+import { resolveAgentControlSocketPath, withControlSocketClient } from './control-socket-client.js';
 import { sessionsDbPath } from './paths.js';
 import { readUpState } from './up-lifecycle.js';
 
@@ -218,7 +219,7 @@ export async function dlqDispatchRequeue(
 ): Promise<DlqDispatchRequeueExitCode> {
   const io = deps.io ?? STDIO_IO;
   const readState = deps.readUpState ?? readUpState;
-  const resolveSocket = args.resolveSocket ?? ((id: string) => controlSocketPath(id));
+  const resolveSocket = args.resolveSocket ?? ((id: string) => resolveAgentControlSocketPath(id));
 
   // Resolve which agent's socket to hit. Dispatch DLQ lives in the
   // shared SQLite store, but the live bus is per-agent — we need to
@@ -261,65 +262,65 @@ export async function dlqDispatchRequeue(
     return 1;
   }
 
-  let client: Awaited<ReturnType<typeof connectControlSocket>> | null = null;
+  // The requeue call distinguishes four exit codes (see the doc comment
+  // above), so we can't fold this into the silent `tryFetchControlSocketStatus`
+  // path. We use `withControlSocketClient` for the lifecycle (always-close)
+  // and keep the rich response narrowing inline.
   try {
-    client = await connectControlSocket(socketPath, { timeoutMs: 2000 });
+    return await withControlSocketClient(socketPath, { timeoutMs: 2000 }, async (client) => {
+      const response = await client.call({
+        id: `cli-dlq-requeue-${args.eventId}`,
+        op: 'dlq.requeue',
+        params: { eventId: args.eventId },
+      });
+
+      // The response is the discriminated union the core control socket
+      // ships. Narrow by the op tag, then by whether an error or result
+      // slot was populated.
+      if (response.op !== 'dlq.requeue') {
+        io.err(
+          `✗ unexpected control-socket response op "${response.op}" for dlq.requeue — daemon version mismatch?\n`,
+        );
+        return 1 as DlqDispatchRequeueExitCode;
+      }
+      if ('error' in response) {
+        // Transport-level / handler-level errors — e.g. ENOBUS when the
+        // daemon was booted without a live bus wired.
+        io.err(`✗ requeue failed: ${response.error.code} — ${response.error.message}\n`);
+        return 1 as DlqDispatchRequeueExitCode;
+      }
+      const result = response.result;
+      if (result.ok) {
+        io.out(
+          `✓ requeued "${result.eventId}" on agent "${targetAgent}" (attempts before requeue: ${result.attemptsBeforeRequeue})\n`,
+        );
+        return 0 as DlqDispatchRequeueExitCode;
+      }
+      // Typed-error branch: the daemon ran the helper, but the row was
+      // either absent (idempotence) or half-deleted (event-miss).
+      if (result.reason === 'dlq-miss') {
+        io.err(`✗ ${result.message}\n`);
+        return 2 as DlqDispatchRequeueExitCode;
+      }
+      if (result.reason === 'event-miss') {
+        io.err(`✗ ${result.message}\n`);
+        return 3 as DlqDispatchRequeueExitCode;
+      }
+      // Defensive: the RequeueRejectionReason union is a fixed pair today
+      // but we keep the fall-through explicit so adding a reason can't
+      // silently degrade to exit 1.
+      io.err(`✗ requeue failed: ${result.message}\n`);
+      return 1 as DlqDispatchRequeueExitCode;
+    });
   } catch (err) {
+    // `withControlSocketClient` surfaces connect errors unchanged; we
+    // treat them all as "could not reach the daemon" (exit 1). The
+    // earlier `existsSync(socketPath)` check catches the common case
+    // of an unbound socket; this branch handles timeouts + mid-call
+    // disconnects.
     io.err(
       `✗ could not connect to agent "${targetAgent}" control socket: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return 1;
-  }
-
-  try {
-    const response = await client.call({
-      id: `cli-dlq-requeue-${args.eventId}`,
-      op: 'dlq.requeue',
-      params: { eventId: args.eventId },
-    });
-
-    // The response is the discriminated union the core control socket
-    // ships. Narrow by the op tag, then by whether an error or result
-    // slot was populated.
-    if (response.op !== 'dlq.requeue') {
-      io.err(
-        `✗ unexpected control-socket response op "${response.op}" for dlq.requeue — daemon version mismatch?\n`,
-      );
-      return 1;
-    }
-    if ('error' in response) {
-      // Transport-level / handler-level errors — e.g. ENOBUS when the
-      // daemon was booted without a live bus wired.
-      io.err(`✗ requeue failed: ${response.error.code} — ${response.error.message}\n`);
-      return 1;
-    }
-    const result = response.result;
-    if (result.ok) {
-      io.out(
-        `✓ requeued "${result.eventId}" on agent "${targetAgent}" (attempts before requeue: ${result.attemptsBeforeRequeue})\n`,
-      );
-      return 0;
-    }
-    // Typed-error branch: the daemon ran the helper, but the row was
-    // either absent (idempotence) or half-deleted (event-miss).
-    if (result.reason === 'dlq-miss') {
-      io.err(`✗ ${result.message}\n`);
-      return 2;
-    }
-    if (result.reason === 'event-miss') {
-      io.err(`✗ ${result.message}\n`);
-      return 3;
-    }
-    // Defensive: the RequeueRejectionReason union is a fixed pair today
-    // but we keep the fall-through explicit so adding a reason can't
-    // silently degrade to exit 1.
-    io.err(`✗ requeue failed: ${result.message}\n`);
-    return 1;
-  } finally {
-    try {
-      client.close();
-    } catch {
-      // best-effort — socket may already have closed.
-    }
   }
 }

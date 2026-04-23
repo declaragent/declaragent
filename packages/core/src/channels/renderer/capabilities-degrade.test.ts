@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { ChannelCapabilities, MessageContent } from '../types.js';
+import type { ChannelCapabilities, ChannelMessageContent } from '../types.js';
 import { capabilitiesAwareRender } from './capabilities-degrade.js';
 import { blockToFallbackText, blocksToFallbackText } from './fallback.js';
 
@@ -77,12 +77,12 @@ describe('blockToFallbackText', () => {
 
 describe('capabilitiesAwareRender', () => {
   test('passes plain text through unchanged', () => {
-    const content: MessageContent = { kind: 'text', text: 'hi', format: 'markdown' };
+    const content: ChannelMessageContent = { kind: 'text', text: 'hi', format: 'markdown' };
     expect(capabilitiesAwareRender(content, caps())).toEqual(content);
   });
 
   test('keeps all supported blocks when caps allow', () => {
-    const content: MessageContent = {
+    const content: ChannelMessageContent = {
       kind: 'rich',
       blocks: [
         { kind: 'heading', text: 'H' },
@@ -96,7 +96,7 @@ describe('capabilitiesAwareRender', () => {
   });
 
   test('drops button-row when channel lacks button support, appends fallback text', () => {
-    const content: MessageContent = {
+    const content: ChannelMessageContent = {
       kind: 'rich',
       blocks: [
         { kind: 'paragraph', text: 'Pick one:' },
@@ -123,7 +123,7 @@ describe('capabilitiesAwareRender', () => {
   });
 
   test('collapses to text when every block is unsupported', () => {
-    const content: MessageContent = {
+    const content: ChannelMessageContent = {
       kind: 'rich',
       blocks: [
         { kind: 'button-row', buttons: [{ id: 'a', label: 'A' }] },
@@ -142,7 +142,7 @@ describe('capabilitiesAwareRender', () => {
   });
 
   test('image kept when file upload is supported', () => {
-    const content: MessageContent = {
+    const content: ChannelMessageContent = {
       kind: 'rich',
       blocks: [{ kind: 'image', url: 'https://i' }],
     };
@@ -152,13 +152,13 @@ describe('capabilitiesAwareRender', () => {
   });
 
   test('non-rich kinds pass through', () => {
-    const template: MessageContent = {
+    const template: ChannelMessageContent = {
       kind: 'template',
       name: 't1',
       params: { a: '1' },
     };
     expect(capabilitiesAwareRender(template, caps())).toBe(template);
-    const file: MessageContent = { kind: 'file', file: { id: 'f', name: 'f.txt' } };
+    const file: ChannelMessageContent = { kind: 'file', file: { id: 'f', name: 'f.txt' } };
     expect(capabilitiesAwareRender(file, caps())).toBe(file);
   });
 });

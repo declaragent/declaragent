@@ -28,12 +28,12 @@
 import {
   type AgentEvent,
   type ChannelInstance,
+  type ChannelMessageContent,
   type ChannelRegistry,
   type ChannelSendRequestPayload,
   type ConversationRef,
   type EventBus,
   type Logger,
-  type MessageContent,
   type SendMessageParams,
   type SentMessage,
   createChannelOutboundBridge,
@@ -61,7 +61,7 @@ export interface ChannelLoadPayload {
   seq: number;
   sentAt: number;
   conversation: ConversationRef;
-  content: MessageContent;
+  content: ChannelMessageContent;
 }
 
 export interface ChannelLoadHarnessOptions {
@@ -90,7 +90,7 @@ export interface ChannelLoadHarnessOptions {
    */
   totalEvents?: number;
   /** Message content per inbound tick. Called with the 0-based seq. */
-  payload: (seq: number) => MessageContent;
+  payload: (seq: number) => ChannelMessageContent;
   /** Optional injected logger. Default noop. */
   logger?: Logger;
   /**
@@ -357,7 +357,7 @@ const SENT_AT_PREFIX = '__declaragent.load.sentAt=';
 const SENT_AT_SUFFIX = '__';
 const SENT_AT_RE = /__declaragent\.load\.sentAt=(\d+)__\n?/;
 
-function stampSentAt(content: MessageContent, sentAt: number): MessageContent {
+function stampSentAt(content: ChannelMessageContent, sentAt: number): ChannelMessageContent {
   if (content.kind !== 'text') return content;
   const stamp = `${SENT_AT_PREFIX}${sentAt}${SENT_AT_SUFFIX}\n`;
   return { ...content, text: `${stamp}${content.text}` };

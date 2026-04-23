@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { ChannelCapabilities, MessageContent } from '../types.js';
+import type { ChannelCapabilities, ChannelMessageContent } from '../types.js';
 import { renderWhatsApp } from './whatsapp.js';
 
 function caps(overrides: Partial<ChannelCapabilities> = {}): ChannelCapabilities {
@@ -33,7 +33,7 @@ describe('renderWhatsApp', () => {
   });
 
   test('1-3 buttons become an interactive reply-button message', () => {
-    const content: MessageContent = {
+    const content: ChannelMessageContent = {
       kind: 'rich',
       blocks: [
         { kind: 'paragraph', text: 'Pick one:' },

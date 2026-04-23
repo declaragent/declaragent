@@ -18,8 +18,8 @@ import { createSessionChannelContextStore } from './session-context.js';
 import type {
   ChannelCapabilities,
   ChannelInstance,
+  ChannelMessageContent,
   ConversationRef,
-  MessageContent,
   MessageRef,
   SendMessageParams,
   SentMessage,
@@ -76,13 +76,13 @@ interface FakeChannelOptions {
 interface FakeChannel extends ChannelInstance {
   calls: SendMessageParams[];
   typingCalls: { conversation: ConversationRef; durationMs?: number }[];
-  editCalls: { ref: MessageRef; content: MessageContent }[];
+  editCalls: { ref: MessageRef; content: ChannelMessageContent }[];
 }
 
 function fakeChannel(id: string, overrides: FakeChannelOptions = {}): FakeChannel {
   const calls: SendMessageParams[] = [];
   const typingCalls: { conversation: ConversationRef; durationMs?: number }[] = [];
-  const editCalls: { ref: MessageRef; content: MessageContent }[] = [];
+  const editCalls: { ref: MessageRef; content: ChannelMessageContent }[] = [];
   const capabilities = overrides.capabilities ?? CAPS;
   const instance: FakeChannel = {
     id,

@@ -113,7 +113,7 @@ export interface FileUpload {
   path?: string;
 }
 
-export type MessageContent =
+export type ChannelMessageContent =
   | { kind: 'text'; text: string; format?: MessageTextFormat }
   | { kind: 'rich'; blocks: readonly RichBlock[] }
   | {
@@ -129,7 +129,7 @@ export type MessageContent =
 
 export interface SendMessageParams {
   conversation: ConversationRef;
-  content: MessageContent;
+  content: ChannelMessageContent;
   replyTo?: MessageRef;
   mentions?: readonly UserRef[];
   /**
@@ -266,7 +266,7 @@ export interface ChannelInstance extends EventSourceInstance {
 
   setTyping?(conversation: ConversationRef, durationMs?: number): Promise<void>;
   react?(ref: MessageRef, emoji: string): Promise<void>;
-  edit?(ref: MessageRef, content: MessageContent): Promise<void>;
+  edit?(ref: MessageRef, content: ChannelMessageContent): Promise<void>;
   delete?(ref: MessageRef): Promise<void>;
   uploadFile?(file: FileUpload, conversation: ConversationRef): Promise<FileRef>;
   performAction?(action: ChannelAction): Promise<void>;

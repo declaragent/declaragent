@@ -1,4 +1,4 @@
-import type { ChannelCapabilities, MessageContent, RichBlock } from '../types.js';
+import type { ChannelCapabilities, ChannelMessageContent, RichBlock } from '../types.js';
 import { blockToFallbackText } from './fallback.js';
 
 /**
@@ -32,9 +32,9 @@ function isBlockSupported(block: RichBlock, caps: ChannelCapabilities): boolean 
  * the supported blocks. Slice 13 may add fancier strategies.
  */
 export function capabilitiesAwareRender(
-  content: MessageContent,
+  content: ChannelMessageContent,
   caps: ChannelCapabilities,
-): MessageContent {
+): ChannelMessageContent {
   if (content.kind !== 'rich') return content;
 
   const supported: RichBlock[] = [];

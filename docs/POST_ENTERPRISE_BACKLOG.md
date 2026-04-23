@@ -9,7 +9,7 @@ This doc is the honest 0.7.x+ backlog. Every entry was flagged by a shipped PR's
 ## 0 · Summary banner
 
 ```
-Status:               52 open follow-ups from the enterprise push
+Status:               50 open follow-ups from the enterprise push (2 shipped: #41, #42)
 Shipping-gate count:  4 (must land before 0.7.0 cut)
 Security count:       6 (address within 0.7.x)
 Robustness count:     7 (enterprise-nice-to-have)
@@ -18,7 +18,7 @@ Transport count:      4 (broker breadth)
 MCP ergonomics:       4
 GitOps polish:        3
 Builder testing:      5
-Architectural:        7
+Architectural:        5 (#41, #42 shipped → 0.7.1)
 CI infra:             4
 Platform maturity:    3
 ```
@@ -73,8 +73,8 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 38 | [ ] Longer-lived `RecordingProviderHandle` with swappable inner provider ref (today re-wraps on mode/model rebuild) | Builder | 1 d | Not started | PR #29 open Q3 |
 | 39 | [ ] Proper `createAgentInboxAdapter` construction in `up` and `fleet-run` (today: inline verify-auth as pragmatic equivalent) | Architectural | 1 wk | Deferred | PR #28 arch finding |
 | 40 | [ ] Unify `TenantAuditSink` handle management between `up` and `fleet run` (today each opens its own) | Architectural | 3 d | Not started | PR #28 scope-out |
-| 41 | [ ] Resolve `MessageContent` name collision at `@declaragent/core` export surface (LLM vs channels type) | Architectural | 1 d | Not started | PR #24 open Q2 |
-| 42 | [ ] Extract `packages/cli/src/control-socket-client.ts` shared helper (before a 3rd caller lands) | Architectural | 1 d | Not started | PR #14 open Q3 |
+| 41 | [x] Resolve `MessageContent` name collision at `@declaragent/core` export surface (LLM vs channels type) | Architectural | 1 d | Shipped (0.7.1) | agent-d/architectural-sprint-1-items-41-42 · channels type renamed to `ChannelMessageContent`; all channel packages + testkit + SendMessage tool updated |
+| 42 | [x] Extract `packages/cli/src/control-socket-client.ts` shared helper (before a 3rd caller lands) | Architectural | 1 d | Shipped (0.7.1) | agent-d/architectural-sprint-1-items-41-42 · `withControlSocketClient` / `tryFetchControlSocketStatus` / `unwrapOpResult`; `ps-cli` + `dlq-dispatch-cli` refactored; +6 focused tests |
 | 43 | [ ] Memoize `loadAgent` calls in fleet-run (today: probe + handler factory both load) | Architectural | 30 min | Not started | PR #28 open Q2 |
 | 44 | [ ] Thread `cliVersion` through `UpState` at write time (today: env-var per-scrape) | Architectural | 1 h | Not started | PR #12 open Q3 |
 | 45 | [ ] `status.agents[].pid` per-agent fidelity (today: all agents in one process report same pid) | Architectural | 2 d | Not started | PR #11 open Q2 |
