@@ -1,6 +1,6 @@
 {
   "name": "@declaragent-examples/phase5-demo",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "private": true,
   "description": "Phase 5 acceptance demo — four-channel scripted demo using @declaragent/testkit mocks.",
   "license": "Apache-2.0",
