@@ -1,0 +1,155 @@
+{{- $agentId := "pr-reviewer" -}}
+{{- $replicas := default .Values.replicas.default (index .Values.replicas $agentId) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pr-reviewer-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+data:
+  agent.yaml: |
+    name: pr-reviewer
+    model: claude-sonnet-4-6
+    temperature: 0.2
+    maxTokens: 4096
+    subagentDepthCap: 1
+    systemPrompt: |
+      You review GitHub pull requests on demand. Every inbound turn is
+      triggered by an `agent-rpc` request to your `review-pr` capability.
+      The request payload is `{ prUrl: string }`.
+
+      Your job, per request:
+
+      1. Fetch the PR diff from `prUrl`. (A future `@declaragent/plugin-github`
+         release will provide `GitHubFetchDiff`; until then, treat the
+         request as a dry run and return a stub response.)
+
+      2. Skim the diff for:
+         - Obvious bugs (null deref, off-by-one, swapped args).
+         - Missing error handling.
+         - New behavior without tests.
+         - Public API changes without doc updates.
+
+      3. Return a structured response:
+           { verdict: "approve" | "request-changes" | "comment",
+             findings: [{ file, line, severity, message }],
+             summary: string }
+
+      The runtime's default `ctx.respond` hook publishes whatever your
+      assistant.final content is as `{ ok: true, data: <content> }`. If you
+      want to return a structured object instead of text, call `ctx.respond`
+      explicitly near the end of your turn.
+
+      Hard rules:
+      - Never APPROVE on your own. The caller decides — you only recommend.
+      - Keep `findings` ≤ 8 entries; aggregate extras into `summary`.
+      - Timeout: the request envelope's `deadline` is enforced by the
+        requestor. If you can't respond in time, the pending-RPC registry
+        times out — your response will be discarded as stale.
+    skills:
+      - skills/review-pr.md
+    event-sources:
+      - ./event-sources.yaml
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pr-reviewer
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+spec:
+  replicas: {{ $replicas }}
+  selector:
+    matchLabels:
+      {{- include "declaragent.agentSelectorLabels" (merge (dict "agentId" $agentId) .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 8 }}
+    spec:
+      containers:
+        - name: declaragent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - up
+            - -d
+            - -f
+            - /etc/declaragent/agent.yaml
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metricsPort }}
+              protocol: TCP
+          env:
+            - name: DECLARAGENT_AGENT_ID
+              value: pr-reviewer
+            - name: DECLARAGENT_FLEET_NAME
+              value: {{ include "declaragent.name" . | quote }}
+          {{- if gt (len .Values.secrets) 0 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "declaragent.fullname" . }}-secrets
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthProbePath }}
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthProbePath }}
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: agent-config
+              mountPath: /etc/declaragent
+              readOnly: true
+      volumes:
+        - name: agent-config
+          configMap:
+            name: pr-reviewer-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pr-reviewer
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "declaragent.agentSelectorLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pr-reviewer
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" "pr-reviewer") .) | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "declaragent.agentSelectorLabels" (merge (dict "agentId" "pr-reviewer") .) | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

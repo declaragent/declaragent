@@ -1,0 +1,25 @@
+namespace: fleet-starter
+createNamespace: true
+image:
+  repository: declaragent/agent
+  tag: latest
+  pullPolicy: IfNotPresent
+replicas:
+  default: 1
+metricsPort: 9464
+healthProbePath: /healthz
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  additionalLabels:
+    prometheus: kube-prometheus
+secrets: {}
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+fleet:
+  name: fleet-starter

@@ -1,0 +1,150 @@
+{{- $agentId := "concierge" -}}
+{{- $replicas := default .Values.replicas.default (index .Values.replicas $agentId) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: concierge-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+data:
+  agent.yaml: |
+    name: concierge
+    model: claude-haiku-4-5
+    temperature: 0.3
+    maxTokens: 1024
+    systemPrompt: |
+      You are a concierge that routes user requests to specialist agents
+      over the agent-rpc bus. Your primary specialist is `agent://pr-reviewer`,
+      which exposes a `review-pr` capability.
+
+      When the user asks for a PR review:
+
+      1. Use `RequestAgent` with:
+           to: agent://pr-reviewer
+           capability: review-pr
+           payload: { prUrl: "<github-pr-url>" }
+           timeoutMs: 60000
+         Default mode is `sync` — the tool awaits the peer's response.
+
+      2. If `status === "ok"`, format the `response` as a Markdown summary
+         for the user.
+
+      3. If `status === "timeout"` or `status === "error"`, apologize and
+         offer to retry. DO NOT retry automatically — retries are the
+         caller's explicit choice.
+
+      Hard rules:
+      - Never call `RequestAgent` with `mode: "fire-and-forget"` for a PR
+        review — you need the result to answer the user.
+      - Never reveal the correlationId to the user; it's an internal trace id.
+      - Keep responses under 400 words.
+    skills:
+      - skills/delegate.md
+    tools:
+      defaults:
+        - RequestAgent
+    event-sources:
+      - ./event-sources.yaml
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: concierge
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+spec:
+  replicas: {{ $replicas }}
+  selector:
+    matchLabels:
+      {{- include "declaragent.agentSelectorLabels" (merge (dict "agentId" $agentId) .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 8 }}
+    spec:
+      containers:
+        - name: declaragent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - up
+            - -d
+            - -f
+            - /etc/declaragent/agent.yaml
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metricsPort }}
+              protocol: TCP
+          env:
+            - name: DECLARAGENT_AGENT_ID
+              value: concierge
+            - name: DECLARAGENT_FLEET_NAME
+              value: {{ include "declaragent.name" . | quote }}
+          {{- if gt (len .Values.secrets) 0 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "declaragent.fullname" . }}-secrets
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthProbePath }}
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthProbePath }}
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: agent-config
+              mountPath: /etc/declaragent
+              readOnly: true
+      volumes:
+        - name: agent-config
+          configMap:
+            name: concierge-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: concierge
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "declaragent.agentSelectorLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: concierge
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "declaragent.agentLabels" (merge (dict "agentId" "concierge") .) | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "declaragent.agentSelectorLabels" (merge (dict "agentId" "concierge") .) | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}
