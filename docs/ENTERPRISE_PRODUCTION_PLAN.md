@@ -9,9 +9,9 @@ This is the **tracking doc**. Keep the status board (§1) accurate. Detailed spe
 ## 0 · Summary banner
 
 ```
-Enterprise pillars status:  ▓▓▓▓▓▓▓▓▓▓▓  ( 11 / 12 items complete — only #5 Slice 2 control-plane auth remains )
-Latest release:             @declaragent/cli@0.6.0 (items #1–#12 minus slice-2 all merged 2026-04-23; deferred CLI integrations for #4/#7/#8 also live in `up`; unreleased)
-Next milestone:             #5 Slice 2 — control-plane auth + `#11` validator wiring into `up` boot + `#4` agent-inbox adapter hand-off in fleet-run
+Enterprise pillars status:  ▓▓▓▓▓▓▓▓▓▓▓▓  ( 12 / 12 items complete ✅ — all five pillars shipped; all CLI integrations live in `up` + `fleet run` )
+Latest release:             @declaragent/cli@0.6.0 (all 12 plan items + #5 Slice 2 + #4/#7/#8/#11 CLI integrations + #12 BUILDER_RECORD all merged 2026-04-23; unreleased)
+Next milestone:             Pillar 3 enterprise badge flip after first green `weekly-soak.yml` run (scheduled Sunday 00:00 UTC per #1 acceptance #4); release @declaragent/cli@0.7.0 with the enterprise stack
 Active blocker:             none
 ```
 
@@ -29,7 +29,7 @@ Tick checkboxes as work lands. One line per item. If the scope changes, **edit t
 | 2 | [x] NATS RPC transport factory | M1 | 3 d | Shipped | Eng-A | [PR #13](https://github.com/declaragent/declaragent/pull/13) · `e233ac6` |
 | 3 | [x] Dispatch-DLQ active requeue | M1 | 1 d | Shipped | Eng-B | [PR #14](https://github.com/declaragent/declaragent/pull/14) · `757b71d` |
 | 4 | [x] OIDC / OAuth2 on RPC envelopes | M2 | 1 wk | Shipped | Eng-A | [PR #17](https://github.com/declaragent/declaragent/pull/17) · `71b752e` — follow-ups: wire `clientSecretRef` resolver + `AuthVerifyRegistry` factory into `up` boot |
-| 5 | [~] Managed control plane (aggregator over N `up`) | M4 | 4 wk | In-progress (Slice 1 fully shipped — 1a + 1b + 1c; Slice 2 auth next) | Eng-C | [PR #12](https://github.com/declaragent/declaragent/pull/12) · `3cafaaa` (1a) · [PR #15](https://github.com/declaragent/declaragent/pull/15) · `af684cf` (1b) · [PR #19](https://github.com/declaragent/declaragent/pull/19) · `06dc6e3` (1c /logs SSE) |
+| 5 | [x] Managed control plane (aggregator over N `up`) | M4 | 4 wk | Shipped (Slice 1 full + Slice 2 auth) | Eng-C / Eng-A | [PR #12](https://github.com/declaragent/declaragent/pull/12) · `3cafaaa` (1a) · [PR #15](https://github.com/declaragent/declaragent/pull/15) · `af684cf` (1b) · [PR #19](https://github.com/declaragent/declaragent/pull/19) · `06dc6e3` (1c /logs SSE) · [PR #27](https://github.com/declaragent/declaragent/pull/27) · `e5319c4` (Slice 2 auth middleware). Follow-up: per-route scope overrides; fleet-level `controlPlane:` block |
 | 6 | [x] Control socket on `up` daemon | M5 | 2 d | Shipped | Eng-B | [PR #11](https://github.com/declaragent/declaragent/pull/11) · `d53baed` — `reload` op still stubbed as `unsupported` |
 | 7 | [x] Per-tool rate limit | M5 | 3 d | Shipped | Eng-B | [PR #18](https://github.com/declaragent/declaragent/pull/18) · `10da017` — follow-up: wire `TenantAuditSink` into `up-cli` so `rate_limited` records land |
 | 8 | [x] Auto-recovery for crashed MCP servers | M5 | 4 d | Shipped | Eng-B | [PR #21](https://github.com/declaragent/declaragent/pull/21) · `1a120f8` — follow-up: wire supervisor into `packages/cli/src/mcp-runtime.ts` + product decision on default-supervised vs opt-in |
