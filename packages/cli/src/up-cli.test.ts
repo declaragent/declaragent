@@ -426,4 +426,103 @@ describe('up verb — single agent', () => {
       rmSync(altDir, { recursive: true, force: true });
     }
   });
+
+  test('shared audit sink: rate_limited record lands when the gate fires', async () => {
+    // Dynamic imports so we only pull the audit APIs inside this
+    // scoped test — the rest of the file uses `up()` as a black box.
+    const { createToolRateLimitGate, createSqliteAuditSink } = await import('@declaragent/core');
+    // `up` opens its sqlite audit DB at `auditDbPath()` (inside ~/.declaragent,
+    // which `beforeEach` overrides via HOME=<tmp>). Run `up` briefly so
+    // the file is created, then reuse the on-disk path for our own gate.
+    const cap = captureIo();
+    const code = await up(
+      {},
+      { io: cap.io, cwd: dir, startSources: stubSources().fn, installSignals: immediateShutdown() },
+    );
+    expect(code).toBe(0);
+
+    // Boot created `.declaragent/audit.db` under the overridden HOME.
+    const { auditDbPath } = await import('./paths.js');
+    const dbPath = auditDbPath();
+    const sink = await createSqliteAuditSink({ path: dbPath });
+    try {
+      let t = 1_000_000;
+      const gate = createToolRateLimitGate({
+        limits: { Bash: { rps: 1, burst: 1 } },
+        auditSink: sink,
+        auditThresholdMs: 0,
+        now: () => t,
+        sleep: async (ms: number) => {
+          t += ms;
+        },
+      });
+      // First call consumes the bucket; second call waits long enough
+      // that the threshold fires + the audit sink receives a record.
+      await gate.acquire('Bash', { tenantId: 'default' });
+      await gate.acquire('Bash', { tenantId: 'default' });
+      const entries = await sink.query({ kind: 'rate_limited' });
+      const rateRecords = entries.filter((e) => e.record.kind === 'rate_limited');
+      expect(rateRecords.length).toBeGreaterThan(0);
+      const first = rateRecords[0]?.record;
+      if (first?.kind !== 'rate_limited') {
+        throw new Error(`expected rate_limited record, got ${String(first?.kind)}`);
+      }
+      expect(first.tool).toBe('Bash');
+      expect(first.rps).toBe(1);
+    } finally {
+      await sink.close();
+    }
+  });
+
+  test('rpc.auth.enabled=false leaves the legacy envelope path (no banner line)', async () => {
+    const cap = captureIo();
+    const code = await up(
+      {},
+      { io: cap.io, cwd: dir, startSources: stubSources().fn, installSignals: immediateShutdown() },
+    );
+    expect(code).toBe(0);
+    expect(cap.out.join('')).not.toContain('rpc.auth enabled');
+  });
+
+  test('rpc.auth.enabled=true + rpc-peers.yaml present builds the registry at boot', async () => {
+    // Overwrite the default scaffold with an opt-in + a peer entry.
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        'name: test-up-agent',
+        'systemPrompt: |',
+        '  You are a test agent.',
+        'skills: []',
+        'rpc:',
+        '  auth:',
+        '    enabled: true',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'rpc-peers.yaml'),
+      [
+        'version: 1',
+        'peers:',
+        '  - agent: agent://peer-a',
+        '    transports:',
+        '      - kind: memory',
+        '        topics:',
+        '          requests: agents.peer-a.requests',
+        '    auth:',
+        '      provider: oidc',
+        '      issuer: https://dex.example.com',
+        '      audience: peer-b',
+        '      jwksUri: https://dex.example.com/keys',
+        '',
+      ].join('\n'),
+    );
+    const cap = captureIo();
+    const code = await up(
+      {},
+      { io: cap.io, cwd: dir, startSources: stubSources().fn, installSignals: immediateShutdown() },
+    );
+    expect(code).toBe(0);
+    expect(cap.out.join('')).toContain('rpc.auth enabled (1 peer(s) with auth registered)');
+  });
 });

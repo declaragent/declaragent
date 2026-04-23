@@ -101,6 +101,125 @@ tools:
 - Per-user / per-tenant ceilings are **not** yet supported; see Enterprise Production Plan #5 multi-tenant quota work.
 - Dynamic rate adjustment based on 429 response headers is **not** supported; set a conservative `rps` up front.
 
+## `rpc.auth` — OIDC / OAuth2 envelope authentication
+
+*Added 0.7.x (Enterprise Production Plan §3 Item #4).*
+
+Every inter-agent RPC envelope carries an optional `auth` block. Up to 0.7.x,
+`up` ignored the block and trusted every envelope (the legacy
+`internal`/`hmac` path). Flipping the switch:
+
+```yaml
+rpc:
+  auth:
+    enabled: true      # default false — legacy trust path stays on
+```
+
+...tells `up` to walk `rpc-peers.yaml`, build an `AuthVerifyRegistry`
+from every peer with an `auth:` block, and pass it into
+`createAgentInboxAdapter({ authRegistry })` at boot. From that point on,
+envelopes from a registered peer must carry a matching OIDC / OAuth2
+bearer token; a bad / missing / expired token routes to the DLQ under
+`kind=rejected, reason=auth-rejected`.
+
+**Defaults.**
+- `rpc.auth.enabled` defaults to `false`. Flipping every fleet on day-one
+  would break every operator who hasn't yet staged a peer `auth:` block
+  in `rpc-peers.yaml`. The transition is: stage the peer configs, flip
+  `enabled: true` per agent, monitor `auth_check` audit records, then
+  decommission the legacy path on the peer side.
+- Peers without an `auth:` block in `rpc-peers.yaml` still follow the
+  legacy path regardless of this toggle — auth is opt-in per peer.
+
+**Peer config** (in `rpc-peers.yaml`, not `agent.yaml`):
+
+```yaml
+version: 1
+peers:
+  - agent: agent://peer-b
+    transports:
+      - kind: kafka
+        brokers: [kafka-1.acme.example:9092]
+        topics:
+          requests: agents.peer-b.requests
+    auth:
+      provider: oidc                    # or 'oauth2-client'
+      issuer: https://dex.acme.example
+      audience: peer-a
+      jwksUri: https://dex.acme.example/keys   # optional — derived from issuer discovery
+      scopes: [agents:call]             # optional — strict AND check on verify
+  - agent: agent://peer-c
+    transports:
+      - kind: nats
+        servers: [nats://nats.acme.example:4222]
+        subjects:
+          requests: agents.peer-c.requests
+    auth:
+      provider: oauth2-client
+      tokenEndpoint: https://idp.acme.example/oauth2/token
+      clientId: decl-peer-a
+      clientSecretRef: secret://platform/decl-peer-a-client-secret
+      jwksUri: https://idp.acme.example/keys
+      issuer: https://idp.acme.example
+      audience: peer-c
+      scopes: [agents:call]
+```
+
+`clientSecretRef` resolves through the Phase-6 secret resolver —
+`secret://` / `env:` / `file:` / `vault:` / `aws-sm:` / `gcp-sm:` all
+work.
+
+**Observability.**
+- Every envelope emits an `auth_check` audit record with the decision
+  (`accept` / `reject`), provider name (`oidc` / `oauth2-client`),
+  resolved subject, and the rejection reason when applicable.
+- Rejected envelopes also land in `rejected_events` under
+  `kind=auth-rejected` so `declaragent dlq list --kind rejected` surfaces
+  the specific peer + reason.
+
+## `mcp.supervised` — MCP auto-recovery opt-in
+
+*Added 0.7.x (Enterprise Production Plan §3 Item #8).*
+
+MCP stdio servers crash. The runtime's supervisor wraps each server in
+a ping health check + exponential backoff + circuit breaker + tool-
+catalog re-registration loop, so a crashed server respawns transparently
+from the engine's perspective. Routing defaults:
+
+```yaml
+mcp:
+  supervised: all      # default — every MCP server wrapped in a supervisor
+# mcp.supervised: none          # opt out globally (raw client, no recovery)
+# mcp.supervised: [github, jira] # allow-list specific servers
+```
+
+**Defaults.**
+- `mcp.supervised` defaults to `'all'`. Supervision is observational when
+  nothing crashes — one ping per server every 10 s — and only activates
+  the respawn + circuit paths on failure. Defaulting on means every
+  operator gets auto-recovery out of the box.
+- `'none'` bypasses the supervisor completely. Useful when debugging a
+  flaky server where the supervisor's ping probe itself is suspect, or
+  when a server's `initialize` is too slow for the supervisor's
+  handshake timeout.
+
+**Observability.**
+- `mcp_server_restarts_total{server_id, reason}` counter — one sample
+  per respawn attempt, labelled with the trigger reason (`initial`,
+  `transport-closed`, `ping-failed`, `init-failed`, `probe`).
+- `mcp_server_circuit_state{server_id}` gauge (`0=closed`, `1=half-open`,
+  `2=open`). A PagerDuty alert on `mcp_server_circuit_state > 1 for 5m`
+  catches a genuinely stuck server.
+
+**Behaviour.**
+- Backoff schedule: 1s, 2s, 4s, 8s, 16s, 32s, 60s cap.
+- Circuit opens after 5 consecutive backoff-exhausted respawn sequences.
+  Half-opens after 30 s for a probe respawn.
+- Tool-call race protection: a call in flight when the server crashes
+  resolves with a typed `EMCPCRASHED` error instead of hanging — the
+  tool adapter translates this into a normal `ToolEvent` error so
+  engine callers see a clean rejection.
+
 ## `audit.export` — SIEM forwarding
 
 *Added 0.6.x (Enterprise Production Plan §3 Item #10).*

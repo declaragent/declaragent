@@ -326,3 +326,147 @@ describe('startMCPServers', () => {
     await expect(runtime.shutdown()).resolves.toBeUndefined();
   });
 });
+
+describe('startMCPServers — supervisor wiring (Item #8 follow-up)', () => {
+  let root: string;
+  let consentPath: string;
+  let consentStore: MCPConsentStore;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'declara-mcp-sup-'));
+    consentPath = join(root, 'mcp-consent.json');
+    consentStore = createMCPConsentStore(consentPath);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("supervised: 'all' wraps each server; getSupervisor returns a live handle", async () => {
+    await consentStore.approve('alpha');
+    const runtime = await startMCPServers({
+      servers: [{ spec: stdioSpec('alpha'), scope: 'user', sourcePath: '/x' }],
+      logger: NOOP_LOGGER,
+      consentStore,
+      supervised: 'all',
+      spawn: () =>
+        fakeClient({
+          tools: [{ name: 'greet', inputSchema: { type: 'object' } }],
+        }),
+      supervisorOverrides: {
+        // Keep the ping loop idle for the duration of the test so the
+        // fake clients don't spin. We clear via `shutdown()`.
+        pingIntervalMs: 60_000,
+        // No-op backoff — the stub succeeds on first attempt.
+        backoffMs: () => 0,
+      },
+    });
+    const supervisor = runtime.getSupervisor('alpha');
+    expect(supervisor).toBeDefined();
+    expect(supervisor?.snapshot().state).toBe('ready');
+    expect(runtime.tools.map((t) => t.name)).toEqual(['mcp__alpha__greet']);
+    // Raw client must NOT be surfaced for supervised servers — callers
+    // route through the supervisor to stay transparent across respawns.
+    expect(runtime.getClient('alpha')).toBeUndefined();
+    await runtime.shutdown();
+  });
+
+  test("supervised: 'none' keeps the raw-client path (no supervisor handle)", async () => {
+    await consentStore.approve('beta');
+    const runtime = await startMCPServers({
+      servers: [{ spec: stdioSpec('beta'), scope: 'user', sourcePath: '/x' }],
+      logger: NOOP_LOGGER,
+      consentStore,
+      supervised: 'none',
+      spawn: () => fakeClient({ tools: [{ name: 'wave', inputSchema: { type: 'object' } }] }),
+    });
+    expect(runtime.getSupervisor('beta')).toBeUndefined();
+    expect(runtime.getClient('beta')).toBeDefined();
+    expect(runtime.tools.map((t) => t.name)).toEqual(['mcp__beta__wave']);
+    await runtime.shutdown();
+  });
+
+  test('supervised allow-list wraps only the named server', async () => {
+    await consentStore.approve('alpha');
+    await consentStore.approve('beta');
+    const runtime = await startMCPServers({
+      servers: [
+        { spec: stdioSpec('alpha'), scope: 'user', sourcePath: '/x' },
+        { spec: stdioSpec('beta'), scope: 'user', sourcePath: '/x' },
+      ],
+      logger: NOOP_LOGGER,
+      consentStore,
+      supervised: ['alpha'],
+      spawn: () => fakeClient({ tools: [{ name: 't', inputSchema: {} }] }),
+      supervisorOverrides: {
+        pingIntervalMs: 60_000,
+        backoffMs: () => 0,
+      },
+    });
+    expect(runtime.getSupervisor('alpha')).toBeDefined();
+    expect(runtime.getSupervisor('beta')).toBeUndefined();
+    expect(runtime.getClient('alpha')).toBeUndefined();
+    expect(runtime.getClient('beta')).toBeDefined();
+    await runtime.shutdown();
+  });
+
+  test('supervised server that fails to ever initialize surfaces a skipped entry', async () => {
+    await consentStore.approve('busted');
+    const runtime = await startMCPServers({
+      servers: [{ spec: stdioSpec('busted'), scope: 'user', sourcePath: '/x' }],
+      logger: NOOP_LOGGER,
+      consentStore,
+      supervised: 'all',
+      handshakeTimeoutMs: 200,
+      spawn: () => fakeClient({ initializeFails: new Error('boom') }),
+      supervisorOverrides: {
+        pingIntervalMs: 60_000,
+        // Small backoff + circuit threshold so the supervisor opens
+        // the circuit quickly.
+        backoffMs: () => 0,
+        circuitThreshold: 1,
+      },
+    });
+    expect(runtime.tools).toHaveLength(0);
+    expect(runtime.skipped.map((s) => s.name)).toContain('busted');
+    await runtime.shutdown();
+  });
+
+  test('supervised tool adapter surfaces EMCPCRASHED when supervisor shuts down', async () => {
+    const { createMCPTool, MCPServerCrashedError } = await import('@declaragent/core');
+    void MCPServerCrashedError;
+    await consentStore.approve('gamma');
+    const runtime = await startMCPServers({
+      servers: [{ spec: stdioSpec('gamma'), scope: 'user', sourcePath: '/x' }],
+      logger: NOOP_LOGGER,
+      consentStore,
+      supervised: 'all',
+      spawn: () => fakeClient({ tools: [{ name: 'ping', inputSchema: { type: 'object' } }] }),
+      supervisorOverrides: {
+        pingIntervalMs: 60_000,
+        backoffMs: () => 0,
+      },
+    });
+    const supervisor = runtime.getSupervisor('gamma');
+    expect(supervisor).toBeDefined();
+    // Wrap a tool via the supervisor (mirrors the prod createMCPTool
+    // path wired in `mcp-runtime.ts::startMCPServers`).
+    const tool = createMCPTool({
+      serverName: 'gamma',
+      supervisor: supervisor as NonNullable<typeof supervisor>,
+      mcpTool: { name: 'ping', inputSchema: { type: 'object' } },
+    });
+    // Stopping the supervisor makes every subsequent callTool reject
+    // with EMCPCRASHED — the adapter should surface that typed error
+    // as a ToolEvent `error` with code `EMCPCRASHED`.
+    await supervisor?.stop();
+    const events: Array<{ type: string; error?: { code: string } }> = [];
+    const ctx = { abortSignal: undefined } as unknown as Parameters<typeof tool.execute>[1];
+    for await (const ev of tool.execute({}, ctx)) {
+      events.push(ev as (typeof events)[number]);
+    }
+    const errorEvent = events.find((e) => e.type === 'error');
+    expect(errorEvent?.error?.code).toBe('EMCPCRASHED');
+    await runtime.shutdown();
+  });
+});

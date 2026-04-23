@@ -504,6 +504,7 @@ export type {
   LoadAgentOptions,
   LoadedAgent,
   LoadedAuditExport,
+  LoadedMCPSupervised,
   LoadedToolRateLimit,
 } from './agents/load-agent.js';
 export {

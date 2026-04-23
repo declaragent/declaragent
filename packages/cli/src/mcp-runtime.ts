@@ -22,15 +22,21 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import type {
+  CreateMCPSupervisorOptions,
   GetAuthHeaderFn,
+  LoadedMCPSupervised,
   Logger,
   MCPClient,
+  MCPLifecycleHandlers,
+  MCPSupervisor,
+  MetricsRegistry,
   OnAuthErrorFn,
   PluginMCPServerSpec,
   Tool,
 } from '@declaragent/core';
 import {
   createHTTPMCPClient,
+  createMCPSupervisor,
   createMCPTool,
   createSSEMCPClient,
   createStdioMCPClient,
@@ -124,6 +130,14 @@ export interface MCPRuntime {
    * @since 0.5.0-slice.2e
    */
   getClient(serverName: string): MCPClient | undefined;
+  /**
+   * Look up the supervisor for a server name. Present only when the
+   * server was supervised (opt-in controlled by `agent.yaml#mcp.supervised`).
+   * Returns `undefined` for un-supervised servers or unknown names.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #8
+   */
+  getSupervisor(serverName: string): MCPSupervisor | undefined;
   /** Servers that were skipped (consent denied, spawn failed, etc.). Useful for banner output. */
   skipped: readonly { name: string; scope: MCPScope; reason: string }[];
   /** Close every running client. Idempotent. */
@@ -131,6 +145,25 @@ export interface MCPRuntime {
 }
 
 export type ConsentResolver = (spec: PluginMCPServerSpec, scope: MCPScope) => Promise<boolean>;
+
+/**
+ * Spawn hook signature. Accepts the supervisor-mandated lifecycle hooks
+ * (forwarded into `createStdioMCPClient({ lifecycle, ... })`) when the
+ * server is supervised; non-supervised callers may ignore both args.
+ *
+ * Kept backwards-compatible with pre-0.7.x two-argument callers — tests
+ * that stub `spawn: (spec, logger) => fakeClient()` keep working because
+ * the extra `lifecycle` / `clientOverrides` parameters are optional.
+ */
+export type SpawnMCPClientFn = (
+  spec: PluginMCPServerSpec,
+  logger: Logger,
+  lifecycle?: MCPLifecycleHandlers,
+  clientOverrides?: {
+    readonly maxConsecutiveFailures: number;
+    readonly backoffMs: (attempt: number) => number;
+  },
+) => MCPClient;
 
 export interface StartMCPServersOptions {
   servers: readonly ScopedMCPServer[];
@@ -147,9 +180,64 @@ export interface StartMCPServersOptions {
   /** Test seam; defaults to the user-scope OAuth token store. */
   oauthStore?: MCPOAuthTokenStore;
   /** Test seam; defaults to `createStdioMCPClient` from core. */
-  spawn?: (spec: PluginMCPServerSpec, logger: Logger) => MCPClient;
+  spawn?: SpawnMCPClientFn;
   /** Per-server init + listTools timeout. Defaults to 10s. */
   handshakeTimeoutMs?: number;
+  /**
+   * MCP supervisor opt-in per `agent.yaml#mcp.supervised`. Defaults to
+   * `'all'` — every consented server is wrapped in a supervisor that
+   * drives respawn + circuit-breaker + tool-catalog re-registration.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #8
+   */
+  supervised?: LoadedMCPSupervised;
+  /**
+   * Prometheus / metrics registry threaded into every supervisor so
+   * `mcp_server_restarts_total` + `mcp_server_circuit_state` scrape
+   * under the daemon's `/metrics` endpoint.
+   */
+  metrics?: MetricsRegistry;
+  /**
+   * Overrides for the supervisor factory itself. Test seam; production
+   * callers leave these undefined.
+   *
+   * @since 0.7.x
+   */
+  supervisorOverrides?: Partial<
+    Pick<
+      CreateMCPSupervisorOptions,
+      | 'pingIntervalMs'
+      | 'pingFailureThreshold'
+      | 'pingTimeoutMs'
+      | 'backoffMs'
+      | 'circuitThreshold'
+      | 'circuitResetMs'
+      | 'now'
+      | 'sleep'
+      | 'setTimer'
+    >
+  >;
+}
+
+/**
+ * Decide whether a named server should be wrapped in the supervisor.
+ * Exported for testability — the CLI gate matches what `loadAgent`
+ * surfaces as `mcpSupervised`.
+ *
+ * `undefined` (no opt-in passed) defaults to `none` inside this runtime
+ * module so existing in-process callers (tests, fleet-run harness) keep
+ * the raw-client behaviour. The `up` CLI path passes the loaded
+ * `mcpSupervised` explicitly, which defaults to `'all'` at the agent-
+ * config layer — see `packages/core/src/agents/load-agent.ts`.
+ */
+export function isMCPSupervised(
+  serverName: string,
+  supervised: LoadedMCPSupervised | undefined,
+): boolean {
+  if (supervised === undefined) return false;
+  if (supervised === 'all') return true;
+  if (supervised === 'none') return false;
+  return supervised.includes(serverName);
 }
 
 /**
@@ -191,17 +279,28 @@ function makeAuthCallbacks(
   };
 }
 
-function makeDefaultSpawn(
-  oauthStore: MCPOAuthTokenStore,
-): (spec: PluginMCPServerSpec, logger: Logger) => MCPClient {
-  return (spec, logger) => {
+function makeDefaultSpawn(oauthStore: MCPOAuthTokenStore): SpawnMCPClientFn {
+  return (spec, logger, lifecycle, clientOverrides) => {
     const baseArgs = {
       name: spec.name,
       protocolVersion: spec.protocolVersion,
       logger,
     } as const;
     if (spec.transport.type === 'stdio') {
-      return createStdioMCPClient({ ...baseArgs, transport: spec.transport });
+      // Only the stdio client supports the supervisor lifecycle hooks;
+      // HTTP/SSE/Streamable clients are managed by the supervisor via
+      // ping + initialize re-checks only.
+      return createStdioMCPClient({
+        ...baseArgs,
+        transport: spec.transport,
+        ...(lifecycle !== undefined && { lifecycle }),
+        ...(clientOverrides?.maxConsecutiveFailures !== undefined && {
+          maxConsecutiveFailures: clientOverrides.maxConsecutiveFailures,
+        }),
+        ...(clientOverrides?.backoffMs !== undefined && {
+          backoffMs: clientOverrides.backoffMs,
+        }),
+      });
     }
     const auth = makeAuthCallbacks(spec.name, oauthStore, logger);
     if (spec.transport.type === 'http') {
@@ -276,10 +375,56 @@ export async function startMCPServers(opts: StartMCPServersOptions): Promise<MCP
 
   // Phase 2: spawn + handshake in parallel. Each is independently
   // timeboxed; a slow server doesn't delay the fast ones.
+  const supervisorsByName = new Map<string, MCPSupervisor>();
   const results = await Promise.all(
     approved.map(async (s) => {
       const childLog = opts.logger.child({ mcp: s.spec.name, scope: s.scope });
+      const supervisedThis = isMCPSupervised(s.spec.name, opts.supervised);
       try {
+        if (supervisedThis) {
+          // Build a supervisor whose factory hands fresh clients on
+          // every respawn. The supervisor drives the handshake +
+          // listTools itself, so we don't need to pre-initialize.
+          const supervisor = buildSupervisor({
+            spec: s.spec,
+            childLog,
+            spawn,
+            ...(opts.metrics !== undefined && { metrics: opts.metrics }),
+            ...(opts.supervisorOverrides !== undefined && {
+              overrides: opts.supervisorOverrides,
+            }),
+          });
+          const ready = await withTimeout(
+            supervisor.start(),
+            timeoutMs,
+            `mcp[${s.spec.name}].supervisor.start`,
+          );
+          // `start()` returns once the first spawn either succeeds or
+          // its backoff loop give-up opens the circuit. Inspect state
+          // to decide whether to surface tools.
+          const snap = supervisor.snapshot();
+          if (snap.state !== 'ready') {
+            // Teardown so a degraded server doesn't keep respawning
+            // while still reporting itself as "bound".
+            await supervisor.stop();
+            throw new Error(
+              `MCP supervisor for "${s.spec.name}" failed to reach ready state (state=${snap.state}, circuit=${snap.circuit})`,
+            );
+          }
+          void ready;
+          const catalog = supervisor.currentTools();
+          const wrapped = catalog.map((t) =>
+            createMCPTool({ serverName: s.spec.name, supervisor, mcpTool: t }),
+          );
+          childLog.info('mcp.server-ready', { tools: wrapped.length, supervised: true });
+          return {
+            tools: wrapped,
+            scope: s.scope,
+            name: s.spec.name,
+            supervisor,
+            client: undefined,
+          };
+        }
         const client = spawn(s.spec, childLog);
         await withTimeout(client.initialize(), timeoutMs, `mcp[${s.spec.name}].initialize`);
         const mcpTools = await withTimeout(
@@ -290,8 +435,14 @@ export async function startMCPServers(opts: StartMCPServersOptions): Promise<MCP
         const wrapped = mcpTools.map((t) =>
           createMCPTool({ serverName: s.spec.name, client, mcpTool: t }),
         );
-        childLog.info('mcp.server-ready', { tools: wrapped.length });
-        return { client, tools: wrapped, scope: s.scope, name: s.spec.name };
+        childLog.info('mcp.server-ready', { tools: wrapped.length, supervised: false });
+        return {
+          client,
+          tools: wrapped,
+          scope: s.scope,
+          name: s.spec.name,
+          supervisor: undefined,
+        };
       } catch (err) {
         childLog.warn('mcp.server-failed', {
           err: err instanceof Error ? err.message : String(err),
@@ -307,17 +458,33 @@ export async function startMCPServers(opts: StartMCPServersOptions): Promise<MCP
   );
 
   const clientsByName = new Map<string, MCPClient>();
+  const supervisors: MCPSupervisor[] = [];
   for (const r of results) {
     if (r === null) continue;
-    clients.push(r.client);
+    if (r.client) {
+      clients.push(r.client);
+      clientsByName.set(r.name, r.client);
+    }
+    if (r.supervisor) {
+      supervisors.push(r.supervisor);
+      supervisorsByName.set(r.name, r.supervisor);
+    }
     tools.push(...r.tools);
-    clientsByName.set(r.name, r.client);
   }
 
   let stopped = false;
   const shutdown = async (): Promise<void> => {
     if (stopped) return;
     stopped = true;
+    await Promise.all(
+      supervisors.map(async (sup) => {
+        try {
+          await sup.stop();
+        } catch {
+          // best-effort
+        }
+      }),
+    );
     await Promise.all(
       clients.map(async (c) => {
         try {
@@ -334,5 +501,50 @@ export async function startMCPServers(opts: StartMCPServersOptions): Promise<MCP
     skipped,
     shutdown,
     getClient: (name) => clientsByName.get(name),
+    getSupervisor: (name) => supervisorsByName.get(name),
   };
+}
+
+/**
+ * Assemble an `MCPSupervisor` around the supplied `spawn` + spec. The
+ * supervisor's factory hands the lifecycle hooks + recommended inner-
+ * client overrides to the spawn each time a respawn fires.
+ *
+ * @since 0.7.x — Enterprise Production Plan §3 Item #8
+ */
+function buildSupervisor(opts: {
+  spec: PluginMCPServerSpec;
+  childLog: Logger;
+  spawn: SpawnMCPClientFn;
+  metrics?: MetricsRegistry;
+  overrides?: StartMCPServersOptions['supervisorOverrides'];
+}): MCPSupervisor {
+  const { spec, childLog, spawn, metrics, overrides } = opts;
+  const supervisorOpts: CreateMCPSupervisorOptions = {
+    serverId: spec.name,
+    protocolVersion: spec.protocolVersion,
+    factory: (lifecycle, clientOverrides) => spawn(spec, childLog, lifecycle, clientOverrides),
+    logger: childLog,
+    ...(metrics !== undefined && { metrics }),
+    ...(overrides?.pingIntervalMs !== undefined && { pingIntervalMs: overrides.pingIntervalMs }),
+    ...(overrides?.pingFailureThreshold !== undefined && {
+      pingFailureThreshold: overrides.pingFailureThreshold,
+    }),
+    ...(overrides?.pingTimeoutMs !== undefined && { pingTimeoutMs: overrides.pingTimeoutMs }),
+    ...(overrides?.backoffMs !== undefined && { backoffMs: overrides.backoffMs }),
+    ...(overrides?.circuitThreshold !== undefined && {
+      circuitThreshold: overrides.circuitThreshold,
+    }),
+    ...(overrides?.circuitResetMs !== undefined && { circuitResetMs: overrides.circuitResetMs }),
+    ...(overrides?.now !== undefined && { now: overrides.now }),
+    ...(overrides?.sleep !== undefined && { sleep: overrides.sleep }),
+    ...(overrides?.setTimer !== undefined && { setTimer: overrides.setTimer }),
+    onToolsRegistered: (tools, ctx) => {
+      childLog.info('mcp.supervisor.tools-registered', {
+        serverId: ctx.serverId,
+        tools: tools.length,
+      });
+    },
+  };
+  return createMCPSupervisor(supervisorOpts);
 }
