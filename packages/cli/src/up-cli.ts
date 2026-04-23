@@ -52,6 +52,7 @@ import {
   type UpStatusSnapshot,
   auditRoute,
   createDatadogExporter,
+  createDefaultSecretResolver,
   createElasticExporter,
   createEngine,
   createEventDispatcher,
@@ -70,6 +71,7 @@ import {
   eventsRoute,
   loadAgent,
   loadFleet,
+  loadPeersConfig,
   logsRoute,
   metricsRoute,
   skillExtension,
@@ -80,6 +82,7 @@ import {
   withProviderRateLimit,
 } from '@declaragent/core';
 import type { ResolveLogPaths } from '@declaragent/core';
+import { type AuthVerifyRegistry, buildAuthVerifyRegistry } from '@declaragent/plugin-agent-rpc';
 import { resolveCredentials } from './auth.js';
 import { buildRuntimeTools } from './builtin-tools.js';
 import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
@@ -262,6 +265,17 @@ interface RunningAgent {
   summary: UpAgentSummary;
   sources: StartAgentSourcesResult;
   logger: AgentLogger;
+  /**
+   * RPC auth verify registry, built from `rpc-peers.yaml` when
+   * `agent.yaml#rpc.auth.enabled: true`. Exposed so future wiring that
+   * constructs an `agent-inbox` source adapter inside `up` can pass it
+   * to `createAgentInboxAdapter({ authRegistry })`. Today the `up`
+   * path does not itself construct agent-inbox (fleet-run does), so
+   * this field is held for symmetry + inspection via `/status`.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #4 follow-up
+   */
+  authRegistry?: AuthVerifyRegistry;
   /** MCP servers spawned for this agent; shutdown on stopAll. */
   mcp?: MCPRuntime;
   /** Channel registry + mailbox for this agent; shutdown on stopAll. */
@@ -336,6 +350,19 @@ interface UpRuntime {
    * @since 0.6.0-slice.2
    */
   tracer?: Tracer;
+  /**
+   * Shared audit sink opened once per up-process. Passed to
+   *   - per-agent `createToolRateLimitGate({ auditSink })` so the
+   *     `rate_limited` record lands on the hash chain when a tool
+   *     waits > 1s on the token bucket (Item #7 follow-up).
+   *   - `/audit` control-plane route (shared instead of a second open).
+   *   - `startAuditExportLoop` for SIEM export.
+   *
+   * `null` when the sink failed to open; downstream consumers skip.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #7 follow-up
+   */
+  auditSink?: TenantAuditSink;
 }
 
 async function runForeground(
@@ -380,6 +407,27 @@ async function runForeground(
         io,
       })
     : null;
+  // Shared `TenantAuditSink` — opened ONCE per up-process so every
+  // consumer reuses the same SQLite handle (Enterprise Production
+  // Plan §3 Item #7 follow-up + #10 sharing note).
+  //
+  //   - per-agent `createToolRateLimitGate({ auditSink })` writes
+  //     `rate_limited` records.
+  //   - `/audit` route serves reads.
+  //   - `startAuditExportLoop` tails the same file for SIEM export.
+  //
+  // Best-effort open: a failure here leaves `sharedAuditSink` null and
+  // each consumer silently no-ops — daemon still boots. We only log
+  // once so the banner doesn't swamp the warning channel.
+  let sharedAuditSink: TenantAuditSink | null = null;
+  try {
+    sharedAuditSink = await createSqliteAuditSink({ path: auditDbPath() });
+  } catch (err) {
+    io.err(
+      `⚠ audit sink at ${auditDbPath()} failed to open — ${err instanceof Error ? err.message : String(err)}. Rate-limit + /audit + SIEM export disabled.\n`,
+    );
+  }
+
   const runtime: UpRuntime = {
     sessionStore: createSqliteSessionStore({ path: sessionsDbPath() }),
     provider,
@@ -387,6 +435,7 @@ async function runForeground(
     metrics,
     ...(tracer !== undefined && { tracer }),
     ...(interactive && { mcpConsent: createInteractiveMCPConsent() }),
+    ...(sharedAuditSink !== null && { auditSink: sharedAuditSink }),
   };
   if (tracer !== undefined) {
     io.out(`  otel: tracing enabled (OTLP endpoint ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT})\n`);
@@ -445,7 +494,6 @@ async function runForeground(
   //        0.7.0-slice.1c (/logs SSE)
   const metricsPort = resolveMetricsPort(_args.__detached === true);
   let controlPlaneHandle: ControlPlaneServerHandle | null = null;
-  let controlPlaneAuditSink: TenantAuditSink | null = null;
   if (metricsPort > 0) {
     const routes: ControlPlaneRoute[] = [
       metricsRoute(runtime.metrics),
@@ -463,16 +511,10 @@ async function runForeground(
       routes.push(eventsRoute(eventStoreForRoutes));
       routes.push(dlqRoute(eventStoreForRoutes));
     }
-    // Open the audit sink for `/audit` reads. Best-effort — a missing
-    // sqlite file is fine (sink creates it on open). Failure is
-    // non-fatal: we just skip the route.
-    try {
-      controlPlaneAuditSink = await createSqliteAuditSink({ path: auditDbPath() });
-      routes.push(auditRoute(controlPlaneAuditSink));
-    } catch (err) {
-      io.err(
-        `⚠ audit sink at ${auditDbPath()} failed to open — ${err instanceof Error ? err.message : String(err)}. /audit disabled.\n`,
-      );
+    // `/audit` reuses the shared sink opened at boot (see §3 Item #7
+    // follow-up — single handle per up-process, not one per consumer).
+    if (sharedAuditSink) {
+      routes.push(auditRoute(sharedAuditSink));
     }
 
     // `/logs` SSE tail (Slice 1c of CONTROL_PLANE_PLAN.md §9 PR 1.2).
@@ -518,7 +560,7 @@ async function runForeground(
         io.out(`  events:  http://127.0.0.1:${controlPlaneHandle.port}/events\n`);
         io.out(`  dlq:     http://127.0.0.1:${controlPlaneHandle.port}/dlq\n`);
       }
-      if (controlPlaneAuditSink) {
+      if (sharedAuditSink) {
         io.out(`  audit:   http://127.0.0.1:${controlPlaneHandle.port}/audit\n`);
       }
       io.out(`  logs:    http://127.0.0.1:${controlPlaneHandle.port}/logs\n`);
@@ -545,24 +587,20 @@ async function runForeground(
   const auditExports = running
     .map((r) => ({ id: r.summary.id, cfg: r.auditExport }))
     .filter((x): x is { id: string; cfg: LoadedAuditExport } => x.cfg !== undefined);
-  let auditExportSink: TenantAuditSink | null = null;
   const auditExportLoops: AuditExportLoopHandle[] = [];
   if (auditExports.length > 0) {
-    try {
-      auditExportSink = await createSqliteAuditSink({ path: auditDbPath() });
-    } catch (err) {
+    if (!sharedAuditSink) {
       io.err(
-        `⚠ audit sink at ${auditDbPath()} failed to open for SIEM export — ${err instanceof Error ? err.message : String(err)}. Skipping audit.export.\n`,
+        `⚠ audit sink unavailable — audit.export disabled for ${auditExports.length} agent(s).\n`,
       );
-    }
-    if (auditExportSink) {
+    } else {
       for (const { id, cfg } of auditExports) {
         const owner = running.find((r) => r.summary.id === id);
         if (!owner) continue;
         try {
           const exporter = buildAuditExporter(cfg);
           const loop = startAuditExportLoop({
-            sink: auditExportSink,
+            sink: sharedAuditSink,
             exporter,
             ...(cfg.intervalMs !== undefined && { intervalMs: cfg.intervalMs }),
             ...(cfg.batchSize !== undefined && { batchSize: cfg.batchSize }),
@@ -599,13 +637,6 @@ async function runForeground(
           // best-effort — never block shutdown on a stuck loop
         }
       }
-      if (auditExportSink) {
-        try {
-          await auditExportSink.close();
-        } catch {
-          // best-effort — sink close is idempotent
-        }
-      }
       if (controlPlaneHandle) {
         try {
           await controlPlaneHandle.close();
@@ -613,14 +644,16 @@ async function runForeground(
           // best-effort — never block shutdown on a stuck listener
         }
       }
-      if (controlPlaneAuditSink) {
+      await stopAll(running);
+      // Close the shared audit sink after every consumer has torn
+      // down — exporter loops, /audit route, rate-limit gates.
+      if (sharedAuditSink) {
         try {
-          await controlPlaneAuditSink.close();
+          await sharedAuditSink.close();
         } catch {
-          // best-effort — audit sink close is idempotent
+          // best-effort — sink close is idempotent
         }
       }
-      await stopAll(running);
       clearUpState();
       io.out('✓ down\n');
     })();
@@ -665,6 +698,46 @@ async function bringUp(
   const logger = openAgentLog(agentId);
   const coreLogger = agentLoggerToCoreLogger(logger);
 
+  // Build the RPC auth verify registry when the agent opts in via
+  // `agent.yaml#rpc.auth.enabled: true` AND a git-tracked
+  // `rpc-peers.yaml` exists with at least one `auth:` block. The
+  // registry is constructed with a default secret resolver that
+  // supports env:/file:/secret: refs out of the box — operators
+  // needing Vault/AWS SM/etc. can extend via the providers list.
+  //
+  // Default off preserves legacy `internal`/`hmac` envelope behaviour
+  // for every fleet that hasn't explicitly opted in. Once the
+  // registry is built, future up-wiring that constructs an
+  // `agent-inbox` adapter hands it through unchanged.
+  //
+  // @since 0.7.x — Enterprise Production Plan §3 Item #4 follow-up
+  let authRegistry: AuthVerifyRegistry | undefined;
+  if (loaded.rpcAuthEnabled) {
+    const peersPath = findRpcPeersConfig(agentDir);
+    if (peersPath === undefined) {
+      io.err(
+        `⚠ ${agentId}: rpc.auth.enabled=true but no rpc-peers.yaml found — auth registry is empty (every envelope follows the legacy path).\n`,
+      );
+    } else {
+      try {
+        const peers = await loadPeersConfig(peersPath);
+        const resolver = createDefaultSecretResolver({ fileRoot: agentDir });
+        authRegistry = await buildAuthVerifyRegistry({
+          peers,
+          secrets: (ref) => resolver.resolve(ref),
+        });
+        const registeredPeers = peers.config.peers.filter((p) => p.auth !== undefined).length;
+        io.out(
+          `  ${agentId}: rpc.auth enabled (${registeredPeers} peer(s) with auth registered)\n`,
+        );
+      } catch (err) {
+        io.err(
+          `⚠ ${agentId}: rpc.auth.enabled=true but registry build failed — ${err instanceof Error ? err.message : String(err)}. Falling back to legacy envelope auth.\n`,
+        );
+      }
+    }
+  }
+
   // Spawn any MCP servers configured across user/project/local scopes.
   // Happens BEFORE source/dispatcher wiring so the engine gets the full
   // tool list from the start. A failure here is per-server soft-failed
@@ -675,6 +748,10 @@ async function bringUp(
     servers: scopedMcp,
     logger: coreLogger,
     ...(runtime.mcpConsent !== undefined && { consent: runtime.mcpConsent }),
+    // Default-on supervision — see load-agent.ts for the `'all'` rationale.
+    // Respect explicit opt-out (`'none'`) or allow-list from agent.yaml.
+    supervised: loaded.mcpSupervised,
+    metrics: runtime.metrics,
   });
   if (mcp.tools.length > 0) {
     io.out(`  ${agentId}: ${mcp.tools.length} MCP tool(s) loaded\n`);
@@ -814,6 +891,7 @@ async function bringUp(
     ...(plugins && { plugins }),
     ...(detachDispatcher !== undefined && { detachDispatcher }),
     ...(loaded.auditExport !== undefined && { auditExport: loaded.auditExport }),
+    ...(authRegistry !== undefined && { authRegistry }),
   };
 
   // Bind the control socket (§3 item #6 of the Enterprise Production
@@ -1035,13 +1113,14 @@ async function attachDispatcherToAgent(opts: {
 
   // Enterprise Production Plan §3 Item #7 — per-tool token-bucket gate.
   // Built only when `agent.yaml#tools.rateLimit` has at least one entry,
-  // to avoid allocating buckets for agents that opt out. Audit sink not
-  // wired here yet — `up` doesn't currently construct one; tenancy-aware
-  // callers that do can set it on `createEngine({ toolRateLimit })`.
+  // to avoid allocating buckets for agents that opt out. `auditSink` is
+  // the shared per-process handle opened at up boot — passing it here
+  // makes `rate_limited` records land on the hash chain (#7 follow-up).
   const toolRateLimit =
     Object.keys(loaded.toolRateLimits).length > 0
       ? createToolRateLimitGate({
           limits: loaded.toolRateLimits,
+          ...(runtime.auditSink !== undefined && { auditSink: runtime.auditSink }),
           onWait: ({ tool, waitMs }) => {
             runtime.metrics
               .counter('declaragent.tool.rate_limit.waits_total', 'Tool rate-limit waits by tool')
@@ -1289,6 +1368,14 @@ function buildDetachedArgs(args: UpArgs): string[] {
 
 function findEventSourcesConfig(agentDir: string): string | undefined {
   for (const name of ['event-sources.yaml', 'event-sources.yml', 'event-sources.json']) {
+    const p = join(agentDir, name);
+    if (existsSync(p)) return p;
+  }
+  return undefined;
+}
+
+function findRpcPeersConfig(agentDir: string): string | undefined {
+  for (const name of ['rpc-peers.yaml', 'rpc-peers.yml', 'rpc-peers.json']) {
     const p = join(agentDir, name);
     if (existsSync(p)) return p;
   }

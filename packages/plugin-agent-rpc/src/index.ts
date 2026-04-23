@@ -47,6 +47,11 @@ export type {
   CreateOAuth2ClientAuthProviderOptions,
   OAuth2ClientPeerConfig,
 } from './auth/oauth2-client.js';
+export { buildAuthVerifyRegistry } from './auth/registry-factory.js';
+export type {
+  BuildAuthVerifyRegistryOptions,
+  ResolveSecret,
+} from './auth/registry-factory.js';
 export type {
   RpcAuthPeerConfigBase,
   RpcAuthPrincipal,

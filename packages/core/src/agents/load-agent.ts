@@ -96,6 +96,50 @@ const agentYamlSchema = z
      *
      * @since 0.6.x
      */
+    /**
+     * Enterprise Production Plan §3 Item #4 — RPC envelope auth. Default
+     * `enabled: false` is a deliberate opt-in for the transition — flipping
+     * it to `true` means every envelope from a peer with an `auth:` block
+     * in `rpc-peers.yaml` must carry a matching OIDC / OAuth2 token; a
+     * bad or missing token routes to the DLQ under
+     * `kind=rejected, reason=auth-rejected`. Peers without an `auth:` block
+     * still follow the legacy `internal`/`hmac` path regardless of this
+     * toggle.
+     *
+     * @since 0.7.x
+     */
+    rpc: z
+      .object({
+        auth: z
+          .object({
+            enabled: z.boolean().optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+    /**
+     * Enterprise Production Plan §3 Item #8 — MCP supervisor wiring. The
+     * supervisor wraps each MCP server with auto-recovery (ping health
+     * check, exponential backoff, circuit breaker) and re-registers
+     * tools on respawn. Defaults to `'all'` because supervision is
+     * observational when nothing crashes — the overhead is one ping
+     * per 10 s per server, and the recovery path only activates on
+     * failure. Operators debugging a flaky stdio server can opt out
+     * with `none` (bypasses the supervisor; raw client is used) or an
+     * allow-list of server names.
+     *
+     * @since 0.7.x
+     */
+    mcp: z
+      .object({
+        supervised: z
+          .union([z.literal('all'), z.literal('none'), z.array(z.string().min(1))])
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
     audit: z
       .object({
         export: z
@@ -214,6 +258,21 @@ export type LoadedAuditExport =
       intervalMs?: number;
     };
 
+/**
+ * MCP supervisor opt-in per `agent.yaml#mcp.supervised`.
+ *
+ *   - `'all'` (default): every MCP server is wrapped in
+ *     {@link createMCPSupervisor} — ping health check + backoff + circuit
+ *     breaker + tool re-registration on respawn.
+ *   - `'none'`: raw `MCPClient` (no auto-recovery). Useful when debugging
+ *     a flaky server where the supervisor's ping-probe itself is suspect.
+ *   - `readonly string[]`: allow-list of server names to supervise; every
+ *     other server stays on the raw-client path.
+ *
+ * @since 0.7.x — Enterprise Production Plan §3 Item #8
+ */
+export type LoadedMCPSupervised = 'all' | 'none' | readonly string[];
+
 export interface LoadedAgent {
   readonly spec: AgentSpec;
   readonly skills: readonly Skill[];
@@ -230,6 +289,22 @@ export interface LoadedAgent {
    * @since 0.6.x — Enterprise Production Plan §3 Item #10
    */
   readonly auditExport?: LoadedAuditExport;
+  /**
+   * RPC envelope auth opt-in. `false` (default) keeps the legacy
+   * `internal`/`hmac` path; `true` tells `up` to build an
+   * {@link AuthVerifyRegistry} from `rpc-peers.yaml` and plumb it into
+   * `createAgentInboxAdapter`.
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #4
+   */
+  readonly rpcAuthEnabled: boolean;
+  /**
+   * MCP supervisor opt-in. Defaults to `'all'` (every MCP server is
+   * wrapped in {@link createMCPSupervisor}).
+   *
+   * @since 0.7.x — Enterprise Production Plan §3 Item #8
+   */
+  readonly mcpSupervised: LoadedMCPSupervised;
   readonly agentDir: string;
   readonly agentYamlPath: string;
   /** Lookup-name collisions surfaced by the skill loader; callers may warn. */
@@ -330,12 +405,22 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
   // the cast is safe because the schema shape matches LoadedAuditExport.
   const auditExport = cfg.audit?.export as LoadedAuditExport | undefined;
 
+  // RPC auth opt-in. Default false — preserves legacy envelope behaviour.
+  const rpcAuthEnabled = cfg.rpc?.auth?.enabled === true;
+
+  // MCP supervisor opt-in. Default 'all' — supervision is observational
+  // when the server is healthy and only activates recovery paths on
+  // failure.
+  const mcpSupervised: LoadedMCPSupervised = cfg.mcp?.supervised ?? 'all';
+
   return {
     spec,
     skills: skillLoad.skills,
     toolNames: cfg.tools?.defaults ?? [],
     toolRateLimits,
     ...(auditExport !== undefined && { auditExport }),
+    rpcAuthEnabled,
+    mcpSupervised,
     agentDir,
     agentYamlPath,
     skillConflicts: skillLoad.conflicts,
