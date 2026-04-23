@@ -187,6 +187,64 @@ const fleetHostSchema = z
 export type FleetHost = z.infer<typeof fleetHostSchema>;
 export type FleetHostAuth = z.infer<typeof fleetHostAuthSchema>;
 
+// ── Fleet-level controlPlane (POST_ENTERPRISE_BACKLOG.md #17) ──────────
+
+/**
+ * Fleet-level `controlPlane:` block. Governs HOW EACH HOST exposes its
+ * in-process control-plane HTTP listener (the port bound by `up` +
+ * served to cross-host fan-out clients). This is distinct from
+ * `hosts[]` (which is what the CLI fans OUT *to*): `hosts[]` is the
+ * client-side address book; `controlPlane:` is the server-side config
+ * that every agent on this fleet's hosts boots with.
+ *
+ * Precedence (#17):
+ *   1. `fleet.yaml#controlPlane` present → ALL agents on each host
+ *      share this config. Per-agent `agent.yaml#controlPlane` is
+ *      ignored with a deprecation warning (one per conflicting agent).
+ *   2. `fleet.yaml#controlPlane` absent → fall back to the per-agent
+ *      path: `up-cli` picks the FIRST agent with `controlPlane.auth.enabled`
+ *      and warns about any others. (Legacy 0.7.x behaviour.)
+ *
+ * Shape mirrors `agent.yaml#controlPlane` so operators don't learn a
+ * new schema. The auth block accepts the same discriminated union
+ * (`enabled: false` / oidc / oauth2-client) as `agent.yaml`. We keep
+ * it `passthrough()` here — the authoritative shape still lives in
+ * `load-agent.ts`; the CLI validates the narrower discriminant on
+ * consumption (see `resolveFleetControlPlaneAuth`). That indirection
+ * keeps the fleet schema independent of the agent schema module.
+ *
+ * @since 0.7.5 — POST_ENTERPRISE_BACKLOG.md #17
+ */
+const fleetControlPlaneSchema = z
+  .object({
+    /**
+     * Bind address hint for the in-process HTTP listener. Matches the
+     * `observability.bindAddress` knob in `agent.yaml`. When omitted,
+     * `up` binds `127.0.0.1` unless auth is enabled (which relaxes to
+     * accept non-loopback Host headers per `up-cli.ts`'s existing
+     * `allowRemote` branch). This field is advisory at the schema
+     * layer; the CLI is the source of truth for bind semantics.
+     */
+    bindAddress: z.string().min(1).optional(),
+    /**
+     * Per-request idle timeout override for the control-plane listener.
+     * Mirrors `observability.idleTimeout`. Streaming routes (`/logs`)
+     * always bypass this (see `STREAMING_ROUTE_PATHS`).
+     */
+    idleTimeout: z.number().int().nonnegative().optional(),
+    /**
+     * Same shape as `agent.yaml#controlPlane.auth` — accepts the
+     * discriminated union `{ enabled: false } | oidc | oauth2-client`.
+     * Kept `passthrough()` so the fleet loader doesn't duplicate the
+     * agent-yaml auth schema; the consumer (`up-cli.ts`) runs it
+     * through the same narrowing the agent loader uses.
+     */
+    auth: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
+export type FleetControlPlane = z.infer<typeof fleetControlPlaneSchema>;
+
 // ── Top level ──────────────────────────────────────────────────────────
 
 export const fleetManifestSchema = z
@@ -230,6 +288,19 @@ export const fleetManifestSchema = z
         },
         { message: 'fleet.hosts[].name must be unique' },
       ),
+    /**
+     * Fleet-wide `controlPlane:` block — see {@link fleetControlPlaneSchema}.
+     * Orthogonal to {@link fleetManifestSchema.shape.hosts}: `hosts[]`
+     * is what the CLI fans out TO; `controlPlane:` is how EACH agent
+     * on this fleet's hosts exposes its in-process HTTP listener.
+     *
+     * When present, wins over per-agent `agent.yaml#controlPlane`
+     * blocks — the `up` daemon warns about any per-agent overrides
+     * and applies the fleet-level config to the process-wide listener.
+     *
+     * @since 0.7.5 — POST_ENTERPRISE_BACKLOG.md #17
+     */
+    controlPlane: fleetControlPlaneSchema.optional(),
   })
   .strict();
 

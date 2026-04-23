@@ -179,4 +179,68 @@ describe('fleetManifestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  // ── fleet-level controlPlane: (POST_ENTERPRISE_BACKLOG.md #17) ───────
+  test('accepts a fleet-level controlPlane block', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [{ id: 'a', path: './agents/a' }],
+      controlPlane: {
+        bindAddress: '0.0.0.0',
+        idleTimeout: 30,
+        auth: {
+          enabled: true,
+          provider: 'oidc',
+          issuer: 'https://id.acme.test',
+          audience: 'declaragent',
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts controlPlane with auth disabled', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [],
+      controlPlane: {
+        auth: { enabled: false },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects unknown top-level keys inside controlPlane (strict)', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [],
+      controlPlane: {
+        bindAddress: '0.0.0.0',
+        bogus: true,
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('hosts[] and controlPlane are orthogonal — both accepted together', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [],
+      hosts: [{ name: 'a', url: 'http://1' }],
+      controlPlane: {
+        auth: {
+          enabled: true,
+          provider: 'oauth2-client',
+          tokenEndpoint: 'https://id/token',
+          clientId: 'cid',
+          clientSecretRef: 'env:SECRET',
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
 });

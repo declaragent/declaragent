@@ -93,7 +93,7 @@ Usage:
   declaragent fleet ps [--host <name>] [--json]                                # cross-host status fan-out (#50)
   declaragent fleet events [--host <name>] [--kind <k>] [--since <ms>] [--state circuit-open] [--outcome <k>] [--correlation <id>] [--limit <n>] [--all] [--json]
   declaragent fleet dlq [--host <name>] [--reason <r>] [--min-attempts <n>] [--since <ms>] [--limit <n>] [--all] [--json]
-  declaragent fleet logs [--host <name>] [--agent <id>] [--max-lines <n>] [--json]
+  declaragent fleet logs [-f | --follow] [--host <name>] [--agent <id>] [--max-lines <n>] [--json]
 
   declaragent capabilities gen --peer <id> [--out <dir>]
   declaragent capabilities gen --capabilities <path> [--out <dir>] [--json]

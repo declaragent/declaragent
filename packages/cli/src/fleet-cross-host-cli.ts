@@ -50,6 +50,7 @@ import {
   fanOut,
   partitionResults,
 } from './cross-host-control-plane-client.js';
+import { type MultiHostLogEvent, tailLogsMultiHost } from './fleet-logs-stream.js';
 
 export interface FleetCrossHostIO {
   out: (s: string) => void;
@@ -415,12 +416,17 @@ export async function fleetDlqList(
 // ── `fleet logs` ───────────────────────────────────────────────────────
 
 /**
- * Cross-host log tail. Non-follow mode only in Slice 3 — `-f` follow
- * over multiple SSE streams is a Slice 6 deliverable (live multiplexer
- * in `packages/cli/src/fleet-logs-stream.ts`, deferred). A snapshot-only
- * implementation reads each host's `/logs?all=1` in a short-lived SSE
- * read, collects the first `maxLinesPerHost` log lines across each
- * stream, closes, merges by timestamp.
+ * Cross-host log tail. Two modes:
+ *
+ *   - **Snapshot** (default). Reads each host's `/logs?all=1` in a
+ *     short-lived SSE read, collects the first `maxLinesPerHost` log
+ *     lines across each stream, closes, merges by timestamp.
+ *   - **Follow (`-f`)**. Opens long-lived SSE connections to each host
+ *     in parallel and streams chunks live, tagged with `[host/agent]`
+ *     as they arrive. See `fleet-logs-stream.ts` (Slice 6a).
+ *
+ * @since 0.7.4 — snapshot mode (Slice 3)
+ * @since 0.7.5 — live follow mode (Slice 6a)
  */
 export interface FleetLogsArgs {
   host?: string;
@@ -431,6 +437,12 @@ export interface FleetLogsArgs {
   /** Hard timeout per host's SSE read. Default 3s. */
   timeoutMsPerHost?: number;
   json?: boolean;
+  /**
+   * Install handler for SIGINT (and SIGTERM) — production default is
+   * true so Ctrl+C cleans up every open stream. Tests set false and
+   * call `handle.stop()` directly.
+   */
+  installSignalHandlers?: boolean;
 }
 
 export async function fleetLogs(
@@ -450,9 +462,7 @@ export async function fleetLogs(
   if (filtered === null) return 1;
 
   if (args.follow === true) {
-    io.err(
-      '`fleet logs -f` (live multi-host follow) lands in CONTROL_PLANE_PLAN.md Slice 6. 0.7.4 ships snapshot-only.\n',
-    );
+    return fleetLogsFollow(filtered, args, deps, io);
   }
 
   const fetchImpl = deps.clientOptions?.fetchImpl ?? fetch;
@@ -603,6 +613,71 @@ function parseSseFrame(frame: string): LogSnapshotLine | null {
   } catch {
     return { agentId: undefined, ts: Date.now(), text: data };
   }
+}
+
+// ── `fleet logs -f` — live multi-host SSE follow ───────────────────────
+
+async function fleetLogsFollow(
+  hosts: readonly import('@declaragent/core').FleetHost[],
+  args: FleetLogsArgs,
+  deps: FleetCrossHostDeps,
+  io: FleetCrossHostIO,
+): Promise<number> {
+  const fetchImpl = deps.clientOptions?.fetchImpl ?? fetch;
+  const env = deps.clientOptions?.env ?? (process.env as Record<string, string | undefined>);
+  const installSignals = args.installSignalHandlers ?? true;
+  const jsonMode = args.json === true;
+
+  io.err(`tailing ${hosts.length} host(s). Ctrl+C to exit.\n`);
+
+  const renderEvent = (event: MultiHostLogEvent): void => {
+    if (jsonMode) {
+      if (event.kind === 'log') {
+        io.out(`${JSON.stringify({ kind: 'log', ...event.line })}\n`);
+      } else {
+        // Rename the inner `kind` so the envelope marker survives the spread.
+        const { kind: eventKind, ...rest } = event.event;
+        io.out(`${JSON.stringify({ kind: 'system', event: eventKind, ...rest })}\n`);
+      }
+      return;
+    }
+    if (event.kind === 'log') {
+      const tsIso = new Date(event.line.ts).toISOString();
+      const agentCol = event.line.agentId ?? 'unknown';
+      io.out(`${tsIso}  [${event.line.host}/${agentCol}]  ${event.line.text}\n`);
+      return;
+    }
+    // System notices go to stderr so stdout remains machine-parseable
+    // (one log-line per newline) even in human-readable mode.
+    const tag = event.event.kind.toUpperCase();
+    io.err(`[${event.event.host}] ${tag}: ${event.event.message}\n`);
+  };
+
+  const handle = tailLogsMultiHost({
+    hosts,
+    ...(args.agent !== undefined && { agent: args.agent }),
+    fetchImpl,
+    env,
+    onEvent: renderEvent,
+  });
+
+  if (installSignals) {
+    const cleanup = async () => {
+      await handle.stop();
+      // Re-raise default behaviour so the shell reports the correct exit.
+      process.exit(0);
+    };
+    process.once('SIGINT', () => {
+      void cleanup();
+    });
+    process.once('SIGTERM', () => {
+      void cleanup();
+    });
+  }
+
+  // Block until every per-host loop has exited (today only via stop()).
+  await handle.done;
+  return 0;
 }
 
 // ── Helpers for tests ──────────────────────────────────────────────────
