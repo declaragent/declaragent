@@ -19,6 +19,18 @@ export const RPC_ERROR_CODES = {
   TENANT_MISMATCH: 'EAGENTRPC_TENANT_MISMATCH',
   /** Caller's `x-fleet-version` is older than the receiver's `minFleetVersion`. @since 1.2.0 */
   VERSION_SKEW: 'EVERSION_SKEW',
+  /**
+   * Emitted on the response path when an inbound envelope's {@link RpcAuth}
+   * block fails verification against the registered {@link RpcAuthProvider}.
+   * Distinct from {@link AUTH_FAILED}: this one is raised by the envelope
+   * auth middleware (OIDC / OAuth2 / HMAC providers) before the capability
+   * handler runs, whereas `AUTH_FAILED` is the generic transport-layer auth
+   * error. The wire value is the historical unprefixed `AUTH_REJECTED`
+   * literal — we preserve that for back-compat with 3.0.0 receivers that
+   * pattern-match on the string. See POST_ENTERPRISE_BACKLOG.md #8.
+   * @since 1.2.1 — promoted from string literal in fleet-run.ts
+   */
+  AUTH_REJECTED: 'AUTH_REJECTED',
 } as const;
 
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[keyof typeof RPC_ERROR_CODES];

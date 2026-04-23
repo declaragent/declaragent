@@ -596,7 +596,7 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
             // Short-circuit: never dispatch to handler, but still emit
             // a best-effort failure response so sync callers don't spin.
             const error: RpcError = {
-              code: 'AUTH_REJECTED',
+              code: RPC_ERROR_CODES.AUTH_REJECTED,
               message: result.message,
             };
             try {
@@ -637,7 +637,7 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
             }
           }
           const error: RpcError = {
-            code: 'AUTH_REJECTED',
+            code: RPC_ERROR_CODES.AUTH_REJECTED,
             message,
           };
           try {

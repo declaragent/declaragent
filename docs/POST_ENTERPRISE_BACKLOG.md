@@ -40,8 +40,8 @@ Tick checkboxes as work lands. Group ordering = priority. Within a group, orderi
 | 5 | [ ] `rpc.auth.enabled: true` default flip + `declaragent fleet audit-rpc --suggest-enable` pre-flight inspector | Security | 1 wk | Not started | PR #25 open Q1 |
 | 6 | [ ] Per-route scope overrides on `/audit` + `/events` + `/logs` + `/status` + `/metrics` | Security | 3 d | Not started | PR #27 open Q1 |
 | 7 | [ ] `allowLoopback` + reverse-proxy semantics (X-Forwarded-For / proxy-IP-as-loopback) | Security | 2 d | Not started | PR #27 open Q2 |
-| 8 | [ ] Add `AUTH_REJECTED` to `RPC_ERROR_CODES` constant (today string literal) | Security | 30 min | Not started | PR #28 open Q3 |
-| 9 | [ ] Audit cardinality for `capability.schema_violation` — per-envelope vs per-violation | Security | 1 d | Not started | PR #23 open Q2 |
+| 8 | [x] Add `AUTH_REJECTED` to `RPC_ERROR_CODES` constant (today string literal) | Security | 30 min | Shipped — branch `agent-a/security-sprint-1-items-8-9` | `packages/core/src/rpc/errors.ts` + `errors.test.ts`; `fleet-run.ts` literals swapped for `RPC_ERROR_CODES.AUTH_REJECTED` (wire value preserved) |
+| 9 | [x] Audit cardinality for `capability.schema_violation` — per-envelope vs per-violation | Security | 1 d | Shipped — decision: batched per envelope (pinned) | `packages/plugin-agent-rpc/src/request-agent.ts` JSDoc + multi-violation regression test in `request-agent.test.ts`; inline `POST_ENTERPRISE_BACKLOG.md #9` notes in `audit/types.ts` + `fleet-run.test.ts` |
 | 10 | [ ] Schema-version policy: hard-fail vs soft-warn on breaking capability schema bumps | Security | 3 d | Not started | PR #23 open Q1 |
 | 11 | [ ] SIEM back-pressure policy (pause writes after `>1h` backlog?) | Robustness | 3 d | Not started | PR #22 open Q1 |
 | 12 | [ ] SIEM adaptive batch interval for high-volume fleets (10k tool-calls/sec) | Robustness | 3 d | Not started | PR #22 open Q2 |

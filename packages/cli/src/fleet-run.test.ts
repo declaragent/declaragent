@@ -1228,7 +1228,10 @@ describe('fleet-run #11 typed-capability validation', () => {
         expect(events.result?.schemaSide).toBe('request');
         expect(events.result?.error?.code).toBe('EAGENTRPC_SCHEMA_VIOLATION');
 
-        // Audit row landed — one `capability_schema_violation` entry.
+        // Audit row landed — exactly one `capability_schema_violation`
+        // entry per envelope (POST_ENTERPRISE_BACKLOG.md #9: audit
+        // cardinality is batched per envelope, never per violation — so
+        // a bad-actor envelope that trips N fields still emits 1 row).
         const schemaRows = records.filter((r) => r.kind === 'capability_schema_violation');
         expect(schemaRows).toHaveLength(1);
         const first = schemaRows[0];

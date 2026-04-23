@@ -137,10 +137,11 @@ export interface RateLimitedAuditRecord {
  * — downstream consumers can drill into `violations` to enumerate which
  * paths/messages tripped.
  *
- * Cardinality decision: batched per envelope. A single `/severity: critical`
- * input rejection emits exactly one audit row even if the schema flagged
- * three different fields, because otherwise SIEM volume explodes under
- * bulk-bad-input scenarios.
+ * Cardinality decision (POST_ENTERPRISE_BACKLOG.md #9): batched per
+ * envelope. A single `/severity: critical` input rejection emits exactly
+ * one audit row even if the schema flagged three different fields,
+ * because otherwise SIEM volume explodes under bulk-bad-input scenarios.
+ * Pinned by `request-agent.test.ts` + `fleet-run.test.ts`.
  *
  * @since 1.2.0 — Enterprise Production Plan §3 Item #11
  */

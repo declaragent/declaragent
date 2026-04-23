@@ -290,6 +290,85 @@ describe('createRequestAgentTool', () => {
     expect(violations[0]).toEqual({ side: 'request', count: 1 });
   });
 
+  // POST_ENTERPRISE_BACKLOG.md #9 — audit cardinality decision.
+  //
+  // Decision: emit exactly ONE `onSchemaViolation` callback per failing
+  // envelope, carrying the full `violations[]` array — NEVER one callback
+  // per violation entry. This keeps SIEM volume bounded when a bad-actor
+  // or misconfigured caller publishes an envelope that trips every field
+  // in a large schema (without the cap, mass-rejection scenarios could
+  // multiply audit rows by the schema's field count).
+  //
+  // The `CapabilitySchemaViolationEmitter` JSDoc documents this contract;
+  // this test pins it. If you find yourself wanting to invoke the callback
+  // N times for N violations, update the JSDoc + the backlog row first.
+  test('schema-violation emits ONE callback per envelope with all violations batched (#9)', async () => {
+    const transport = stubTransport();
+    // Schema with multiple required-plus-enum fields so a single bad
+    // payload trips multiple violations at once.
+    const caps = parseCapabilitiesConfig({
+      version: 1,
+      agent: 'agent://pr-reviewer',
+      transports: [{ kind: 'memory', topics: { requests: 'agents.pr-reviewer.requests' } }],
+      capabilities: [
+        {
+          name: 'review',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              severity: { enum: ['low', 'med', 'high'] },
+              priority: { enum: ['p0', 'p1', 'p2'] },
+            },
+            required: ['title', 'severity', 'priority'],
+          },
+        },
+      ],
+    });
+    const calls: Array<{
+      side: string;
+      violationCount: number;
+      paths: readonly string[];
+    }> = [];
+    const tool = createRequestAgentTool({
+      selfAgent: 'agent://concierge',
+      peers: singlePeer(),
+      transports: new Map([['memory', transport]]),
+      pending: createPendingRegistry(),
+      peerCapabilities: new Map([['agent://pr-reviewer', caps]]),
+      validators: createCapabilityValidatorRegistry(),
+      onSchemaViolation: ({ side, violations: v }) => {
+        calls.push({
+          side,
+          violationCount: v.length,
+          paths: v.map((entry) => entry.path),
+        });
+      },
+    });
+    const events = await collectEvents(
+      tool.execute(
+        {
+          to: 'agent://pr-reviewer',
+          capability: 'review',
+          // Bad severity, bad priority, missing title — three violations
+          // across the payload. Emitter must still fire exactly once.
+          payload: { severity: 'critical', priority: 'urgent' },
+        },
+        makeToolContext(),
+      ),
+    );
+    expect(events.result?.status).toBe('schema-violation');
+    expect(events.result?.schemaSide).toBe('request');
+    // The result carries the full violation list.
+    expect((events.result?.violations ?? []).length).toBeGreaterThanOrEqual(2);
+    // Cardinality: the emitter was invoked once per envelope, not once
+    // per violation entry — this is the load-bearing assertion.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.side).toBe('request');
+    // And the single call received every violation the validator flagged.
+    expect(calls[0]?.violationCount).toBe((events.result?.violations ?? []).length);
+  });
+
   test('valid request passes through + validates response on return', async () => {
     const transport = stubTransport();
     const pending = createPendingRegistry();

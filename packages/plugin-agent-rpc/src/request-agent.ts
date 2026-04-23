@@ -73,9 +73,14 @@ export interface RequestAgentOutput {
  * to be wired to a {@link TenantAuditSink} so `capability_schema_violation`
  * records land on the hash chain for post-hoc debugging + SIEM export.
  *
- * Emission cardinality: one callback per envelope, carrying the full
- * violation list (not one-per-path). Keeps audit volume bounded even if
- * the payload has many bad fields.
+ * Emission cardinality (POST_ENTERPRISE_BACKLOG.md #9): exactly ONE
+ * callback per failing envelope, carrying the full violation list — NOT
+ * one callback per violation entry. This is load-bearing: under bad-actor
+ * or misconfigured-caller traffic a single envelope can trip every field
+ * in a large schema, and a per-violation emit would multiply audit volume
+ * by the field count under mass-rejection scenarios. The contract is
+ * pinned by `request-agent.test.ts` ("schema-violation emits ONE callback
+ * per envelope with all violations batched").
  *
  * @since 1.2.0 — Enterprise Production Plan §3 Item #11
  */
