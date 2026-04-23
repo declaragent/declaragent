@@ -43,13 +43,15 @@ import type { LLMProvider, LLMRequest, LLMResponse, Message } from '@declaragent
 import { redactSecrets } from './secret-guard.js';
 
 /**
- * Local alias for the engine's `MessageContent` union. `@declaragent/core`
- * re-exports a *different* `MessageContent` at the top of its surface
- * (the channels layer's envelope shape) which collides with the
- * messages-layer union the LLM provider actually speaks. Aliasing
- * through `LLMResponse['content'][number]` resolves to the right
- * one without depending on which re-export wins. Same trick the
- * replay harness uses.
+ * Local alias for the engine's `MessageContent` union.
+ *
+ * Historically this file aliased through `LLMResponse['content'][number]`
+ * because `@declaragent/core` re-exported two types named `MessageContent`
+ * (the LLM block union and the channels envelope shape) and callers had
+ * to disambiguate. Since backlog item #41 the channels variant is named
+ * `ChannelMessageContent`, so `MessageContent` now unambiguously resolves
+ * to the LLM union. The alias is kept to decouple fixture shapes from
+ * any future re-shuffle of the public type surface.
  */
 type LLMContent = LLMResponse['content'][number];
 type StopReason = LLMResponse['stopReason'];

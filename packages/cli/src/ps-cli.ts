@@ -16,12 +16,11 @@
  * @since 0.4.1 / rewired for control-socket 0.6.x
  */
 
+import type { ControlSocketStatus } from '@declaragent/core';
 import {
-  type ControlSocketResponse,
-  type ControlSocketStatus,
-  connectControlSocket,
-  controlSocketPath,
-} from '@declaragent/core';
+  resolveAgentControlSocketPath,
+  tryFetchControlSocketStatus,
+} from './control-socket-client.js';
 import type { UpAgentSummary } from './up-lifecycle.js';
 import { reapStaleState } from './up-lifecycle.js';
 
@@ -49,11 +48,13 @@ export async function ps(deps: PsDeps = {}): Promise<number> {
   io.out(`up since ${upSince} — pid ${state.pid}, manifest ${state.manifestPath}\n\n`);
 
   for (const agent of state.agents) {
-    const resolveSocket = deps.resolveSocket ?? ((id) => controlSocketPath(id));
+    const resolveSocket = deps.resolveSocket ?? ((id) => resolveAgentControlSocketPath(id));
     // Try the live socket first; fall through to the state-file
     // snapshot when it's unreachable (daemon crashed, stale state,
-    // or the agent predates 0.6.x).
-    const liveStatus = await tryFetchStatus(resolveSocket(agent.id));
+    // or the agent predates 0.6.x). `tryFetchControlSocketStatus`
+    // absorbs connect-timeout / error-response / missing-socket so
+    // this path stays linear.
+    const liveStatus = await tryFetchControlSocketStatus(resolveSocket(agent.id));
     if (liveStatus) {
       io.out(formatAgentLive(agent, liveStatus));
     } else {
@@ -62,31 +63,6 @@ export async function ps(deps: PsDeps = {}): Promise<number> {
   }
 
   return 0;
-}
-
-/**
- * Best-effort probe of the agent's control socket. Returns `null` when
- * the socket is absent, the connect hangs past our short timeout, or
- * the `status` op errors. Callers fall back to the on-disk snapshot.
- */
-async function tryFetchStatus(socketPath: string): Promise<ControlSocketStatus | null> {
-  let client: Awaited<ReturnType<typeof connectControlSocket>> | null = null;
-  try {
-    client = await connectControlSocket(socketPath, { timeoutMs: 500 });
-    const resp: ControlSocketResponse = await client.call({ id: 'ps-status', op: 'status' });
-    if (resp.op === 'status' && 'result' in resp) {
-      return resp.result;
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    try {
-      client?.close();
-    } catch {
-      // ignore
-    }
-  }
 }
 
 function formatAgentLive(agent: UpAgentSummary, status: ControlSocketStatus): string {

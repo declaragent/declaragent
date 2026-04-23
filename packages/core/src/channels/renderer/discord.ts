@@ -1,4 +1,4 @@
-import type { Button, MessageContent, RichBlock } from '../types.js';
+import type { Button, ChannelMessageContent, RichBlock } from '../types.js';
 import { capabilitiesAwareRender } from './capabilities-degrade.js';
 import { blockToFallbackText } from './fallback.js';
 import type { RendererContext } from './types.js';
@@ -76,7 +76,10 @@ export type DiscordPayload =
 /** Max buttons per ActionRow. More than 5 splits into adjacent rows. */
 const MAX_BUTTONS_PER_ROW = 5;
 
-export function renderDiscord(content: MessageContent, ctx: RendererContext): DiscordPayload {
+export function renderDiscord(
+  content: ChannelMessageContent,
+  ctx: RendererContext,
+): DiscordPayload {
   const degraded = capabilitiesAwareRender(content, ctx.capabilities);
   switch (degraded.kind) {
     case 'text':

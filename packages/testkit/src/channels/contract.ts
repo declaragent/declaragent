@@ -28,9 +28,9 @@ import { describe, expect, test } from 'bun:test';
 import type {
   ChannelCapabilities,
   ChannelInstance,
+  ChannelMessageContent,
   ChannelRateLimitError,
   ConversationRef,
-  MessageContent,
   MessageRef,
   SendMessageParams,
 } from '@declaragent/core';
@@ -299,7 +299,7 @@ function defaultConv(fx: ChannelContractFixture): ConversationRef {
   return fx.conversation ?? { channelId: fx.instance.id, conversationId: 'test-conv-1' };
 }
 
-function textContent(text: string): MessageContent {
+function textContent(text: string): ChannelMessageContent {
   return { kind: 'text', text };
 }
 

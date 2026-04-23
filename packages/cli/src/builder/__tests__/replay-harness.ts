@@ -53,13 +53,13 @@ import {
 } from '@declaragent/core';
 
 /**
- * Local alias for the engine's `MessageContent` union. Importing the
- * bare name from `@declaragent/core` collides with the channels-layer
- * `MessageContent` (a differently-shaped type with a `kind` discriminant).
- * The compiler resolves the wrong one because both are re-exported at
- * the same flat export level. Aliasing through `LLMResponse` avoids
- * the ambiguity — the engine's content type is exactly
- * `LLMResponse['content'][number]`.
+ * Local alias for the engine's `MessageContent` union. Kept as a
+ * `LLMResponse['content'][number]` pass-through so fixture shapes don't
+ * depend on a specific re-export path — the channels-layer type was
+ * renamed to `ChannelMessageContent` (backlog item #41), so the
+ * top-level `MessageContent` now unambiguously resolves to this union,
+ * but going through `LLMResponse` keeps the fixture immune to any
+ * future surface reshuffles.
  */
 type LLMContent = LLMResponse['content'][number];
 import { createAddChannelTool } from '../add-channel.js';

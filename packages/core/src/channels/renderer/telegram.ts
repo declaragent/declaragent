@@ -1,4 +1,4 @@
-import type { Button, MessageContent, RichBlock } from '../types.js';
+import type { Button, ChannelMessageContent, RichBlock } from '../types.js';
 import { capabilitiesAwareRender } from './capabilities-degrade.js';
 import { escapeMarkdownV2 } from './escape-markdown-v2.js';
 import { blockToFallbackText } from './fallback.js';
@@ -50,7 +50,7 @@ export type TelegramPayload =
   | TelegramTemplatePayload;
 
 /**
- * Render unified `MessageContent` to a Telegram Bot API payload. The
+ * Render unified `ChannelMessageContent` to a Telegram Bot API payload. The
  * adapter (slice 5) hands the returned struct to `sendMessage` /
  * `sendDocument` / `sendVoice` with the destination chat_id appended.
  *
@@ -58,7 +58,10 @@ export type TelegramPayload =
  * supported; otherwise `capabilitiesAwareRender` has already converted
  * them to text before we arrive here.
  */
-export function renderTelegram(content: MessageContent, ctx: RendererContext): TelegramPayload {
+export function renderTelegram(
+  content: ChannelMessageContent,
+  ctx: RendererContext,
+): TelegramPayload {
   const degraded = capabilitiesAwareRender(content, ctx.capabilities);
   switch (degraded.kind) {
     case 'text':

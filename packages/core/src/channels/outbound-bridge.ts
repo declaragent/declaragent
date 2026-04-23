@@ -9,9 +9,9 @@ import type { MessageContent as LLMContent, Message } from '../types/messages.js
 import type { SessionChannelContextStore } from './session-context.js';
 import type {
   ChannelInstance,
+  ChannelMessageContent,
   ChannelRegistry,
   ConversationRef,
-  MessageContent,
   MessageRef,
   SentMessage,
 } from './types.js';
@@ -24,7 +24,7 @@ import type {
  */
 export interface ChannelSendRequestPayload {
   conversation: ConversationRef;
-  content: MessageContent;
+  content: ChannelMessageContent;
   idempotencyKey?: string;
   replyTo?: MessageRef;
 }
@@ -181,7 +181,11 @@ export function createChannelOutboundBridge(
       return;
     }
 
-    const content: MessageContent = { kind: 'text', text: payload.delta, format: 'markdown' };
+    const content: ChannelMessageContent = {
+      kind: 'text',
+      text: payload.delta,
+      format: 'markdown',
+    };
 
     let state = streams.get(payload.sessionId);
     // If the state is stale (prior turn), start fresh.
@@ -348,7 +352,7 @@ export function createChannelOutboundBridge(
  * single newline. Slice 4 replaces this with rich-block rendering; tool
  * calls + tool results never become outbound content.
  */
-export function extractAssistantContent(content: Message['content']): MessageContent | null {
+export function extractAssistantContent(content: Message['content']): ChannelMessageContent | null {
   const pieces: string[] = [];
   for (const block of content) {
     if (isTextBlock(block) && block.text.length > 0) {

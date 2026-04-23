@@ -3,11 +3,11 @@ import {
   type BaseChannelOptions,
   type ChannelAction,
   type ChannelDependencies,
+  type ChannelMessageContent,
   ChannelRateLimitError,
   type ConversationRef,
   type FileRef,
   type FileUpload,
-  type MessageContent,
   type MessageRef,
   type SendMessageParams,
   type SentMessage,
@@ -49,7 +49,7 @@ export interface TelegramChannelInstanceOptions {
  * Responsibilities:
  * - Long-polling loop OR webhook handler (based on config).
  * - Convert incoming Telegram updates → `AgentEvent` → bus.
- * - Render outbound `MessageContent` via `renderTelegram` and call the
+ * - Render outbound `ChannelMessageContent` via `renderTelegram` and call the
  *   matching Bot API method.
  * - Manage a small `file_id` cache so repeated sends of the same
  *   `FileRef` skip re-upload.
@@ -410,7 +410,7 @@ export class TelegramChannelInstance extends BaseChannelInstance {
     });
   };
 
-  override edit = async (ref: MessageRef, content: MessageContent): Promise<void> => {
+  override edit = async (ref: MessageRef, content: ChannelMessageContent): Promise<void> => {
     const payload = renderTelegram(content, { capabilities: this.capabilities });
     if (payload.kind !== 'text') {
       throw new Error(

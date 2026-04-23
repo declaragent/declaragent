@@ -1,4 +1,4 @@
-import type { Button, MessageContent, RichBlock } from '../types.js';
+import type { Button, ChannelMessageContent, RichBlock } from '../types.js';
 import { capabilitiesAwareRender } from './capabilities-degrade.js';
 import { blockToFallbackText } from './fallback.js';
 import type { RendererContext } from './types.js';
@@ -81,7 +81,10 @@ const DEFAULT_TEMPLATE_LANGUAGE = 'en_US';
  *   - `image` blocks become a media payload with the image URL; further
  *     blocks in the same content collapse to fallback text captions.
  */
-export function renderWhatsApp(content: MessageContent, ctx: RendererContext): WhatsAppPayload {
+export function renderWhatsApp(
+  content: ChannelMessageContent,
+  ctx: RendererContext,
+): WhatsAppPayload {
   const degraded = capabilitiesAwareRender(content, ctx.capabilities);
   switch (degraded.kind) {
     case 'text':

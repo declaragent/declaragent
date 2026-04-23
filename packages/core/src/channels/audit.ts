@@ -1,5 +1,5 @@
 import type { EventKind } from '../events/types.js';
-import type { MessageContent } from './types.js';
+import type { ChannelMessageContent } from './types.js';
 
 /**
  * Channel-scoped audit log (Phase-5 slice 9).
@@ -84,7 +84,7 @@ export interface ChannelOutboundAuditRecord extends ChannelAuditRecordBase {
   sessionId?: string;
   /** Platform-assigned message id ('' on failure). */
   messageId: string;
-  contentKind: MessageContent['kind'];
+  contentKind: ChannelMessageContent['kind'];
   latencyMs?: number;
   /** Attributed reason (bridge-issued / SendMessage tool / other). */
   origin?: 'bridge' | 'tool' | 'external';

@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import type { MessageContent } from '@declaragent/core';
+import type { ChannelMessageContent } from '@declaragent/core';
 import { createMockChannelInstance } from '../channels/mock-channel.js';
 import { createChannelLoadHarness, stripSentAtStamp } from './channel.js';
 
-function textPayload(seq: number): MessageContent {
+function textPayload(seq: number): ChannelMessageContent {
   return { kind: 'text', text: `hello #${seq}` };
 }
 

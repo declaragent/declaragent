@@ -3,11 +3,11 @@ import {
   type BaseChannelOptions,
   type ChannelAction,
   type ChannelDependencies,
+  type ChannelMessageContent,
   ChannelRateLimitError,
   type ConversationRef,
   type FileRef,
   type FileUpload,
-  type MessageContent,
   type MessageRef,
   type SendMessageParams,
   type SentMessage,
@@ -463,7 +463,7 @@ export class SlackChannelInstance extends BaseChannelInstance {
     }
   };
 
-  override edit = async (ref: MessageRef, content: MessageContent): Promise<void> => {
+  override edit = async (ref: MessageRef, content: ChannelMessageContent): Promise<void> => {
     const payload = renderSlack(content, { capabilities: this.capabilities });
     try {
       if (payload.kind === 'rich') {

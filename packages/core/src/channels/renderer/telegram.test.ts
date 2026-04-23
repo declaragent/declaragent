@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { ChannelCapabilities, MessageContent } from '../types.js';
+import type { ChannelCapabilities, ChannelMessageContent } from '../types.js';
 import { renderTelegram } from './telegram.js';
 
 function caps(overrides: Partial<ChannelCapabilities> = {}): ChannelCapabilities {
@@ -35,7 +35,7 @@ describe('renderTelegram', () => {
   });
 
   test('renders a rich message with heading + paragraph + button row', () => {
-    const content: MessageContent = {
+    const content: ChannelMessageContent = {
       kind: 'rich',
       blocks: [
         { kind: 'heading', text: 'Order' },

@@ -3,11 +3,11 @@ import {
   type BaseChannelOptions,
   type ChannelAction,
   type ChannelDependencies,
+  type ChannelMessageContent,
   ChannelRateLimitError,
   type ConversationRef,
   type FileRef,
   type FileUpload,
-  type MessageContent,
   type MessageRef,
   type SendMessageParams,
   type SentMessage,
@@ -454,7 +454,7 @@ export class WhatsAppChannelInstance extends BaseChannelInstance {
     }
   };
 
-  override edit = async (_ref: MessageRef, _content: MessageContent): Promise<void> => {
+  override edit = async (_ref: MessageRef, _content: ChannelMessageContent): Promise<void> => {
     throw new Error('whatsapp: edit is not supported on the Cloud API');
   };
 
@@ -541,7 +541,7 @@ function buildTemplateComponents(
   return [{ type: 'body', parameters: ordered }];
 }
 
-function summariseForTemplate(content: MessageContent, max = 160): string {
+function summariseForTemplate(content: ChannelMessageContent, max = 160): string {
   let raw = '';
   switch (content.kind) {
     case 'text':
