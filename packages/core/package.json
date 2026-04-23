@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/core",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Runtime core for Declaragent — declarative AI agent platform.",
   "license": "Apache-2.0",
   "type": "module",

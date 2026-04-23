@@ -76,6 +76,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Build CLI's workspace deps
+        run: |
+          bun run --filter '@declaragent/core' build
+          bun run --filter '@declaragent/plugin-agent-rpc' --filter '@declaragent/channel-whatsapp' build
+
       - name: Build CLI dist
         run: bun run --filter '@declaragent/cli' build
 

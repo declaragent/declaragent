@@ -1,5 +1,41 @@
 # @declaragent/core
 
+## 0.5.0
+
+### Minor Changes
+
+- 1bc842d: **Resolve `MessageContent` name collision at `@declaragent/core`'s export surface (backlog #41).**
+
+  `@declaragent/core` previously re-exported two unrelated types named `MessageContent`: the LLM content-block union from `types/messages.ts` (LLM engine) and the channels-envelope union from `channels/types.ts` (Slack/Telegram/Discord/WhatsApp adapters). Consumers had to disambiguate with module-path imports or alias through `LLMResponse['content'][number]` — the builder recording provider and replay harness both carried hand-written workarounds.
+
+  The channels-layer type is renamed to `ChannelMessageContent`. The top-level `MessageContent` name now unambiguously resolves to the LLM union. All internal references, renderer signatures (`renderSlack` / `renderTelegram` / `renderDiscord` / `renderWhatsApp`), `BaseChannelInstance.edit`, `SendMessageParams.content`, the `SendMessage` tool input, and the four first-party channel packages (`channel-slack`, `channel-telegram`, `channel-discord`, `channel-whatsapp`) have been updated. The `testkit` `MockChannelInstance` + load/contract fixtures follow.
+
+  Breaking for any external caller importing `MessageContent` from `@declaragent/core` and expecting the channels-envelope shape. Fix is mechanical — rename the import to `ChannelMessageContent`. The LLM-layer `MessageContent` is unchanged.
+
+### Patch Changes
+
+- b69d717: **Robustness warmups for `@declaragent/cli@0.7.1` — MCP + per-tool rate limit polish.**
+
+  Four small fixes bundled from the post-enterprise backlog (`docs/POST_ENTERPRISE_BACKLOG.md` rows #14, #28, #29, #30):
+
+  - **#14 Dedicated `mcp_server_circuit_open_total` counter.** The labeled `mcp_server_circuit_state` gauge is kept, but alertmanager rules are much simpler against a counter — `increase(mcp_server_circuit_open_total[5m]) > 0` fires exactly once per `closed | half-open → open` transition. Registered alongside the existing MCP supervisor metrics in `packages/core/src/mcp/supervisor.ts`.
+
+  - **#28 `burst = 2 × rps` default** for `createToolRateLimitGate` (per-tool rate limits, `packages/core/src/tools/rate-limit-gate.ts`). Matches classic token-bucket wisdom: one second of steady-state headroom plus one second of catch-up for transient spikes. Explicit `burst` values pass through unchanged. The provider-level limiter in `packages/core/src/providers/rate-limit.ts` is intentionally untouched.
+
+  - **#29 Audit threshold comparator `>` → `>=`.** Previously `rps=1` (1000 ms wait) sat silently on the 1 s default threshold and never emitted a `rate_limited` audit record. Now it does. Zero-ms (immediate) calls still never audit.
+
+  - **#30 `mcp.supervised` recipe** — new subsection in `docs-site/docs/reference/agent-yaml.mdx` showing how to use the list form to exclude a flaky server for debugging while the rest of the fleet keeps auto-recovering.
+
+  No user-facing config changes beyond the defaults; no peer-dep cascade.
+
+- 2e60de4: **Security sprint follow-ups from `POST_ENTERPRISE_BACKLOG.md` — items #8 + #9.**
+
+  - **#8 — `AUTH_REJECTED` promoted to `RPC_ERROR_CODES`.** Previously the envelope auth-reject path in `packages/cli/src/fleet-run.ts` stamped a bare `'AUTH_REJECTED'` string on the response envelope. The constant now lives on `@declaragent/core`'s canonical `RPC_ERROR_CODES` map alongside `AUTH_FAILED`, `VERSION_SKEW`, etc. The wire value is intentionally preserved (unprefixed `'AUTH_REJECTED'`) for back-compat with 3.0.0 receivers that pattern-match the literal — callers migrating should import `RPC_ERROR_CODES.AUTH_REJECTED` from `@declaragent/core`. Covered by `packages/core/src/rpc/errors.test.ts`.
+
+  - **#9 — Capability schema-violation audit cardinality pinned per-envelope.** The emit contract on `CapabilitySchemaViolationEmitter` (in `@declaragent/plugin-agent-rpc`) + the `capability_schema_violation` audit record (in `@declaragent/core`) was already batched per envelope, but the decision was only implicit. Added explicit `POST_ENTERPRISE_BACKLOG.md #9` JSDoc + a regression test in `request-agent.test.ts` that trips 3 violations in one payload and asserts the emitter fires exactly once with all violations in the array. This caps SIEM volume under bad-actor / mass-rejection traffic — a single misconfigured envelope can trip every field in a large schema, and a per-violation emit would multiply audit rows by the schema's field count.
+
+  No breaking changes. `@declaragent/cli` patch bump picks up the `RPC_ERROR_CODES.AUTH_REJECTED` wire swap in `fleet-run.ts`.
+
 ## 0.4.0
 
 ### Minor Changes
