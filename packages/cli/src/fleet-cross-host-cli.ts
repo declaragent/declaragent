@@ -1,0 +1,611 @@
+/**
+ * `declaragent fleet ps / events / dlq / logs` — cross-host fan-out.
+ *
+ * Slice 3 of `docs/CONTROL_PLANE_PLAN.md` / POST_ENTERPRISE_BACKLOG.md
+ * #50. Reads `fleet.yaml.hosts[]`; when present, each verb runs N
+ * parallel HTTP calls — one per host — against each host's
+ * `/status`, `/events`, `/dlq`, `/logs` endpoint, merges, and renders.
+ *
+ * Back-compat: when `fleet.yaml.hosts` is absent or empty, each verb
+ * prints a short pointer to the existing single-host path (`declaragent
+ * ps` / `events list` / `dlq list`). We don't silently fall through —
+ * operators deserve to know the single-host path lives under a
+ * different verb tree.
+ *
+ * Design points:
+ *
+ *   - One bearer per host lives in `fleet.yaml.hosts[].auth.bearer`;
+ *     supports `env:NAME` / `file:/path` / literal. Per-agent auth
+ *     registry (Agent A's Sprint 4 #18) is a different concern —
+ *     that gates incoming RPC AT each host. We do not cross streams.
+ *   - Per-host failures are tagged + rendered in the trailer. One bad
+ *     host NEVER blocks the aggregate.
+ *   - `--host <name>` restricts to one host. `--json` emits a stable
+ *     shape including per-host success/failure status.
+ *   - `fleet logs` is NOT a live SSE tail in this Slice — the underlying
+ *     `/logs` route is SSE-only and multi-stream interleaving wants a
+ *     dedicated multiplexer (CONTROL_PLANE_PLAN.md Slice 6). Slice 3
+ *     ships a snapshot-only `fleet logs` that reads the latest N lines
+ *     per host via a short-lived SSE connection (terminates on the
+ *     next heartbeat or after `maxLinesPerHost`). `-f` follow lands in
+ *     Slice 6. The CLI prints a one-line hint when `-f` is passed.
+ *
+ * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #50
+ */
+
+import type {
+  DlqResponseEntry,
+  EventsResponseEntry,
+  FleetHost,
+  UpStatusSnapshot,
+} from '@declaragent/core';
+import { FleetConfigError, FleetManifestError, findFleetRoot, loadFleet } from '@declaragent/core';
+import {
+  type CrossHostClientOptions,
+  type CrossHostControlPlaneClient,
+  type GetDlqOpts,
+  type GetEventsOpts,
+  type HostError,
+  createCrossHostControlPlaneClient,
+  fanOut,
+  partitionResults,
+} from './cross-host-control-plane-client.js';
+
+export interface FleetCrossHostIO {
+  out: (s: string) => void;
+  err: (s: string) => void;
+}
+
+const STDIO_IO: FleetCrossHostIO = {
+  out: (s) => process.stdout.write(s),
+  err: (s) => process.stderr.write(s),
+};
+
+// ── Shared dependency shape ────────────────────────────────────────────
+
+export interface FleetCrossHostDeps {
+  io?: FleetCrossHostIO;
+  cwd?: string;
+  root?: string;
+  /** Test hook — pre-resolved hosts. When set, the fleet loader is skipped. */
+  hosts?: readonly FleetHost[];
+  client?: CrossHostControlPlaneClient;
+  /** Override `fetch` etc. for the default client. */
+  clientOptions?: CrossHostClientOptions;
+}
+
+async function resolveHosts(
+  deps: FleetCrossHostDeps,
+  io: FleetCrossHostIO,
+): Promise<readonly FleetHost[] | null> {
+  if (deps.hosts) return deps.hosts;
+  const root = deps.root ?? (await findFleetRoot(deps.cwd ?? process.cwd()));
+  if (!root) {
+    io.err('✗ no fleet.yaml found. Cross-host verbs need a fleet.yaml with a `hosts:` block.\n');
+    return null;
+  }
+  try {
+    const fleet = await loadFleet({ root });
+    const hosts = fleet.manifest.hosts ?? [];
+    return hosts;
+  } catch (err) {
+    if (err instanceof FleetManifestError || err instanceof FleetConfigError) {
+      io.err(`✗ ${err.message}\n`);
+    } else {
+      io.err(`✗ failed to load fleet: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    return null;
+  }
+}
+
+function filterHosts(
+  hosts: readonly FleetHost[],
+  hostName: string | undefined,
+  io: FleetCrossHostIO,
+): readonly FleetHost[] | null {
+  if (!hostName) return hosts;
+  const match = hosts.find((h) => h.name === hostName);
+  if (!match) {
+    io.err(`✗ host "${hostName}" not declared in fleet.yaml#hosts\n`);
+    return null;
+  }
+  return [match];
+}
+
+function renderFailures(io: FleetCrossHostIO, failures: readonly HostError[]): void {
+  if (failures.length === 0) return;
+  io.err(`\n${failures.length} host(s) unreachable:\n`);
+  for (const f of failures) {
+    const code = f.status !== undefined ? ` (HTTP ${f.status})` : '';
+    io.err(`  ✗ ${f.host}${code}: ${f.message}\n`);
+  }
+}
+
+function client(deps: FleetCrossHostDeps): CrossHostControlPlaneClient {
+  return deps.client ?? createCrossHostControlPlaneClient(deps.clientOptions ?? {});
+}
+
+// ── `fleet ps` ─────────────────────────────────────────────────────────
+
+export interface FleetPsArgs {
+  host?: string;
+  json?: boolean;
+}
+
+export async function fleetPs(
+  args: FleetPsArgs = {},
+  deps: FleetCrossHostDeps = {},
+): Promise<number> {
+  const io = deps.io ?? STDIO_IO;
+  const hosts = await resolveHosts(deps, io);
+  if (hosts === null) return 1;
+  if (hosts.length === 0) {
+    if (args.json === true) {
+      io.out(`${JSON.stringify({ hosts: [], failures: [] }, null, 2)}\n`);
+      return 0;
+    }
+    io.out('no `hosts:` block in fleet.yaml — use `declaragent ps` for the local view.\n');
+    return 0;
+  }
+  const filtered = filterHosts(hosts, args.host, io);
+  if (filtered === null) return 1;
+
+  const c = client(deps);
+  const results = await fanOut(filtered, (h) => c.getStatus(h));
+  const { successes, failures } = partitionResults(results);
+
+  if (args.json === true) {
+    const body = {
+      hosts: results.map((r) =>
+        'ok' in r.result
+          ? { host: r.host, ok: true, status: r.result.ok }
+          : { host: r.host, ok: false, error: r.result.err },
+      ),
+      failures,
+    };
+    io.out(`${JSON.stringify(body, null, 2)}\n`);
+    return failures.length > 0 ? 1 : 0;
+  }
+
+  if (successes.length === 0 && failures.length > 0) {
+    io.err('✗ every host unreachable.\n');
+    renderFailures(io, failures);
+    return 1;
+  }
+
+  io.out('HOST'.padEnd(22));
+  io.out('AGENTS'.padEnd(18));
+  io.out('UPTIME'.padEnd(12));
+  io.out('DISPATCHED'.padEnd(12));
+  io.out('REJECTED'.padEnd(10));
+  io.out('BREAKER\n');
+  io.out(`${'─'.repeat(80)}\n`);
+  for (const { host, value } of successes) {
+    io.out(renderStatusRow(host, value));
+  }
+  renderFailures(io, failures);
+  return failures.length > 0 ? 1 : 0;
+}
+
+function renderStatusRow(hostName: string, snap: UpStatusSnapshot): string {
+  const agents = snap.agents;
+  const first = agents[0]?.id ?? '(none)';
+  const agentsCol = agents.length > 1 ? `${first},…(${agents.length})` : first;
+  const maxUptime = agents.reduce((m, a) => Math.max(m, a.uptimeMs), 0);
+  const uptime = humanizeMs(maxUptime);
+  let dispatched = 0;
+  let rejected = 0;
+  let breakerOpen = 0;
+  for (const a of agents) {
+    dispatched += a.metrics.eventsDispatched;
+    rejected += a.metrics.eventsRejected;
+    breakerOpen += a.metrics.breakerOpen;
+  }
+  const breakerCol = breakerOpen > 0 ? `OPEN(${breakerOpen})` : '—';
+  return (
+    `${hostName.padEnd(22)}` +
+    `${agentsCol.slice(0, 17).padEnd(18)}` +
+    `${uptime.padEnd(12)}` +
+    `${String(dispatched).padEnd(12)}` +
+    `${String(rejected).padEnd(10)}` +
+    `${breakerCol}\n`
+  );
+}
+
+function humanizeMs(ms: number): string {
+  if (ms <= 0) return '0s';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
+
+// ── `fleet events` ─────────────────────────────────────────────────────
+
+export interface FleetEventsListArgs {
+  host?: string;
+  kind?: string;
+  since?: number | string;
+  state?: 'circuit-open';
+  outcome?: string;
+  correlation?: string;
+  limit?: number;
+  /** When set, fan out across every agent on each host via host-side ?all=1. */
+  all?: boolean;
+  json?: boolean;
+}
+
+export async function fleetEventsList(
+  args: FleetEventsListArgs = {},
+  deps: FleetCrossHostDeps = {},
+): Promise<number> {
+  const io = deps.io ?? STDIO_IO;
+  const hosts = await resolveHosts(deps, io);
+  if (hosts === null) return 1;
+  if (hosts.length === 0) {
+    io.out('no `hosts:` block in fleet.yaml — use `declaragent events list` for the local view.\n');
+    return 0;
+  }
+  const filtered = filterHosts(hosts, args.host, io);
+  if (filtered === null) return 1;
+
+  const c = client(deps);
+  const opts: GetEventsOpts = {
+    ...(args.kind !== undefined && { kind: args.kind }),
+    ...(args.since !== undefined && { since: args.since }),
+    ...(args.state !== undefined && { state: args.state }),
+    ...(args.outcome !== undefined && { outcome: args.outcome }),
+    ...(args.correlation !== undefined && { correlation: args.correlation }),
+    ...(args.limit !== undefined && { limit: args.limit }),
+    ...(args.all === true && { all: true }),
+  };
+
+  const results = await fanOut(filtered, (h) => c.getEvents(h, opts));
+  const { successes, failures } = partitionResults(results);
+
+  type Tagged = { host: string; agentId?: string; entry: EventsResponseEntry };
+  const rows: Tagged[] = [];
+  for (const { host, value } of successes) {
+    for (const e of value.events) {
+      rows.push({
+        host,
+        ...(e.agentId !== undefined && { agentId: e.agentId }),
+        entry: e,
+      });
+    }
+  }
+  // Merge-sort by ts DESC (ties broken by id DESC for determinism).
+  rows.sort((a, b) => {
+    if (a.entry.ts !== b.entry.ts) return b.entry.ts - a.entry.ts;
+    return a.entry.id < b.entry.id ? 1 : a.entry.id > b.entry.id ? -1 : 0;
+  });
+
+  if (args.json === true) {
+    const body = {
+      events: rows.map((r) => ({ host: r.host, agentId: r.agentId, ...r.entry })),
+      failures,
+    };
+    io.out(`${JSON.stringify(body, null, 2)}\n`);
+    return failures.length > 0 ? 1 : 0;
+  }
+
+  if (rows.length === 0 && successes.length > 0) {
+    io.out('no events.\n');
+  } else if (rows.length === 0 && failures.length === hosts.length) {
+    io.err('✗ every host unreachable.\n');
+    renderFailures(io, failures);
+    return 1;
+  } else {
+    io.out(`events (${rows.length}):\n`);
+    for (const r of rows) {
+      const tsIso = new Date(r.entry.ts).toISOString();
+      const agentCol = r.agentId ? `${r.host}/${r.agentId}` : r.host;
+      const outcome = formatOutcome(r.entry.outcome);
+      io.out(
+        `  ${tsIso}  ${r.entry.kind.padEnd(18)}  ${agentCol.padEnd(26)}  ${outcome.padEnd(28)}  ${r.entry.id}\n`,
+      );
+    }
+  }
+  renderFailures(io, failures);
+  return failures.length > 0 ? 1 : 0;
+}
+
+function formatOutcome(outcome: EventsResponseEntry['outcome']): string {
+  if (!outcome) return 'pending';
+  switch (outcome.kind) {
+    case 'dispatched':
+      return `dispatched→${outcome.sessionId}`;
+    case 'broadcast':
+      return 'broadcast';
+    case 'queued':
+      return `queued:${outcome.reason}`;
+    case 'duplicate':
+      return `duplicate@${new Date(outcome.firstSeenAt).toISOString()}`;
+    case 'rejected':
+      return `rejected:${outcome.reason}${outcome.details ? ` (${outcome.details})` : ''}`;
+  }
+}
+
+// ── `fleet dlq` ────────────────────────────────────────────────────────
+
+export interface FleetDlqListArgs {
+  host?: string;
+  kind?: 'dispatch';
+  reason?: string;
+  minAttempts?: number;
+  since?: number | string;
+  limit?: number;
+  all?: boolean;
+  json?: boolean;
+}
+
+export async function fleetDlqList(
+  args: FleetDlqListArgs = {},
+  deps: FleetCrossHostDeps = {},
+): Promise<number> {
+  const io = deps.io ?? STDIO_IO;
+  const hosts = await resolveHosts(deps, io);
+  if (hosts === null) return 1;
+  if (hosts.length === 0) {
+    io.out('no `hosts:` block in fleet.yaml — use `declaragent dlq list` for the local view.\n');
+    return 0;
+  }
+  const filtered = filterHosts(hosts, args.host, io);
+  if (filtered === null) return 1;
+
+  const c = client(deps);
+  const opts: GetDlqOpts = {
+    ...(args.kind !== undefined && { kind: args.kind }),
+    ...(args.reason !== undefined && { reason: args.reason }),
+    ...(args.minAttempts !== undefined && { minAttempts: args.minAttempts }),
+    ...(args.since !== undefined && { since: args.since }),
+    ...(args.limit !== undefined && { limit: args.limit }),
+    ...(args.all === true && { all: true }),
+  };
+
+  const results = await fanOut(filtered, (h) => c.getDlq(h, opts));
+  const { successes, failures } = partitionResults(results);
+
+  type Tagged = { host: string; agentId?: string; entry: DlqResponseEntry };
+  const rows: Tagged[] = [];
+  for (const { host, value } of successes) {
+    for (const e of value.rejections) {
+      rows.push({
+        host,
+        ...(e.agentId !== undefined && { agentId: e.agentId }),
+        entry: e,
+      });
+    }
+  }
+  rows.sort((a, b) => b.entry.lastSeenMs - a.entry.lastSeenMs);
+
+  if (args.json === true) {
+    const body = {
+      rejections: rows.map((r) => ({ host: r.host, agentId: r.agentId, ...r.entry })),
+      failures,
+    };
+    io.out(`${JSON.stringify(body, null, 2)}\n`);
+    return failures.length > 0 ? 1 : 0;
+  }
+
+  if (rows.length === 0 && successes.length > 0) {
+    io.out('no DLQ entries.\n');
+  } else if (rows.length === 0 && failures.length === hosts.length) {
+    io.err('✗ every host unreachable.\n');
+    renderFailures(io, failures);
+    return 1;
+  } else {
+    io.out(`dlq rejections (${rows.length}):\n`);
+    for (const r of rows) {
+      const tsIso = new Date(r.entry.lastSeenMs).toISOString();
+      const agentCol = r.agentId ? `${r.host}/${r.agentId}` : r.host;
+      io.out(
+        `  ${tsIso}  ${agentCol.padEnd(26)}  attempts=${String(r.entry.attemptCount).padEnd(3)}  reason=${r.entry.reason.padEnd(18)}  ${r.entry.eventId}\n`,
+      );
+    }
+  }
+  renderFailures(io, failures);
+  return failures.length > 0 ? 1 : 0;
+}
+
+// ── `fleet logs` ───────────────────────────────────────────────────────
+
+/**
+ * Cross-host log tail. Non-follow mode only in Slice 3 — `-f` follow
+ * over multiple SSE streams is a Slice 6 deliverable (live multiplexer
+ * in `packages/cli/src/fleet-logs-stream.ts`, deferred). A snapshot-only
+ * implementation reads each host's `/logs?all=1` in a short-lived SSE
+ * read, collects the first `maxLinesPerHost` log lines across each
+ * stream, closes, merges by timestamp.
+ */
+export interface FleetLogsArgs {
+  host?: string;
+  agent?: string;
+  follow?: boolean;
+  /** Max log lines to keep per host before terminating. Default 100. */
+  maxLinesPerHost?: number;
+  /** Hard timeout per host's SSE read. Default 3s. */
+  timeoutMsPerHost?: number;
+  json?: boolean;
+}
+
+export async function fleetLogs(
+  args: FleetLogsArgs = {},
+  deps: FleetCrossHostDeps = {},
+): Promise<number> {
+  const io = deps.io ?? STDIO_IO;
+  const hosts = await resolveHosts(deps, io);
+  if (hosts === null) return 1;
+  if (hosts.length === 0) {
+    io.out(
+      'no `hosts:` block in fleet.yaml — tail per-host logs via `declaragent ps` on each host.\n',
+    );
+    return 0;
+  }
+  const filtered = filterHosts(hosts, args.host, io);
+  if (filtered === null) return 1;
+
+  if (args.follow === true) {
+    io.err(
+      '`fleet logs -f` (live multi-host follow) lands in CONTROL_PLANE_PLAN.md Slice 6. 0.7.4 ships snapshot-only.\n',
+    );
+  }
+
+  const fetchImpl = deps.clientOptions?.fetchImpl ?? fetch;
+  const env = deps.clientOptions?.env ?? (process.env as Record<string, string | undefined>);
+  const maxLines = args.maxLinesPerHost ?? 100;
+  const timeout = args.timeoutMsPerHost ?? 3000;
+
+  const results = await fanOut(filtered, async (h) => {
+    const query: { agent?: string } = {};
+    if (args.agent !== undefined) query.agent = args.agent;
+    return await readLogSnapshot(h, query, {
+      fetchImpl,
+      env,
+      maxLines,
+      timeoutMs: h.timeoutMs ?? timeout,
+    });
+  });
+  const { successes, failures } = partitionResults(results);
+
+  type Tagged = { host: string; agentId: string; ts: number; text: string };
+  const rows: Tagged[] = [];
+  for (const { host, value } of successes) {
+    for (const line of value) {
+      rows.push({ host, agentId: line.agentId ?? 'unknown', ts: line.ts, text: line.text });
+    }
+  }
+  rows.sort((a, b) => a.ts - b.ts);
+
+  if (args.json === true) {
+    io.out(`${JSON.stringify({ logs: rows, failures }, null, 2)}\n`);
+    return failures.length > 0 ? 1 : 0;
+  }
+  for (const r of rows) {
+    const tsIso = new Date(r.ts).toISOString();
+    io.out(`${tsIso}  [${r.host}/${r.agentId}]  ${r.text}\n`);
+  }
+  renderFailures(io, failures);
+  return failures.length > 0 ? 1 : 0;
+}
+
+interface LogSnapshotLine {
+  agentId: string | undefined;
+  ts: number;
+  text: string;
+}
+
+interface ReadLogSnapshotParams {
+  fetchImpl: typeof fetch;
+  env: Record<string, string | undefined>;
+  maxLines: number;
+  timeoutMs: number;
+}
+
+async function readLogSnapshot(
+  host: FleetHost,
+  query: { agent?: string },
+  params: ReadLogSnapshotParams,
+): Promise<LogSnapshotLine[]> {
+  const base = host.url.replace(/\/+$/, '');
+  const sp = new URLSearchParams();
+  if (query.agent) {
+    sp.set('agent', query.agent);
+  } else {
+    sp.set('all', '1');
+  }
+  const url = `${base}/logs?${sp.toString()}`;
+  const headers: Record<string, string> = {
+    accept: 'text/event-stream',
+  };
+  if (host.auth?.bearer) {
+    // Lazy import to avoid the resolver cost on the happy-no-auth path.
+    const { resolveBearerToken } = await import('./cross-host-control-plane-client.js');
+    headers.authorization = `Bearer ${resolveBearerToken(host.auth.bearer, { env: params.env })}`;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), params.timeoutMs);
+  try {
+    const res = await params.fetchImpl(url, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) {
+      const msg = `${res.status} ${res.statusText}`;
+      const err = new Error(msg);
+      (err as Error & { status?: number }).status = res.status;
+      throw err;
+    }
+    const lines: LogSnapshotLine[] = [];
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (lines.length < params.maxLines) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE frames are separated by blank lines. Split on \n\n; keep the
+      // trailing partial in the buffer.
+      const parts = buf.split('\n\n');
+      buf = parts.pop() ?? '';
+      for (const frame of parts) {
+        const parsed = parseSseFrame(frame);
+        if (parsed) lines.push(parsed);
+        if (lines.length >= params.maxLines) break;
+      }
+    }
+    try {
+      await reader.cancel();
+    } catch {
+      // ignore
+    }
+    return lines;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseSseFrame(frame: string): LogSnapshotLine | null {
+  const lines = frame.split('\n').filter((l) => l.length > 0);
+  let event = 'message';
+  let data: string | undefined;
+  for (const l of lines) {
+    if (l.startsWith(':')) continue;
+    if (l.startsWith('event:')) {
+      event = l.slice(6).trim();
+    } else if (l.startsWith('data:')) {
+      data = (data ? `${data}\n` : '') + l.slice(5).trimStart();
+    }
+  }
+  if (event !== 'log' || data === undefined) return null;
+  try {
+    const parsed = JSON.parse(data) as Record<string, unknown>;
+    const ts =
+      typeof parsed.ts === 'number'
+        ? parsed.ts
+        : typeof parsed.timestamp === 'number'
+          ? parsed.timestamp
+          : Date.now();
+    const text =
+      typeof parsed.message === 'string'
+        ? parsed.message
+        : typeof parsed.text === 'string'
+          ? parsed.text
+          : data;
+    const agentId = typeof parsed.agentId === 'string' ? parsed.agentId : undefined;
+    return { agentId, ts, text };
+  } catch {
+    return { agentId: undefined, ts: Date.now(), text: data };
+  }
+}
+
+// ── Helpers for tests ──────────────────────────────────────────────────
+
+/** Exported so tests can assert on the helper array shape. */
+export type { HostTaggedResult } from './cross-host-control-plane-client.js';

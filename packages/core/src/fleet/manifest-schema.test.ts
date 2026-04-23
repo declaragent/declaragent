@@ -114,4 +114,69 @@ describe('fleetManifestSchema', () => {
     const parsed = fleetManifestSchema.parse(data);
     expect(parsed).toEqual(data);
   });
+
+  // ── hosts: block (CONTROL_PLANE_PLAN.md Slice 3, #50) ────────────────
+  test('accepts a hosts[] block for cross-host fan-out', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [{ id: 'a', path: './agents/a' }],
+      hosts: [
+        {
+          name: 'prod-us-east-1',
+          url: 'https://declaragent-a.internal:9464',
+          auth: { bearer: 'env:DECLARA_TOKEN_USE1' },
+          timeoutMs: 5000,
+        },
+        {
+          name: 'prod-eu-west-1',
+          url: 'http://10.0.0.5:9464',
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects duplicate host names', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [],
+      hosts: [
+        { name: 'a', url: 'http://1' },
+        { name: 'a', url: 'http://2' },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects non-URL-safe host names', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [],
+      hosts: [{ name: 'has space', url: 'http://1' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects bogus host url', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [],
+      hosts: [{ name: 'a', url: 'not-a-url' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects unknown keys inside a host entry (strict)', () => {
+    const result = fleetManifestSchema.safeParse({
+      version: 1,
+      name: 'acme',
+      agents: [],
+      hosts: [{ name: 'a', url: 'http://h', region: 'us' }],
+    });
+    expect(result.success).toBe(false);
+  });
 });

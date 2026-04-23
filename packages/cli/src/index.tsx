@@ -32,6 +32,7 @@ import { extensionsList } from './extensions-cli.js';
 import { fleetAdd } from './fleet-add-cli.js';
 import { fleetAuditRpc } from './fleet-audit-rpc-cli.js';
 import { fleetCapabilities, fleetList, fleetValidate } from './fleet-cli.js';
+import { fleetDlqList, fleetEventsList, fleetLogs, fleetPs } from './fleet-cross-host-cli.js';
 import { fleetDeploy } from './fleet-deploy-cli.js';
 import { type GraphFormat, fleetGraph } from './fleet-graph-cli.js';
 import { fleetInit } from './fleet-init-cli.js';
@@ -181,6 +182,10 @@ Usage:
   declaragent fleet validate [--json]
   declaragent fleet capabilities [--json]
   declaragent fleet audit-rpc [--suggest-enable] [--strict] [--json]
+  declaragent fleet ps [--host <name>] [--json]                                # cross-host status fan-out (#50)
+  declaragent fleet events [--host <name>] [--kind <k>] [--since <ms>] [--state circuit-open] [--outcome <k>] [--correlation <id>] [--limit <n>] [--all] [--json]
+  declaragent fleet dlq [--host <name>] [--reason <r>] [--min-attempts <n>] [--since <ms>] [--limit <n>] [--all] [--json]
+  declaragent fleet logs [--host <name>] [--agent <id>] [--max-lines <n>] [--json]
 
   declaragent capabilities gen --peer <id> [--out <dir>]
   declaragent capabilities gen --capabilities <path> [--out <dir>] [--json]
@@ -1025,9 +1030,83 @@ async function runFleetSubcommand(
       ...(json && { json: true }),
     });
   }
+  // Cross-host fan-out verbs (CONTROL_PLANE_PLAN.md Slice 3, #50).
+  if (action === 'ps') {
+    const host = flagValue(rest, '--host');
+    return fleetPs({
+      ...(host !== undefined && { host }),
+      ...(json && { json: true }),
+    });
+  }
+  if (action === 'events') {
+    const host = flagValue(rest, '--host');
+    const kind = flagValue(rest, '--kind');
+    const sinceRaw = flagValue(rest, '--since');
+    const since = sinceRaw !== undefined ? Number.parseInt(sinceRaw, 10) : undefined;
+    const stateRaw = flagValue(rest, '--state');
+    const state: 'circuit-open' | undefined =
+      stateRaw === 'circuit-open' ? 'circuit-open' : undefined;
+    const outcome = flagValue(rest, '--outcome');
+    const correlation = flagValue(rest, '--correlation');
+    const limitRaw = flagValue(rest, '--limit');
+    const limit = limitRaw !== undefined ? Number.parseInt(limitRaw, 10) : undefined;
+    const all = flagSet(rest, '--all');
+    return fleetEventsList({
+      ...(host !== undefined && { host }),
+      ...(kind !== undefined && { kind }),
+      ...(since !== undefined && Number.isFinite(since) && { since: since as number }),
+      ...(state !== undefined && { state }),
+      ...(outcome !== undefined && { outcome }),
+      ...(correlation !== undefined && { correlation }),
+      ...(limit !== undefined && Number.isFinite(limit) && { limit: limit as number }),
+      ...(all && { all: true }),
+      ...(json && { json: true }),
+    });
+  }
+  if (action === 'dlq') {
+    const host = flagValue(rest, '--host');
+    const reason = flagValue(rest, '--reason');
+    const minAttemptsRaw = flagValue(rest, '--min-attempts');
+    const minAttempts =
+      minAttemptsRaw !== undefined ? Number.parseInt(minAttemptsRaw, 10) : undefined;
+    const sinceRaw = flagValue(rest, '--since');
+    const since = sinceRaw !== undefined ? Number.parseInt(sinceRaw, 10) : undefined;
+    const limitRaw = flagValue(rest, '--limit');
+    const limit = limitRaw !== undefined ? Number.parseInt(limitRaw, 10) : undefined;
+    const all = flagSet(rest, '--all');
+    return fleetDlqList({
+      kind: 'dispatch',
+      ...(host !== undefined && { host }),
+      ...(reason !== undefined && { reason }),
+      ...(minAttempts !== undefined &&
+        Number.isFinite(minAttempts) && { minAttempts: minAttempts as number }),
+      ...(since !== undefined && Number.isFinite(since) && { since: since as number }),
+      ...(limit !== undefined && Number.isFinite(limit) && { limit: limit as number }),
+      ...(all && { all: true }),
+      ...(json && { json: true }),
+    });
+  }
+  if (action === 'logs') {
+    const host = flagValue(rest, '--host');
+    const agent = flagValue(rest, '--agent');
+    const follow = flagSet(rest, '-f', '--follow');
+    const maxLinesRaw = flagValue(rest, '--max-lines');
+    const maxLinesPerHost =
+      maxLinesRaw !== undefined ? Number.parseInt(maxLinesRaw, 10) : undefined;
+    return fleetLogs({
+      ...(host !== undefined && { host }),
+      ...(agent !== undefined && { agent }),
+      ...(follow && { follow: true }),
+      ...(maxLinesPerHost !== undefined &&
+        Number.isFinite(maxLinesPerHost) && {
+          maxLinesPerHost: maxLinesPerHost as number,
+        }),
+      ...(json && { json: true }),
+    });
+  }
   process.stderr.write(`unknown fleet subcommand: ${action ?? '(none)'}\n`);
   process.stderr.write(
-    'usage: declaragent fleet <new|add|run|promote|demote|deploy|render|graph|peers|status|list|validate|capabilities|audit-rpc> [options]\n',
+    'usage: declaragent fleet <new|add|run|promote|demote|deploy|render|graph|peers|status|list|validate|capabilities|audit-rpc|ps|events|dlq|logs> [options]\n',
   );
   return 1;
 }
