@@ -152,7 +152,11 @@ describe('recording-provider', () => {
     expect(entry.content).toEqual([{ type: 'text', text: 'hello' }]);
     expect(entry.stopReason).toBe('end_turn');
     expect(entry.model).toBe('claude-opus-4-7');
-    expect(entry.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+    // Cache-token fields are absent on this stub response, but the
+    // `serverTimestamps` capture (backlog #37) is unconditional.
+    expect(entry.usage?.inputTokens).toBe(3);
+    expect(entry.usage?.outputTokens).toBe(2);
+    expect(entry.usage?.serverTimestamps).toBeDefined();
   });
 
   test('recordUserTurn appends a user entry', async () => {
@@ -252,6 +256,279 @@ describe('recording-provider', () => {
     expect(path).not.toContain(':');
     expect(path.endsWith('.jsonl')).toBe(true);
     expect(path).toContain('recorded-2026-04-23T14-15-16-789Z');
+  });
+
+  // ── #36 tool_result capture ──────────────────────────────────────────
+  test('captures tool_result blocks into a dedicated toolResults field (#36)', async () => {
+    const out = join(tmp, 'rec.jsonl');
+    const rec = createRecordingProvider({
+      inner: stubProvider([
+        {
+          stopReason: 'end_turn',
+          usage: { inputTokens: 1, outputTokens: 1 },
+          model: 'claude-opus-4-7',
+          content: [
+            { type: 'text', text: 'tool ran' },
+            {
+              type: 'tool_result',
+              toolUseId: 'call-42',
+              content: 'ok',
+            },
+          ],
+        },
+      ]),
+      outputPath: out,
+    });
+    await rec.complete(
+      { model: 'claude-opus-4-7', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    const entries = readJsonl(out);
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    if (entry?.role !== 'assistant') throw new Error('expected assistant role');
+    // `content` preserves the tool_result — we never strip blocks.
+    expect(entry.content.some((c) => c.type === 'tool_result')).toBe(true);
+    // AND the dedicated toolResults field is populated for the
+    // replay harness to route back into the engine.
+    expect(entry.toolResults).toBeDefined();
+    expect(entry.toolResults?.[0]?.toolUseId).toBe('call-42');
+    expect(entry.toolResults?.[0]?.content).toBe('ok');
+  });
+
+  test('omits toolResults field when no tool_result block is present', async () => {
+    const out = join(tmp, 'rec.jsonl');
+    const rec = createRecordingProvider({
+      inner: stubProvider([
+        {
+          stopReason: 'end_turn',
+          usage: { inputTokens: 1, outputTokens: 1 },
+          model: 'claude-opus-4-7',
+          content: [{ type: 'text', text: 'plain' }],
+        },
+      ]),
+      outputPath: out,
+    });
+    await rec.complete(
+      { model: 'claude-opus-4-7', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    const entries = readJsonl(out);
+    const entry = entries[0];
+    if (entry?.role !== 'assistant') throw new Error('expected assistant role');
+    expect(entry.toolResults).toBeUndefined();
+  });
+
+  test('redacts secrets embedded in tool_result block content', async () => {
+    const out = join(tmp, 'rec.jsonl');
+    const leaked = `ghp_${'c'.repeat(40)}`;
+    const rec = createRecordingProvider({
+      inner: stubProvider([
+        {
+          stopReason: 'end_turn',
+          usage: { inputTokens: 0, outputTokens: 0 },
+          model: 'claude-opus-4-7',
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: 'call-leaky',
+              content: `token ${leaked} returned`,
+            },
+          ],
+        },
+      ]),
+      outputPath: out,
+    });
+    await rec.complete(
+      { model: 'claude-opus-4-7', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    const raw = readFileSync(out, 'utf8');
+    expect(raw).not.toContain(leaked);
+    expect(raw).toContain('<redacted:GitHub PAT>');
+  });
+
+  // ── #37 usage field extensions ──────────────────────────────────────
+  test('persists cacheCreation + cacheRead tokens + server timestamps (#37)', async () => {
+    const out = join(tmp, 'rec.jsonl');
+    const clockValues = [
+      new Date('2026-04-23T12:00:00.000Z'),
+      new Date('2026-04-23T12:00:00.500Z'),
+    ];
+    let i = 0;
+    const rec = createRecordingProvider({
+      inner: stubProvider([
+        {
+          stopReason: 'end_turn',
+          // Cast through unknown so the stub can carry the extended
+          // cache fields the production provider emits.
+          usage: {
+            inputTokens: 10,
+            outputTokens: 20,
+            cacheCreationInputTokens: 500,
+            cacheReadInputTokens: 9000,
+          } as unknown as LLMResponse['usage'],
+          model: 'claude-opus-4-7',
+          content: [{ type: 'text', text: 'ok' }],
+        },
+      ]),
+      outputPath: out,
+      now: () => {
+        // Two calls: firstToken at start, lastToken at end.
+        const v = clockValues[Math.min(i, clockValues.length - 1)];
+        i += 1;
+        if (!v) throw new Error('clock exhausted');
+        return v;
+      },
+    });
+    await rec.complete(
+      { model: 'claude-opus-4-7', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    const entries = readJsonl(out);
+    const entry = entries[0];
+    if (entry?.role !== 'assistant') throw new Error('expected assistant role');
+    expect(entry.usage?.inputTokens).toBe(10);
+    expect(entry.usage?.outputTokens).toBe(20);
+    expect(entry.usage?.cacheCreationInputTokens).toBe(500);
+    expect(entry.usage?.cacheReadInputTokens).toBe(9000);
+    expect(entry.usage?.serverTimestamps?.firstToken).toBe('2026-04-23T12:00:00.000Z');
+    expect(entry.usage?.serverTimestamps?.lastToken).toBe('2026-04-23T12:00:00.500Z');
+  });
+
+  test('maps legacy cacheReadTokens field onto cacheReadInputTokens on write', async () => {
+    // Today's TokenUsage surface exposes `cacheReadTokens`; future
+    // drift to Anthropic's native `cacheReadInputTokens` is captured
+    // structurally so either name lands in the fixture.
+    const out = join(tmp, 'rec.jsonl');
+    const rec = createRecordingProvider({
+      inner: stubProvider([
+        {
+          stopReason: 'end_turn',
+          usage: {
+            inputTokens: 5,
+            outputTokens: 5,
+            cacheReadTokens: 1234,
+          },
+          model: 'claude-opus-4-7',
+          content: [{ type: 'text', text: 'ok' }],
+        },
+      ]),
+      outputPath: out,
+    });
+    await rec.complete(
+      { model: 'claude-opus-4-7', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    const entries = readJsonl(out);
+    const entry = entries[0];
+    if (entry?.role !== 'assistant') throw new Error('expected assistant role');
+    expect(entry.usage?.cacheReadInputTokens).toBe(1234);
+  });
+
+  // ── #38 stable handle + swappable inner ─────────────────────────────
+  test('swapInnerProvider preserves the handle identity + output path (#38)', async () => {
+    const out = join(tmp, 'rec.jsonl');
+    const first = stubProvider([
+      {
+        stopReason: 'end_turn',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        model: 'm1',
+        content: [{ type: 'text', text: 'first' }],
+      },
+    ]);
+    const second = stubProvider([
+      {
+        stopReason: 'end_turn',
+        usage: { inputTokens: 2, outputTokens: 2 },
+        model: 'm2',
+        content: [{ type: 'text', text: 'second' }],
+      },
+    ]);
+    const rec = createRecordingProvider({ inner: first, outputPath: out });
+    const handleId = rec;
+
+    // First complete() goes through `first`.
+    const r1 = await rec.complete(
+      { model: 'x', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    expect(r1.model).toBe('m1');
+
+    // Rotate. The outer object reference stays the same.
+    const prev = rec.swapInnerProvider(second);
+    expect(prev).toBe(first);
+    expect(rec).toBe(handleId);
+    expect(rec.innerProvider).toBe(second);
+    expect(rec.outputPath).toBe(out);
+
+    // Second complete() goes through `second`.
+    const r2 = await rec.complete(
+      { model: 'x', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    expect(r2.model).toBe('m2');
+
+    // Both lines landed in the same file.
+    const entries = readJsonl(out);
+    expect(entries).toHaveLength(2);
+  });
+
+  test('swapInnerProvider mid-turn: in-flight call uses the pre-swap inner', async () => {
+    // Simulate a rebuild that lands mid-turn. The in-flight
+    // complete() promise must not retarget the new inner — that
+    // would fork the transcript across two providers on a single
+    // logical turn.
+    const out = join(tmp, 'rec.jsonl');
+    let release!: () => void;
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
+    const slow: LLMProvider = {
+      name: 'slow',
+      async complete(): Promise<LLMResponse> {
+        await gate;
+        return {
+          stopReason: 'end_turn',
+          usage: { inputTokens: 1, outputTokens: 1 },
+          model: 'slow-m',
+          content: [{ type: 'text', text: 'slow' }],
+        };
+      },
+      async countTokens(): Promise<number> {
+        return 0;
+      },
+    };
+    const fast: LLMProvider = {
+      name: 'fast',
+      async complete(): Promise<LLMResponse> {
+        return {
+          stopReason: 'end_turn',
+          usage: { inputTokens: 1, outputTokens: 1 },
+          model: 'fast-m',
+          content: [{ type: 'text', text: 'fast' }],
+        };
+      },
+      async countTokens(): Promise<number> {
+        return 0;
+      },
+    };
+    const rec = createRecordingProvider({ inner: slow, outputPath: out });
+    const inflight = rec.complete(
+      { model: 'x', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    // Swap inner while the call is awaiting. Release the slow call.
+    rec.swapInnerProvider(fast);
+    release();
+    const r = await inflight;
+    expect(r.model).toBe('slow-m'); // in-flight call uses pre-swap inner
+    // A *new* call after swap hits the fast provider.
+    const r2 = await rec.complete(
+      { model: 'x', system: '', messages: [], tools: [] },
+      new AbortController().signal,
+    );
+    expect(r2.model).toBe('fast-m');
   });
 
   test('round-trip: record with stub provider, then replay yields same step kinds', async () => {

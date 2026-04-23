@@ -557,12 +557,11 @@ export function App(props: AppProps): JSX.Element {
           text: `recording conversation to ${outputPath} (BUILDER_RECORD=1)`,
         });
       } else {
-        // Re-wrap the *new* inner provider when the engine rebuilds.
-        // Reuse the same output path so the JSONL stays contiguous.
-        recordingRef.current = createRecordingProvider({
-          inner: provider,
-          outputPath: recordingRef.current.outputPath,
-        });
+        // Rotate the inner wire without rebuilding the outer handle
+        // (backlog item #38). Any turn-id → fixture bookkeeping on
+        // the outer survives the swap so a mid-turn mode/model
+        // rebuild doesn't drop state the REPL accumulated.
+        recordingRef.current.swapInnerProvider(provider);
       }
       provider = recordingRef.current;
     }
