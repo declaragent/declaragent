@@ -10,6 +10,13 @@ export { Grep } from './grep.js';
 export type { GrepInput, GrepMatch, GrepOutput } from './grep.js';
 export { Read } from './read.js';
 export type { ReadInput, ReadOutput } from './read.js';
+export { createToolRateLimitGate } from './rate-limit-gate.js';
+export type {
+  ToolRateLimitAcquireContext,
+  ToolRateLimitConfig,
+  ToolRateLimitGate,
+  ToolRateLimitGateOptions,
+} from './rate-limit-gate.js';
 export { createSendMessageTool, permissionKeyFor } from './send-message.js';
 export type {
   CreateSendMessageToolDeps,

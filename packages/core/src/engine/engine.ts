@@ -7,6 +7,7 @@ import { shouldEscalate } from '../permission/gate.js';
 import { QuotaExceededError, type QuotaTracker } from '../tenancy/quota.js';
 import { stampTenantId } from '../tenancy/stamp.js';
 import type { TenantContext } from '../tenancy/types.js';
+import type { ToolRateLimitGate } from '../tools/rate-limit-gate.js';
 import type {
   RunAgent,
   RunAgentInput,
@@ -145,6 +146,15 @@ export interface EngineConfig {
    * loop — the permission gate's escalation policy is unchanged.
    */
   quotas?: QuotaTracker;
+  /**
+   * Enterprise Production Plan §3 Item #7. Per-tool token-bucket gate.
+   * When supplied, each tool's `.execute()` is preceded by
+   * `toolRateLimit.acquire(tool.name, ctx)` — capped tools sleep until a
+   * token frees; uncapped tools pass through with zero overhead. Audit
+   * emission is the gate's responsibility; the engine only supplies the
+   * tenant + session + correlation context.
+   */
+  toolRateLimit?: ToolRateLimitGate;
 }
 
 export interface Engine {
@@ -229,6 +239,7 @@ export function createEngine(config: EngineConfig): Engine {
     bus,
     tenant,
     quotas,
+    toolRateLimit,
     logger = NOOP_LOGGER,
   } = config;
   const maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -474,6 +485,26 @@ export function createEngine(config: EngineConfig): Engine {
                 continue;
               }
               throw err;
+            }
+          }
+
+          // Enterprise Production Plan §3 Item #7 — per-tool rate limit
+          // gate. Fires BEFORE `.execute()`. Uncapped tools return 0
+          // immediately so the hot path is free. Audit emission (for
+          // waits > 1s) lives inside the gate. Placed after permission
+          // + quota so a denied call doesn't burn a token.
+          if (toolRateLimit) {
+            try {
+              await toolRateLimit.acquire(tool.name, {
+                tenantId: tenant?.id ?? 'default',
+                sessionId: session.id,
+                ...(input.causedBy !== undefined && { correlationId: input.causedBy }),
+              });
+            } catch (err) {
+              turnLogger.warn('tool.rate_limit.error', {
+                toolName: tool.name,
+                message: err instanceof Error ? err.message : String(err),
+              });
             }
           }
 

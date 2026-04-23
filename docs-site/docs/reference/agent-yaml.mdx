@@ -51,6 +51,56 @@ tools:
 
 Full examples for every template live under [`templates/`](https://github.com/declaragent/declaragent/tree/main/templates) in the repo.
 
+## `tools.rateLimit` — per-tool throttle
+
+*Added 0.6.x (Enterprise Production Plan §3 Item #7).*
+
+The provider-level limiter caps how fast Declaragent talks to the LLM.
+That's not enough for a tool — especially `Bash`, which can shell out to
+`curl` and hammer a downstream API at whatever rate the LLM's tool-use
+loop can generate. `tools.rateLimit` adds a per-tool token bucket that
+fires **before** each invocation of `tool.execute()`. When the bucket is
+empty, the engine sleeps cooperatively until a token frees; the LLM turn
+stays alive and the next `tool_use` block in the same response simply
+waits its turn.
+
+```yaml
+name: concierge
+model: claude-sonnet-4-5
+systemPrompt: |
+  You are a careful concierge. Prefer Read/Grep over Bash.
+tools:
+  defaults:
+    - Read
+    - Grep
+    - Bash
+  rateLimit:
+    # Cap shell execution to 1 call/sec, no burst. A 10-call burst
+    # through this tool will take ~9 seconds end-to-end.
+    Bash:
+      rps: 1
+    # MCP tool names are namespaced `mcp__<server>__<tool>`.
+    mcp__github__list_issues:
+      rps: 5
+      burst: 10
+```
+
+**Fields.**
+
+| Field | Type | Required? | Description |
+| --- | --- | --- | --- |
+| `rps` | `number` (`> 0`) | yes | Steady-state rate in calls per second. Fractional values accepted (`0.5` = one call every two seconds). |
+| `burst` | `number` (`> 0`) | no | Max calls absorbed without throttling. Defaults to `rps`. Set to `2 * rps` for the classic token-bucket "1-second absorb" pattern. |
+
+**Observability.**
+- Every stall increments `declaragent_tool_rate_limit_waits_total{agent,tool}` and adds its observed wait to `declaragent_tool_rate_limit_wait_ms{agent,tool}` on the `/metrics` endpoint.
+- Waits that exceed 1 s emit a `rate_limited` audit record on the hash chain (tenant id, session id, tool name, configured rps/burst, observed wait). Short burst-absorption waits are silent to avoid chain bloat.
+
+**Scope.**
+- Tools not listed under `rateLimit` bypass the gate entirely — no overhead for unconfigured tools.
+- Per-user / per-tenant ceilings are **not** yet supported; see Enterprise Production Plan #5 multi-tenant quota work.
+- Dynamic rate adjustment based on 429 response headers is **not** supported; set a conservative `rps` up front.
+
 ## Fields documented post-slice 8
 
 The generated reference will additionally document:
