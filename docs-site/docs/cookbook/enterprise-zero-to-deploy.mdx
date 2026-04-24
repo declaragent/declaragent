@@ -1,657 +1,543 @@
 ---
 id: enterprise-zero-to-deploy
-title: Enterprise — zero to deployed demo (~90 min)
+title: Enterprise — zero to deployed, the Declaragent way (~60 min)
 sidebar_label: Enterprise — zero to deploy
 ---
 
-# Enterprise — zero to a deployed demo, end to end
+# Enterprise — zero to deployed, the Declaragent way
 
-A single, runnable walkthrough that takes you from an empty directory to a two-agent fleet deployed on a local k3d cluster via ArgoCD, with every enterprise control wired in: Vault-backed secrets, per-tool rate limits, peer auth, hash-chained audit shipped to Elastic, OTel + Prometheus + Grafana, MCP supervisor, control-plane bearer auth, cross-host fan-out, and the GitOps render path.
+The point of Declaragent isn't "here's another YAML file." It's that **you describe what you want in English, Declaragent writes the YAML.** The REPL you talk to is itself an agent — same runtime, same tools, same audit chain, different system prompt — and its job is to scaffold, configure, and operate your fleet.
 
-This page replaces nothing — each topic has a focused recipe. Use this when you want the **integrated story**: an actual demo a platform team can stand up in an afternoon and say "yes, this clears procurement."
+This walkthrough takes an empty directory to a two-agent fleet deployed to production, with every step driven through conversation. You'll hand-write almost nothing. The only times you'll reach for a file editor are when you want to peek at what the builder just wrote.
 
-## What you'll build
+**Time:** ~60 min end-to-end. ~30 if you already have Docker and an Anthropic key.
 
-```
-                                 ┌────────────────────────────────────┐
-                                 │  k3d cluster (local kind/k3s)      │
-                                 │                                    │
-   declaragent fleet render ───▶ │  ArgoCD Application                │
-   (Helm chart in git)           │     ↓                              │
-                                 │  Deployment: orders-concierge      │
-                                 │  Deployment: orders-pr-reviewer    │
-                                 │  ServiceMonitor (×2)               │
-                                 │  ExternalSecret (×2) ◀─── Vault    │
-                                 │                                    │
-                                 │  /metrics ─────▶ Prometheus ───┐   │
-                                 │  /audit ───────▶ Elastic       │   │
-                                 │  OTLP ────────▶ Jaeger ────────┤   │
-                                 └─────────────────────────────────┼──┘
-                                                                   ▼
-                                                                Grafana
-                                                          (importable JSON)
-```
+## What you'll actually build
 
-By the end you'll exercise:
+A two-agent **orders** fleet:
 
-- ✅ Git-versioned `agent.yaml` + `fleet.yaml` (Pillar 1)
-- ✅ GitOps render → ArgoCD reconcile (Pillar 2)
-- ✅ Two agents communicating over agent-RPC (Pillar 3)
-- ✅ MCP supervisor + per-tool rate limits + circuit breakers (Pillar 4)
-- ✅ Hash-chained audit chain → Elastic SIEM
-- ✅ Control-plane bearer auth on `/metrics`, `/events`, `/audit`, `/dlq`, `/logs`
-- ✅ Cross-host fan-out across two daemons
-- ✅ Vault-backed secret resolver with rotation
-- ✅ Grafana dashboard with live alerts
-- ✅ Failure injection: circuit trip, DLQ requeue, audit-chain tamper detection
+- **`concierge`** — webhook-triggered, delegates to peers, posts results to Slack.
+- **`pr-reviewer`** — typed capability `review-pr`, invoked over agent-RPC from concierge.
 
-**Time:** ~90 min from a clean machine. ~45 min if Docker Desktop, k3d, and helm are already installed.
+Plus, along the way: Vault-backed secrets, OTel tracing, hash-chained audit shipped to Elastic, a GitHub MCP server, the `@declaragent/plugin-github` plugin, per-tool rate limits, control-plane bearer auth, the `/fleet graph` topology render, regression fixtures for the builder conversation itself, and a Dockerfile + Cloud Run spec the CLI auto-generates from your `agent.yaml`.
+
+**Zero YAML written by hand.** You'll hit `/yes` a lot.
 
 ## Prerequisites
 
 | Tool | Why | Install |
 | --- | --- | --- |
-| Bun ≥ 1.1 | Runtime + package manager | `curl -fsSL https://bun.sh/install \| bash` |
-| Docker (or Podman) | Local infra | Docker Desktop |
-| `k3d` ≥ 5.6 | Local Kubernetes | `brew install k3d` |
-| `kubectl` | Cluster access | `brew install kubectl` |
-| `helm` ≥ 3.14 | Install ArgoCD + ESO | `brew install helm` |
-| `jq` | JSON inspection | `brew install jq` |
-| Anthropic API key | LLM provider for the agents | `https://console.anthropic.com` |
+| Bun ≥ 1.1 | Runtime | `curl -fsSL https://bun.sh/install \| bash` |
+| Docker | Local Vault + Elastic + Grafana stack | Docker Desktop |
+| Anthropic API key | The LLM provider the agents use | [console.anthropic.com](https://console.anthropic.com) |
+| A terminal that supports Ink TUI | The REPL's UI | Any modern terminal |
 
-You'll also need an `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` — this demo uses Anthropic directly.
+Optional (for the deploy step): a GCP project with `gcloud` CLI, or a Kubernetes cluster + ArgoCD.
 
-## Layout we'll build
-
-```
-acme-orders/
-├── docker-compose.yml             # Vault, Kafka, OTel, Prometheus, Grafana, Jaeger, Elastic
-├── secrets.yaml                   # Declaragent secret-provider config (Vault + env)
-├── fleet.yaml                     # Two agents + hosts[] for cross-host
-├── rpc-peers.yaml                 # Peer table — memory locally, kafka in prod
-├── agents/
-│   ├── concierge/
-│   │   ├── agent.yaml             # tools, rateLimit, audit.export, mcp.supervised
-│   │   ├── event-sources.yaml
-│   │   └── skills/delegate.md
-│   └── pr-reviewer/
-│       ├── agent.yaml
-│       ├── capabilities.yaml      # typed peer capability schema
-│       └── skills/review-pr.md
-├── deploy/
-│   ├── chart/                     # output of `declaragent fleet render`
-│   ├── argocd-application.yaml
-│   └── external-secrets.yaml
-├── observability/
-│   ├── prometheus.yml
-│   ├── otel-collector.yaml
-│   └── grafana-dashboards/
-└── .env                           # API keys + Vault token (gitignored)
-```
-
-## Step 1 — Stand up the local dependency stack (~5 min)
-
-Create `acme-orders/` and drop in this `docker-compose.yml`. It bundles every external the demo touches:
-
-```yaml
-# docker-compose.yml
-services:
-  vault:
-    image: hashicorp/vault:1.18
-    container_name: acme-vault
-    cap_add: [IPC_LOCK]
-    environment:
-      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
-    ports: ["8200:8200"]
-
-  redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.2.1
-    container_name: acme-redpanda
-    command:
-      - redpanda
-      - start
-      - --smp=1
-      - --memory=1G
-      - --reserve-memory=0M
-      - --overprovisioned
-      - --node-id=0
-      - --check=false
-      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
-      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
-    ports: ["19092:19092"]
-    healthcheck:
-      test: ["CMD", "rpk", "cluster", "health"]
-      interval: 5s
-      retries: 10
-
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
-    container_name: acme-elastic
-    environment:
-      discovery.type: single-node
-      xpack.security.enabled: "false"
-      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
-    ports: ["9200:9200"]
-
-  prometheus:
-    image: prom/prometheus:v2.54.1
-    container_name: acme-prometheus
-    volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=7d
-    ports: ["9090:9090"]
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.108.0
-    container_name: acme-otel
-    command: ["--config=/etc/otel.yaml"]
-    volumes:
-      - ./observability/otel-collector.yaml:/etc/otel.yaml:ro
-    ports: ["4318:4318"]   # OTLP HTTP
-    depends_on: [jaeger]
-
-  jaeger:
-    image: jaegertracing/all-in-one:1.61
-    container_name: acme-jaeger
-    environment: { COLLECTOR_OTLP_ENABLED: "true" }
-    ports: ["16686:16686", "4317:4317"]
-
-  grafana:
-    image: grafana/grafana:11.2.0
-    container_name: acme-grafana
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    ports: ["3000:3000"]
-    depends_on: [prometheus]
-```
+## Step 1 — Install and authenticate (~1 min)
 
 ```bash
-mkdir -p acme-orders/observability && cd acme-orders
-# (paste docker-compose.yml here)
-mkdir -p observability
-cat > observability/prometheus.yml <<'EOF'
-global: { scrape_interval: 15s }
-scrape_configs:
-  - job_name: declaragent
-    static_configs:
-      - targets: ['host.docker.internal:9464', 'host.docker.internal:9465']
-EOF
-cat > observability/otel-collector.yaml <<'EOF'
-receivers:
-  otlp:
-    protocols: { http: { endpoint: 0.0.0.0:4318 } }
-exporters:
-  otlp/jaeger: { endpoint: jaeger:4317, tls: { insecure: true } }
-service:
-  pipelines:
-    traces: { receivers: [otlp], exporters: [otlp/jaeger] }
-EOF
-
-docker compose up -d
+bun add -g @declaragent/cli@latest
+declaragent auth login anthropic
 ```
 
-Smoke-check:
+The `auth login` flow prompts interactively and persists the key to `~/.declaragent/config.json`. You will never paste an API key into a YAML file in this walkthrough.
+
+## Step 2 — Meet the builder (~1 min)
 
 ```bash
-curl -s http://localhost:8200/v1/sys/health | jq '.initialized,.sealed'   # true, false
-curl -s http://localhost:9200 | jq '.cluster_name'                         # "docker-cluster"
-curl -s http://localhost:9090/-/healthy                                    # "Prometheus Server is Healthy."
+mkdir orders && cd orders
+declaragent
 ```
 
-## Step 2 — Seed Vault with one real secret (~1 min)
+The REPL boots:
+
+```
+Declaragent v0.7.6 (provider: anthropic, model: claude-opus-4-7, mode: default)
+Type a request to get started, or /help for slash commands.
+
+>
+```
+
+That prompt is an agent. It has `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, the builder-toolkit tools (`DeclaraProposeChange`, `DeclaraApplyChange`, `DeclaraAddSkill`, `DeclaraAddSource`, `DeclaraAddChannel`, `DeclaraAddPeer`, `DeclaraAddSecret`, `DeclaraAddMCP`, `DeclaraAddPlugin`, `DeclaraFleetAdd`, `DeclaraAuthPlaybook`, `DeclaraAuditVerify`, `DeclaraEventsTail`, `DeclaraFleetStatus`, `DeclaraDlqShow`), and the full CLI via `Bash`. It writes no files until you `/yes` a proposal.
+
+Try a few slash commands before starting:
+
+```
+> /help            # list every slash command
+> /rules           # show current permission gate + any pre-authorised patterns
+> /scope           # the directory the builder is allowed to write into
+> /cost            # token ledger so far (in / out / cache / $)
+```
+
+## Step 3 — Scaffold the fleet (conversationally, ~2 min)
+
+```
+> I want a fleet with two agents: a concierge that routes user requests
+  over Slack, and a pr-reviewer that reviews GitHub PRs on request.
+
+Builder:
+  Before I scaffold, two things:
+  1. Do you want them to share a fleet (rolling deploys + peer RPC) or
+     stand alone? (fleet is standard for this shape)
+  2. What kicks the concierge off — a Slack app, an HTTP webhook, or both?
+
+> Fleet please. Slack for now; we'll add webhooks later.
+
+Builder:
+  Proposing. The fleet-starter template gives us exactly this shape —
+  concierge as RPC client, pr-reviewer as RPC server with a typed
+  `review-pr` capability, memory transport for local dev (swap to
+  Kafka in prod).
+
+  Proposal pr_01 — Scaffold fleet-starter with Slack concierge
+    1. [runCommand] declaragent init --fleet orders --template fleet-starter
+       preview:
+         orders/fleet.yaml
+         orders/rpc-peers.yaml
+         orders/agents/concierge/agent.yaml
+         orders/agents/concierge/skills/delegate.md
+         orders/agents/pr-reviewer/{agent.yaml,capabilities.yaml,skills/review-pr.md}
+    2. [addChannel] Slack Socket Mode on concierge
+       preview:
+         channels/slack.yaml (new)
+         agent.yaml: channels: [+ slack]
+
+  Type /yes to apply, /no to cancel, or /edit <n> <replacement> to revise step n.
+
+> /yes
+```
+
+What just happened:
+
+- `DeclaraProposeChange` registered proposal `pr_01` and blocked the model's turn.
+- The REPL listener rendered the proposal.
+- You typed `/yes` — the registry resolves the proposal to `{ confirmed: true }`.
+- The model's next turn gets `{ proposalId: "pr_01", confirmed: true }` and calls `DeclaraApplyChange`, which runs the `declaragent init` command, then invokes `DeclaraAddChannel` for the Slack step.
+
+The files exist now. Verify:
+
+```
+> /diff
+```
+
+`/diff` runs `git diff` scoped to the current scope root. The builder **committed** nothing — it just wrote. You can roll back any apply with `/undo`, which does a scoped `git checkout` to the HEAD the apply captured before writing.
+
+## Step 4 — Refine a proposal without restarting (~1 min)
+
+The `/edit` flow is the killer: revise a specific step before confirming.
+
+```
+> Also add a skill to the concierge that summarises support tickets.
+
+Builder:
+  Proposal pr_02 — Add ticket-summary skill to concierge
+    1. [addSkill] agents/concierge/skills/ticket-summary.md
+       preview:
+         ---
+         name: summarise-ticket
+         triggers: [support_ticket]
+         ---
+         When a support_ticket event arrives, fetch the ticket body,
+         extract customer + severity + reproduction, reply in <= 6 lines.
+
+  Type /yes to apply, /no to cancel, or /edit <n> <replacement> to revise step n.
+
+> /edit 1 Use the Zendesk MCP server, not a raw HTTP call
+
+Builder:
+  Updated step 1. Re-proposing:
+  Proposal pr_02 — Add ticket-summary skill (Zendesk MCP)
+    1. [addSkill] agents/concierge/skills/ticket-summary.md
+       preview:
+         ---
+         name: summarise-ticket
+         triggers: [support_ticket]
+         ---
+         Use `mcp__zendesk__get_ticket` with the event's ticket_id to
+         fetch body + history. Extract customer, severity, repro. Keep
+         replies ≤ 6 lines.
+    2. [addMCP] Zendesk MCP server
+       preview:
+         agent.yaml: mcp.servers.zendesk
+           command: npx
+           args: ["@zendesk/mcp-server"]
+           transport: stdio
+       (requires ZENDESK_TOKEN — I'll wire a secret ref next)
+
+> /yes
+```
+
+The builder added a second step on its own because the refined step 1 needed the Zendesk MCP server to exist. This is the plan-level interaction the conversational-builder fixture tests in the repo exercise on every CI run.
+
+## Step 5 — Wire secrets via Vault (conversationally, ~3 min)
+
+Start a local Vault for the demo:
 
 ```bash
-export VAULT_ADDR=http://localhost:8200
-export VAULT_TOKEN=dev-root-token
-
-docker exec acme-vault vault secrets enable -version=2 -path=secret kv 2>/dev/null || true
-docker exec acme-vault vault kv put secret/orders/anthropic-key \
-  value="$ANTHROPIC_API_KEY"
-
-docker exec acme-vault vault kv get -format=json secret/orders/anthropic-key | jq '.data.data'
+# Run this from a second terminal, OR let the builder propose it
+docker run --rm -d --name orders-vault -p 8200:8200 \
+  -e VAULT_DEV_ROOT_TOKEN_ID=dev-root-token hashicorp/vault:1.18
 ```
 
-## Step 3 — Scaffold the fleet (~2 min)
+Back in the REPL:
 
-```bash
-bun add -g @declaragent/cli@latest         # or `npx @declaragent/cli`
-declaragent init --template fleet-starter --name orders --no-interactive
+```
+> Wire Vault for secrets. The Anthropic key and the Zendesk token should
+  both come from Vault; use dev-root-token locally.
+
+Builder:
+  Proposal pr_03 — Vault secret provider + two references
+    1. [editFile] secrets.yaml (new)
+       preview:
+         version: 1
+         default: vault-dev
+         providers:
+           vault-dev:
+             type: vault
+             address: ${env:VAULT_ADDR}
+             auth:
+               method: token
+               token: ${env:VAULT_TOKEN}
+             defaultTtlMs: 300000
+    2. [addSecret] anthropic-key → ${vault:secret/data/orders/anthropic-key#value}
+       preview:
+         agent.yaml (concierge, pr-reviewer): provider.apiKey rewrite
+         .env.example: + VAULT_ADDR, + VAULT_TOKEN
+    3. [addSecret] zendesk-token → ${vault:secret/data/orders/zendesk-token#value}
+       preview:
+         agent.yaml (concierge): mcp.servers.zendesk.env.ZENDESK_TOKEN
+    4. [runCommand] Seed Vault with both KV v2 values
+       preview:
+         vault kv put secret/orders/anthropic-key value=...  (reads $ANTHROPIC_API_KEY)
+         vault kv put secret/orders/zendesk-token value=...  (prompts if unset)
+
+> /yes
 ```
 
-You get the canonical fleet-starter shape: `concierge` (RPC client) + `pr-reviewer` (RPC server with a typed `review-pr` capability), peer table over the in-memory transport, and a `fleet.yaml` ready to extend.
+`DeclaraAddSecret` is interesting under the hood: it derives a sensible env-var name (`ANTHROPIC_API_KEY`, `ZENDESK_TOKEN`), appends it to `.env.example`, and rewrites the relevant `agent.yaml` to point at the `${vault:...}` ref. The secret value itself never enters the transcript — **secret redaction** runs before the model sees any text (see `packages/cli/src/builder/secret-guard.ts`; `BuilderSecretLeakError` is raised if a probable-secret slips through a `Write`).
 
-## Step 4 — Wire the secrets resolver (~3 min)
+Supported providers (ready to use in the same `secrets.yaml`): **vault**, **aws-sm**, **gcp-sm**, **k8s**, **env**. Rotation ships as a first-class verb:
 
-Drop `secrets.yaml` at the fleet root:
-
-```yaml
-# secrets.yaml — bootstrap layer; can't reference ${secret:...}
-version: 1
-default: vault-dev
-providers:
-  vault-dev:
-    type: vault
-    address: ${env:VAULT_ADDR}
-    auth:
-      method: token
-      token: ${env:VAULT_TOKEN}
-    defaultTtlMs: 300000
-  env-fallback:
-    type: env
-rotationMonitor:
-  enabled: true
-  checkIntervalMs: 3600000
-  warnAfterDays: 90
-  errorAfterDays: 180
+```
+> /bash declaragent secrets rotate '${vault:secret/data/orders/anthropic-key#value}' \
+        --reason "90-day schedule"
 ```
 
-In production you'd swap `method: token` for `method: approle` with `${env:VAULT_ROLE_ID}` / `${env:VAULT_SECRET_ID}`. Vault, AWS Secrets Manager, GCP Secret Manager, Kubernetes Secrets, and env are the five shipped providers.
+## Step 6 — Install a plugin and an MCP server (conversationally, ~2 min)
 
-Then in `agents/concierge/agent.yaml`, point the model API key at Vault:
+```
+> The pr-reviewer needs to comment on GitHub PRs. Install the github plugin
+  and wire a GitHub MCP server for repo read-only access.
 
-```yaml
-provider:
-  kind: anthropic
-  apiKey: ${vault:secret/data/orders/anthropic-key#value}
+Builder:
+  Proposal pr_04 — GitHub plugin + MCP server on pr-reviewer
+    1. [addPlugin] @declaragent/plugin-github
+       preview:
+         bun add @declaragent/plugin-github
+         agents/pr-reviewer/agent.yaml: plugins: [+ '@declaragent/plugin-github']
+    2. [addMCP] github (HTTP transport, OAuth PKCE)
+       preview:
+         agent.yaml: mcp.servers.github
+           transport: http
+           url: https://mcp.github.com
+           oauth: { pkce: true, scopes: [repo:status, pull_requests:read] }
+    3. [addSecret] github-app-token → ${vault:secret/data/orders/github-app#token}
+
+> /yes
 ```
 
-Verify resolution:
+**`DeclaraAddPlugin`** runs `bun add` and appends the package to `agent.yaml#plugins`. **`DeclaraAddMCP`** validates the MCP config shape (stdio / http / sse), wires the OAuth PKCE flow, and re-registers tools on reconnect via the MCP supervisor (`mcp.supervised: all` is the default — see `load-agent.ts:270`).
 
-```bash
-declaragent secrets describe '${vault:secret/data/orders/anthropic-key#value}' --json
-declaragent secrets list --provider vault-dev --json
+## Step 7 — Inspect the fleet (~1 min)
+
+Before running anything, ask the builder for a topology picture:
+
+```
+> /fleet graph
 ```
 
-## Step 5 — Add per-tool rate limits + MCP supervisor (~2 min)
+The REPL prints Mermaid inline:
 
-Edit `agents/concierge/agent.yaml`:
-
-```yaml
-tools:
-  defaults:
-    - RequestAgent
-    - Bash
-    - WebFetch
-  # Per-tool rps + burst (ToolRateLimitGate). Omitted tools are uncapped.
-  rateLimit:
-    Bash:        { rps: 2, burst: 4 }
-    WebFetch:    { rps: 5 }              # burst defaults to rps
-    RequestAgent: { rps: 10, burst: 20 }
-
-mcp:
-  supervised: all                          # default; ping-health + circuit + restart
-  # supervised: ['github']                 # allow-list one server only
-  # supervised: none                       # raw client (debug only)
+```mermaid
+graph LR
+  concierge-->|RequestAgent<br/>memory::review-pr|pr-reviewer
+  concierge-->|channel: slack|slack_out([slack])
+  webhook_in([webhook])-->|source|concierge
 ```
 
-Per-tool waits show up as `declaragent_tool_rate_limit_waits_total{tool=...}` — the [Grafana dashboard](/cookbook/grafana-dashboard-import) row 3 graphs them.
+Swap format with `/fleet graph dot` or `/fleet graph json`. Paste the Mermaid into a PR description; drop the `dot` output into graphviz. Great for architecture reviews.
 
-## Step 6 — Wire the SIEM exporter (~3 min)
+Also:
 
-Add to **both** `agents/concierge/agent.yaml` and `agents/pr-reviewer/agent.yaml`:
-
-```yaml
-audit:
-  export:
-    kind: elastic
-    baseUrl: http://localhost:9200
-    index: declaragent-audit
-    auth:
-      kind: basic
-      username: elastic
-      password: changeme              # local-only; for prod use ${vault:...}
-    batchSize: 100
-    intervalMs: 5000
+```
+> /bash declaragent fleet validate               # schema + cross-ref
+> /bash declaragent capabilities pr-reviewer     # typed JSON schema
 ```
 
-When you bring the daemon up, the export loop will start streaming hash-chained audit rows to Elastic with back-pressure + adaptive batching ([recipe](/cookbook/siem-audit-export)). Splunk and Datadog use the same shape — swap `kind:` and the vendor-specific keys.
+`capabilities` emits the typed request/response schemas declared in `capabilities.yaml`. Fleet-level validation checks that every peer uses them correctly — type safety without code.
 
-## Step 7 — Lock down the control plane (~2 min)
+## Step 8 — Run the fleet locally (~1 min)
 
-Bind `/metrics`, `/audit`, `/events`, `/dlq`, `/logs` behind a bearer token. Add to each `agent.yaml`:
+The builder **cannot** run `declaragent deploy` or `declaragent fleet deploy` — both are in `DEFAULT_DEPLOY_DENY_RULES` (`packages/cli/src/builder/index.ts:156`). It can start and stop the local daemon:
 
-```yaml
-controlPlane:
-  bind: 0.0.0.0:9464                  # required so Prometheus can scrape from outside loopback
-  auth:
-    enabled: true
-    provider: oidc
-    issuer: https://auth.acme.example
-    audience: declaragent-control-plane
-    scopes: [declaragent:read]
-    allowLoopback: true               # local CLI bypass; flip to false for zero-trust
+```
+> Start the fleet.
+
+Builder:
+  Proposal pr_05 — Start local daemon
+    1. [runCommand] declaragent fleet run --detach
+       preview: binds :8787 (webhook), :9464 (metrics), spawns both agents
+
+> /yes
 ```
 
-For this demo (no IdP), set `enabled: false` and rely on `bind: 127.0.0.1:9464` (the default). The schema is identical for production — just swap `enabled: false` → `true` once you've stood up an IdP. See [`/reference/control-plane`](/reference/control-plane).
-
-## Step 8 — OTel + Prometheus binding (~1 min)
-
-Drop a `.env` at the fleet root:
-
-```dotenv
-ANTHROPIC_API_KEY=sk-ant-...
-VAULT_ADDR=http://localhost:8200
-VAULT_TOKEN=dev-root-token
-
-# OTel: traces flow to the local collector, on to Jaeger
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-OTEL_SERVICE_NAME=declaragent-orders
-
-# Prometheus: bind /metrics on a known port
-DECLARAGENT_METRICS_PORT=9464
-```
-
-## Step 9 — Run the fleet (~1 min)
-
-```bash
-declaragent fleet validate              # schema + cross-ref check
-declaragent fleet run                   # foreground; ^C stops everything
-```
-
-In another terminal:
+From a second shell (or from the builder, via `DeclaraEventsTail`):
 
 ```bash
 declaragent ps
-declaragent events list --kind tool_call --limit 5
-declaragent audit verify --json | jq '.ok,.checked'
+declaragent fleet status
+curl -sX POST http://localhost:8787/webhook/concierge \
+  -H 'Content-Type: application/json' \
+  -d '{"user":"demo","text":"review https://github.com/declaragent/declaragent/pull/61"}'
+declaragent events list --correlation <id-from-response>
 ```
 
-Open:
+Or stay in the REPL:
 
-- **Prometheus** http://localhost:9090 — query `declaragent_audit_export_acked_total`
-- **Jaeger** http://localhost:16686 — pick service `declaragent-orders`, see end-to-end spans
-- **Elastic** `curl http://localhost:9200/declaragent-audit/_count`
-- **Grafana** http://localhost:3000 (admin/admin) — import the dashboard next
+```
+> Tail events for the last request.
 
-## Step 10 — Import the Grafana dashboard (~2 min)
+Builder: [calls DeclaraEventsTail with {last: 20}]
+  ts                 kind                 agent        capability
+  2026-04-24T…       webhook_received     concierge    -
+  2026-04-24T…       tool_call            concierge    RequestAgent
+  2026-04-24T…       rpc_request_sent     concierge    review-pr
+  2026-04-24T…       rpc_request_received pr-reviewer  review-pr
+  2026-04-24T…       tool_call            pr-reviewer  mcp__github__...
+  2026-04-24T…       rpc_response_sent    pr-reviewer  review-pr
+  2026-04-24T…       channel_send         concierge    slack
+```
+
+## Step 9 — Safety nets the builder runs under
+
+The five things worth knowing before you run the builder against a real repo:
+
+### a. Scope root sandbox
+
+The builder's `Write` / `Edit` / `Bash` are sandboxed to a **scope root** (default: the agent or fleet directory it detected). Files outside the scope root raise `BuilderScopeError`. `/scope` prints the current root. Passing `confirmOutsideScope: true` on a tool call lets it escape, but the user sees that in the proposal preview.
+
+### b. Plan mode
+
+```
+> /mode plan
+```
+
+or press `Shift-Tab` to cycle permission modes. In **plan** mode, `DeclaraProposeChange` registers proposals but `DeclaraApplyChange` short-circuits — nothing gets written. Useful for "show me what you *would* do."
+
+### c. Undo
+
+```
+> /undo
+```
+
+Reverts the last applied proposal via a scoped `git checkout` to the HEAD the apply captured before writing (`packages/cli/src/builder/undo.ts`). Requires git + a clean scope root at apply time.
+
+### d. History
+
+```
+> /history 10
+```
+
+Renders the last 10 builder actions from the hash-chained audit — summary, tools invoked, paths written, timestamps. Same source of truth as `declaragent audit verify`. This isn't speculative telemetry; it's the same rows that get exported to your SIEM.
+
+### e. Deploy deny rules
+
+The builder's permission gate denies `Bash:declaragent deploy*` and `Bash:declaragent fleet deploy*` by default. Only a human can push to production. If your org wants even tighter gating (e.g., "no secret rotations in business hours"), stack rules via `settings.json` or `/mode ask` (confirm every tool call).
+
+## Step 10 — Enterprise hardening (conversationally, ~5 min)
+
+All the enterprise knobs are one conversation away.
+
+```
+> Before we ship:
+  1. export hash-chained audit to Elastic at http://localhost:9200
+  2. per-tool rate limits: Bash rps=2 burst=4, RequestAgent rps=10 burst=20
+  3. bind /metrics + /audit behind OIDC (skip the actual IdP for now; just
+     flip the schema flag)
+  4. enable mcp.supervised on both agents (should already be default)
+  5. prep 0.8.0 zero-trust — run `fleet audit-rpc --strict` and apply
+     any suggested auth blocks
+
+Builder:
+  Proposal pr_06 — Enterprise hardening (5 items)
+    1. [editFile] agents/{concierge,pr-reviewer}/agent.yaml
+       preview:
+         audit:
+           export:
+             kind: elastic
+             baseUrl: http://localhost:9200
+             index: declaragent-audit
+             auth: { kind: basic, username: elastic, password: ${env:ES_PASS} }
+             batchSize: 100
+             intervalMs: 5000
+    2. [editFile] agents/concierge/agent.yaml
+       preview:
+         tools:
+           rateLimit:
+             Bash: { rps: 2, burst: 4 }
+             RequestAgent: { rps: 10, burst: 20 }
+    3. [editFile] agents/*/agent.yaml
+       preview:
+         controlPlane:
+           auth:
+             enabled: true
+             provider: oidc
+             issuer: https://auth.acme.example
+             audience: declaragent-control-plane
+             allowLoopback: true
+    4. [editFile] agents/*/agent.yaml
+       preview:
+         mcp: { supervised: all }   # already default; being explicit
+    5. [runCommand] declaragent fleet audit-rpc --strict --json
+       preview: exits non-zero if any peer is missing auth — CI gate
+
+> /yes
+```
+
+The builder executed step 5 after 1-4 wrote. If there were gaps, it would loop with a follow-up proposal pre-populated with the `--suggest-enable` diffs. See the focused recipes: [SIEM export](/cookbook/siem-audit-export), [zero-trust migration](/cookbook/zero-trust-rpc-migration).
+
+## Step 11 — Record the conversation as a CI regression fixture (~1 min)
+
+The builder's job is to produce correct YAML. How do you guarantee that behavior doesn't regress when you upgrade Claude or tune the system prompt? **Record the conversation** and replay it in CI.
 
 ```bash
-# From the declaragent repo (or a clone)
+BUILDER_RECORD=1 declaragent
+```
+
+Every user turn, every assistant response, every tool call, and every tool result is appended as JSONL to `<fixturesDir>/recorded-<iso-timestamp>.jsonl` — written with `fsync`, so a crash mid-conversation still yields a durable fixture (`packages/cli/src/builder/recording-provider.ts:397`).
+
+Check one in:
+
+```bash
+mv ~/.declaragent/fixtures/recorded-*.jsonl tests/fixtures/scaffold-fleet.jsonl
+```
+
+Then in CI, the repo's existing fixture-replay test (`packages/cli/src/builder/__tests__/`) walks the fixture turn-by-turn, asserts the assistant's tool calls match, and fails the build if the model starts proposing different steps. No live LLM call needed — the fixture captures the full decision trace. This is how the project's 34 shipped builder-backlog items stay green.
+
+## Step 12 — Observe (~3 min)
+
+### Grafana dashboard
+
+A single JSON imports every runtime metric. Recipe: [Grafana dashboard import](/cookbook/grafana-dashboard-import).
+
+```bash
+# From a clone of the declaragent repo:
 curl -X POST http://admin:admin@localhost:3000/api/dashboards/db \
   -H 'Content-Type: application/json' \
-  -d "$(jq '{
-        dashboard: .,
-        overwrite: true,
-        inputs: [{name:"DS_PROMETHEUS",type:"datasource",pluginId:"prometheus",value:"Prometheus"}]
-      }' docs/grafana/declaragent-fleet-dashboard.json)"
+  -d "$(jq '{dashboard: ., overwrite: true,
+            inputs:[{name:"DS_PROMETHEUS",type:"datasource",pluginId:"prometheus",value:"Prometheus"}]
+          }' docs/grafana/declaragent-fleet-dashboard.json)"
 ```
 
-You should see live data in row 1 (MCP), row 2 (audit + SIEM), row 3 (rate limits + dispatch). Recipe: [Grafana dashboard import](/cookbook/grafana-dashboard-import).
+Three rows: MCP health, audit + SIEM, rate limits + dispatch. All live.
 
-## Step 11 — Drive the agents (~3 min)
+### From the REPL
 
-Concierge listens on a webhook (default `event-sources.yaml`). Trigger it:
+```
+> /cost                                  # token spend this session ($, in/out/cache)
+> /bash declaragent audit verify --json   # hash-chain integrity — ok: true
+> /bash declaragent fleet status --history # what was deployed, when, by whom
+> Dump the last 5 DLQ entries for the concierge.
+Builder: [calls DeclaraDlqShow with {agent: concierge, last: 5}]
+```
+
+`declaragent fleet status --history` reads audit rows and renders deploy, rollback, and rotation events as a timeline. The source of truth is the same audit chain exported to your SIEM.
+
+## Step 13 — Deploy (~5 min)
+
+The builder cannot deploy (`DEFAULT_DEPLOY_DENY_RULES`). You run it. Two paths:
+
+### Path A — `declaragent deploy gcp-cloud-run` (Cloud Run)
 
 ```bash
-curl -X POST http://localhost:8787/webhook/concierge \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "user": "demo",
-    "text": "review https://github.com/declaragent/declaragent/pull/61"
-  }'
+declaragent deploy gcp-cloud-run --project my-gcp --region us-central1
 ```
 
-Watch the trace round-trip:
+The CLI **auto-generates** `.declaragent/deploy/`:
 
-```bash
-declaragent events list --json | jq -c '.[] | {ts, kind, agent, capability}'
-```
+- **Dockerfile** — multi-stage Bun build, copies `agent.yaml` + skills + plugins.
+- **service.yaml** — Cloud Run Service spec with your secret refs rewritten as Cloud Secret Manager bindings, health probes, and minInstances sized from your fleet shape.
+- **.dockerignore** and a **README.md** with the three `gcloud` commands to run.
 
-You should see: `webhook_received` (concierge) → `tool_call:RequestAgent` → `rpc_request_sent` → (peer) `rpc_request_received` → `tool_call:review-pr` → `rpc_response` → `channel_send`. The same chain in Jaeger appears as one trace.
+You run the `gcloud` push yourself. The CLI stops short so your deploy principal is yours. Full walkthrough: [Deploy to GCP Cloud Run](/cookbook/deploy-cloud-run).
 
-## Step 12 — Failure injection (~5 min)
-
-### a. Trip a circuit
-
-Spam the concierge to overshoot the `RequestAgent` rate limit (rps=10, burst=20):
-
-```bash
-for i in {1..40}; do
-  curl -s -X POST http://localhost:8787/webhook/concierge \
-       -H 'Content-Type: application/json' \
-       -d '{"user":"loadgen","text":"review https://example.com/pr/'"$i"'"}' &
-done; wait
-```
-
-```bash
-declaragent events list --state circuit-open
-curl -s http://localhost:9090/api/v1/query \
-  --data-urlencode 'query=declaragent_tool_rate_limit_waits_total' | jq '.data.result'
-```
-
-### b. DLQ requeue
-
-Take down the peer and watch a request hit the dispatch DLQ:
-
-```bash
-# In a third terminal, kill pr-reviewer
-declaragent stop pr-reviewer
-
-curl -s -X POST http://localhost:8787/webhook/concierge \
-  -H 'Content-Type: application/json' \
-  -d '{"user":"demo","text":"review https://example.com/pr/orphan"}'
-
-declaragent dlq list --kind dispatch
-declaragent start pr-reviewer
-declaragent dlq requeue --kind dispatch <id-from-list>
-```
-
-### c. Audit-chain tamper test
-
-```bash
-declaragent audit verify --json | jq '.ok'                  # true
-
-# Locally tamper with a row (simulate a bad actor)
-sqlite3 .declaragent/state.sqlite \
-  "UPDATE audit_records SET record = json_set(record, '$.tampered', 1) WHERE seq = 5;"
-
-declaragent audit verify --json | jq '.ok,.firstBadSeq'     # false, 5
-```
-
-### d. Secret rotation
-
-```bash
-docker exec acme-vault vault kv put secret/orders/anthropic-key value="$ANTHROPIC_API_KEY_V2"
-declaragent secrets rotate '${vault:secret/data/orders/anthropic-key#value}' \
-  --reason "scheduled 90-day rotation"
-declaragent secrets describe '${vault:secret/data/orders/anthropic-key#value}'
-```
-
-Recipe: [Rotate a Vault secret](/cookbook/rotate-vault-secret).
-
-## Step 13 — Add a second host (cross-host fan-out, ~10 min)
-
-Spin up a second daemon as a sibling host. The cleanest local way is a second Bun process bound to a different port — for the production-shaped story, do it as a second container on the same `docker-compose` network. Below is the local-process variant:
-
-```bash
-DECLARAGENT_METRICS_PORT=9465 \
-DECLARAGENT_CONTROL_PLANE_BIND=0.0.0.0:9465 \
-declaragent up -d --state-dir .declaragent-host-2
-```
-
-Add a `hosts:` block to `fleet.yaml`:
-
-```yaml
-hosts:
-  - name: local-1
-    url: http://127.0.0.1:9464
-    auth: { bearer: ${env:DECLARA_TOKEN_LOCAL_1} }
-  - name: local-2
-    url: http://127.0.0.1:9465
-    auth: { bearer: ${env:DECLARA_TOKEN_LOCAL_2} }
-```
-
-(Tokens come from your IdP in production; for the demo, use `controlPlane.auth.enabled: false` + skip the `auth` field.)
-
-Now every observability verb fans out:
-
-```bash
-declaragent fleet ps
-declaragent fleet events --json | jq -c '.events[] | {host, ts, kind}' | head
-declaragent fleet logs -f
-declaragent fleet dlq list --kind dispatch
-```
-
-Scope to one host with `--host local-2`. One bad host is tagged in the response without losing data from the rest. Recipe: [Cross-host fleet on Kafka](/cookbook/cross-host-fleet-kafka).
-
-## Step 14 — Pre-flight zero-trust RPC (~2 min)
-
-Even though the demo runs on the legacy `internal` envelope auth, exercise the inspector you'll need at 0.8.0:
-
-```bash
-declaragent fleet audit-rpc                       # report only
-declaragent fleet audit-rpc --suggest-enable      # copy-pasteable diffs
-declaragent fleet audit-rpc --strict              # CI gate; non-zero on any gap
-```
-
-Apply the suggested `auth:` block to `rpc-peers.yaml` (defaults to `provider: oidc` — the two shipped providers are `oidc` and `oauth2-client`). Re-run with `--strict` until clean. Recipe + migration plan: [Zero-trust RPC migration](/cookbook/zero-trust-rpc-migration).
-
-## Step 15 — Render to k8s (~3 min)
+### Path B — `declaragent fleet render` (any Kubernetes + GitOps)
 
 ```bash
 declaragent fleet render --target k8s --format helm --out ./deploy/chart
-ls deploy/chart/templates
-# deployment-concierge.yaml      service-concierge.yaml      servicemonitor-concierge.yaml      secret-concierge.yaml
-# deployment-pr-reviewer.yaml    service-pr-reviewer.yaml    servicemonitor-pr-reviewer.yaml    secret-pr-reviewer.yaml
 ```
 
-The render is **deterministic and offline** — no `kubectl`, no network. Snapshot-test it in CI. The `Secret` stubs are intentionally empty; ExternalSecrets fills them at reconcile time.
+Deterministic, offline render to a Helm chart (or Kustomize base). Commit to git; ArgoCD or Flux reconciles. Secrets are stubbed; you wire External Secrets Operator for real creds. Full walkthrough: [GitOps with ArgoCD or Flux](/cookbook/gitops-argocd-flux).
+
+Either way, after the real deploy:
 
 ```bash
-helm lint deploy/chart
+declaragent fleet deploy --canary --canary-wait-ms 120000
 ```
 
-## Step 16 — Stand up k3d + ArgoCD + ESO (~10 min)
+First host deploys, 120-second soak, then the rest. Rollback on health-probe failure. See [cross-host fleet](/cookbook/cross-host-fleet-kafka) for the multi-host observability path that pairs with this.
 
-```bash
-k3d cluster create acme --port 8080:80@loadbalancer --port 8443:443@loadbalancer
-kubectl create namespace argocd
-helm repo add argo https://argoproj.github.io/argo-helm
-helm install argocd argo/argo-cd -n argocd --version 7.6.0 --wait
+## Step 14 — Production readiness checklist
 
-helm repo add external-secrets https://charts.external-secrets.io
-helm install external-secrets external-secrets/external-secrets \
-  -n external-secrets --create-namespace --wait
+Ten boxes. Most were ticked by steps 5-13 above.
 
-# Vault SecretStore — points at the host-network Vault
-kubectl create namespace agents
-kubectl apply -f - <<'EOF'
-apiVersion: external-secrets.io/v1
-kind: ClusterSecretStore
-metadata: { name: vault-dev }
-spec:
-  provider:
-    vault:
-      server: http://host.docker.internal:8200
-      path: secret
-      version: v2
-      auth:
-        tokenSecretRef:
-          name: vault-token
-          namespace: external-secrets
-          key: token
-EOF
-kubectl create secret generic vault-token -n external-secrets \
-  --from-literal=token=dev-root-token
-
-kubectl apply -n agents -f - <<'EOF'
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata: { name: anthropic-key }
-spec:
-  refreshInterval: 5m
-  secretStoreRef: { name: vault-dev, kind: ClusterSecretStore }
-  target: { name: orders-anthropic }
-  data:
-    - secretKey: ANTHROPIC_API_KEY
-      remoteRef: { key: orders/anthropic-key, property: value }
-EOF
-```
-
-## Step 17 — Argo Application (~5 min)
-
-Push `deploy/chart/` to a git repo that ArgoCD can read (a local Gitea container or a GitHub repo — both work). Then:
-
-```yaml
-# deploy/argocd-application.yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata: { name: acme-orders, namespace: argocd }
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/<you>/acme-orders-gitops
-    path: deploy/chart
-    targetRevision: main
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: agents
-  syncPolicy:
-    automated: { prune: true, selfHeal: true }
-    syncOptions: [CreateNamespace=true]
-```
-
-```bash
-kubectl apply -f deploy/argocd-application.yaml
-
-argocd login <argocd-server> --core
-argocd app sync acme-orders
-argocd app get acme-orders
-```
-
-Cluster verification:
-
-```bash
-kubectl get pods -n agents
-kubectl logs -n agents deploy/orders-concierge --tail=50
-kubectl exec -n agents deploy/orders-concierge -- declaragent audit verify --json
-```
-
-Recipe: [GitOps deploy with ArgoCD or Flux](/cookbook/gitops-argocd-flux).
-
-## Step 18 — Production readiness checklist
-
-Tick these off before you let real traffic hit the fleet.
-
-- [ ] **Secrets** — `secrets.yaml` uses Vault `approle` (not dev-token); ExternalSecrets `refreshInterval` ≤ 5m.
-- [ ] **Control plane** — `controlPlane.auth.enabled: true` with your real OIDC issuer + audience; `allowLoopback: false` if you want zero-trust localhost.
-- [ ] **RPC auth** — `rpc.auth.enabled: true` (mandatory at 0.8.0) and every peer has an `auth:` block. `declaragent fleet audit-rpc --strict` exits 0 in CI.
-- [ ] **Audit export** — SIEM target + creds. Alertmanager rule on `declaragent_audit_backpressure_paused_total > 0` for 5m.
-- [ ] **Rate limits** — every tool with non-trivial cost has an entry in `agent.yaml#tools.rateLimit`. Provider-side limit set on `provider.rateLimit`.
-- [ ] **MCP** — `mcp.supervised: all` (or named allow-list). Alert on `mcp_server_circuit_state == 1` for 2m.
-- [ ] **DLQ** — alert on `rate(source_messages_dlq_total[10m]) > 0` for 10m. Operator runbook for `declaragent fleet dlq drop/requeue`.
-- [ ] **Tracing** — `OTEL_EXPORTER_OTLP_ENDPOINT` set in the deployed environment; sampling configured (`OTEL_TRACES_SAMPLER`) for cost control.
-- [ ] **GitOps** — render runs in CI, snapshot-tested. Helm chart version bumped on every `@declaragent/cli` upgrade. ArgoCD/Flux reconcile interval ≤ 5m.
-- [ ] **Multi-host** — `fleet.yaml#hosts[]` populated; CI can run `declaragent fleet ps --json` against staging.
-- [ ] **Soak** — Kafka transport: 7+ consecutive Sunday 24h soak greens before you call Pillar 3 production-ready (CLAUDE.md §"What's honestly missing").
-- [ ] **Backups** — `state.sqlite` (audit + DLQ + cursors) is backed up. Without it you lose audit history and SIEM cursors.
+- [ ] Secrets live in Vault (`method: approle` in production, not `token`)
+- [ ] `audit.export` points at your real SIEM; alert on `declaragent_audit_backpressure_paused_total > 0`
+- [ ] Per-tool rate limits set on every non-trivial tool
+- [ ] `mcp.supervised: all` (default) — alert on `mcp_server_circuit_state == 1`
+- [ ] `controlPlane.auth.enabled: true` with your OIDC issuer; `allowLoopback: false` for zero-trust
+- [ ] `declaragent fleet audit-rpc --strict` exits 0 in CI (mandatory at 0.8.0)
+- [ ] OTel + Prometheus wired; Grafana dashboard imported
+- [ ] `declaragent fleet render` runs in CI on every merge; output is snapshot-tested
+- [ ] ArgoCD / Flux reconciles the render output; deploy principal has no direct cluster access
+- [ ] Builder conversation for your reference scenarios recorded as a fixture; CI replays on every commit
 
 ## Honest gaps
 
-These are not in this demo because they're not shipped yet (see [`docs/POST_ENTERPRISE_BACKLOG.md`](https://github.com/declaragent/declaragent/blob/main/docs/POST_ENTERPRISE_BACKLOG.md)):
+Things that are **not** yet conversational — you'll drop to CLI / YAML for these:
 
-- **Traffic-splitting canary** — `fleet deploy --canary` ships a "first-host then rest" strategy with post-soak re-probe, but not weighted traffic shifting. If you need 5% → 50% → 100% via header/cookie, layer Argo Rollouts on top of the rendered Deployment.
-- **Approval workflows on tool calls** — there's no built-in human-in-the-loop gate for high-risk tools. Wire it via a custom MCP server that prompts your approval system.
-- **SSO-bridged channel permissions** — channel adapters auth via static tokens. Per-user identity bridging is roadmap.
+- **Canary weighting.** `fleet deploy --canary` ships first-host-then-rest, not 5% → 50% → 100%. Use Argo Rollouts on top for traffic-shifting.
+- **Human-in-the-loop tool gating.** There's no `needsApproval: true` flag on tools. Wire an MCP server that calls your approval system.
+- **Channel-identity bridging.** Channel adapters auth via static tokens; per-user SSO bridging is roadmap.
+- **Builder can't write `fleet.yaml` from scratch** — it can add agents to an existing fleet (`DeclaraFleetAdd`) but scaffolding the initial fleet still runs `declaragent init --fleet <name>`.
 
 ## Cleanup
 
 ```bash
-docker compose down -v
-k3d cluster delete acme
-rm -rf acme-orders
+# From the REPL
+> /exit
+
+# From the shell
+declaragent down
+docker rm -f orders-vault
+rm -rf orders
 ```
 
 ## Where to go next
 
-| If you want to… | Read |
+The five focused recipes go deeper on individual enterprise topics. This page is the integrated narrative; those are the references.
+
+| Next | What it adds |
 | --- | --- |
-| Deepen any one step | The five focused enterprise recipes ([cookbook index](/cookbook)) |
-| Understand the audit chain in depth | [Reference → Observability](/reference/observability) |
-| Pick a different broker (NATS, JetStream, SQS, AMQP, MQTT) | [Reference → RPC](/reference/rpc) |
-| Run the conversational builder | [Build an agent through conversation](/cookbook/build-an-agent) |
-| Add a third agent | [`declaragent fleet add`](/reference/cli) |
+| [GitOps with ArgoCD or Flux](/cookbook/gitops-argocd-flux) | Full Argo / Flux `Application` + ExternalSecrets wiring |
+| [SIEM audit export](/cookbook/siem-audit-export) | Splunk / Elastic / Datadog with back-pressure and SIEM-side chain verify |
+| [Zero-trust RPC migration](/cookbook/zero-trust-rpc-migration) | Operational walkthrough for the 0.8.0 default flip |
+| [Cross-host fleet on Kafka](/cookbook/cross-host-fleet-kafka) | `fleet.yaml#hosts[]` fan-out and cross-host DLQ mutations |
+| [Grafana dashboard import](/cookbook/grafana-dashboard-import) | The dashboard JSON + pre-wired alertmanager rules |
+
+And when you want to understand the mechanism:
+
+- [Reference → Builder](/reference/builder) — every tool the REPL has, with its zod schema.
+- [`docs/BUILDER_PLAN.md`](https://github.com/declaragent/declaragent/blob/main/docs/BUILDER_PLAN.md) — the design doc for plan-confirm-execute.
+- [Build an agent through conversation](/cookbook/build-an-agent) — single-agent version of this walkthrough.
