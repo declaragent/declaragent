@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
           type: 'category',
           label: 'Enterprise',
           items: [
+            'cookbook/enterprise-zero-to-deploy',
             'cookbook/gitops-argocd-flux',
             'cookbook/siem-audit-export',
             'cookbook/zero-trust-rpc-migration',

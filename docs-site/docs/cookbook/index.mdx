@@ -40,8 +40,11 @@ Cross-cutting how-tos built on top of the runtime.
 
 Platform / SRE / security paths — built on features enterprise buyers ask about first.
 
+**Start here if you're evaluating the product:** [**Enterprise — zero to a deployed demo, end to end**](/cookbook/enterprise-zero-to-deploy). A single ~90-minute walkthrough that exercises every enterprise control on a developer laptop — Vault, OIDC, rate limits, SIEM, OTel, cross-host, GitOps to a local k3d cluster with ArgoCD. The standalone recipes below go deeper on individual topics.
+
 | Recipe | Goal |
 | --- | --- |
+| [Enterprise — zero to deploy](/cookbook/enterprise-zero-to-deploy) | **Integrated walkthrough.** Empty directory → two-agent fleet live on k3d via ArgoCD. |
 | [GitOps deploy with ArgoCD or Flux](/cookbook/gitops-argocd-flux) | `fleet render` → git → your existing Argo/Flux reconciler. Drift detection + rollback for free. |
 | [Stream audit to Splunk / Elastic / Datadog](/cookbook/siem-audit-export) | Hash-chained audit into your SIEM with back-pressure + adaptive batch. |
 | [Zero-trust RPC migration (0.8.0)](/cookbook/zero-trust-rpc-migration) | Pre-flight `fleet audit-rpc --strict` in CI before the default flip. |
