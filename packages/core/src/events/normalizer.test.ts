@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { NormalizeError, createMessageNormalizer } from './normalizer.js';
-import type { NormalizeContext, RawMessage, RoutingConfig } from './types.js';
+import type { AgentEvent, NormalizeContext, RawMessage, RoutingConfig } from './types.js';
 
 const CTX: NormalizeContext = {
   source: { type: 'self', reason: 'wakeup' },
@@ -649,5 +649,215 @@ describe('createMessageNormalizer — binary formats', () => {
     await n.normalize({ value }, routing, CTX);
     await n.normalize({ value }, routing, CTX);
     expect(createCount).toBe(1);
+  });
+});
+
+// ─── Skill session pinning (Feature 1: webhook / cron / broker routes) ───
+
+describe('createMessageNormalizer — skill session pinning', () => {
+  // Webhook-shape RawMessage: JSON body + optional headers, no transport
+  // metadata. Stands in for a webhook/cron/broker payload routed via the
+  // normalizer's `targetSelector`.
+  function webhookRaw(body: unknown, headers?: Record<string, unknown>): RawMessage {
+    return {
+      value: JSON.stringify(body),
+      timestamp: Date.parse('2026-04-16T10:00:00Z'),
+      ...(headers !== undefined && { headers }),
+    };
+  }
+
+  const WEBHOOK_CTX: NormalizeContext = {
+    source: { type: 'webhook', triggerId: 'support-hook' },
+    auth: { kind: 'internal' },
+  };
+
+  // (a) No sessionKey ⇒ resolved skill target is byte-for-byte the old shape.
+  test('no sessionKey ⇒ target has no sessionKey key (back-compat)', async () => {
+    const n = createMessageNormalizer();
+    const event = await n.normalize(
+      webhookRaw({ ticket_id: 't-1' }),
+      {
+        kindSelector: { const: 'webhook.received' },
+        targetSelector: {
+          type: 'skill',
+          name: 'support',
+          inputs: { ticket: '$.ticket_id' },
+        },
+      },
+      WEBHOOK_CTX,
+    );
+    // Exact deep-equality proves NO `sessionKey` property is emitted.
+    expect(event?.target).toEqual({
+      type: 'skill',
+      name: 'support',
+      inputs: { ticket: 't-1' },
+    });
+    expect('sessionKey' in (event?.target ?? {})).toBe(false);
+  });
+
+  // (b) Static sessionKey across two events with differing bodies ⇒ same key.
+  test('static sessionKey is stable across two webhook events', async () => {
+    const n = createMessageNormalizer();
+    const routing: RoutingConfig = {
+      kindSelector: { const: 'webhook.received' },
+      targetSelector: {
+        type: 'skill',
+        name: 'support',
+        inputs: {},
+        sessionKey: 'support-inbox',
+      },
+    };
+    const a = await n.normalize(webhookRaw({ ticket_id: 't-1' }), routing, WEBHOOK_CTX);
+    const b = await n.normalize(webhookRaw({ ticket_id: 't-999' }), routing, WEBHOOK_CTX);
+    expect(a?.target).toEqual({
+      type: 'skill',
+      name: 'support',
+      inputs: {},
+      sessionKey: 'support-inbox',
+    });
+    expect((a?.target as { sessionKey?: string }).sessionKey).toBe(
+      (b?.target as { sessionKey?: string }).sessionKey,
+    );
+  });
+
+  // (c) Templated sessionKey from a BODY field: distinct values isolate,
+  //     equal values repeat.
+  test('templated sessionKey ($. body field) isolates + repeats by value', async () => {
+    const n = createMessageNormalizer();
+    const routing: RoutingConfig = {
+      kindSelector: { const: 'webhook.received' },
+      targetSelector: {
+        type: 'skill',
+        name: 'support',
+        inputs: {},
+        sessionKey: 'acct-{{ $.account.id }}',
+      },
+    };
+    const a = await n.normalize(webhookRaw({ account: { id: 'A100' } }), routing, WEBHOOK_CTX);
+    const b = await n.normalize(webhookRaw({ account: { id: 'B200' } }), routing, WEBHOOK_CTX);
+    const aAgain = await n.normalize(webhookRaw({ account: { id: 'A100' } }), routing, WEBHOOK_CTX);
+    const key = (t: unknown) => (t as { sessionKey?: string }).sessionKey;
+    expect(key(a?.target)).toBe('acct-A100');
+    expect(key(b?.target)).toBe('acct-B200');
+    // Distinct field values ⇒ distinct keys (isolation).
+    expect(key(a?.target)).not.toBe(key(b?.target));
+    // Same field value ⇒ same key (repeat → one durable session).
+    expect(key(a?.target)).toBe(key(aAgain?.target));
+  });
+
+  // (c') Templated sessionKey from a HEADER value (case-insensitive).
+  test('templated sessionKey ({{ header.<name> }}) resolves + isolates', async () => {
+    const n = createMessageNormalizer();
+    const routing: RoutingConfig = {
+      kindSelector: { const: 'webhook.received' },
+      targetSelector: {
+        type: 'skill',
+        name: 'support',
+        inputs: {},
+        sessionKey: '{{ header.x-tenant }}',
+      },
+    };
+    const a = await n.normalize(
+      webhookRaw({ msg: 'hi' }, { 'X-Tenant': 'tenant-1' }),
+      routing,
+      WEBHOOK_CTX,
+    );
+    const b = await n.normalize(
+      webhookRaw({ msg: 'hi' }, { 'x-tenant': 'tenant-2' }),
+      routing,
+      WEBHOOK_CTX,
+    );
+    const key = (t: unknown) => (t as { sessionKey?: string }).sessionKey;
+    expect(key(a?.target)).toBe('tenant-1');
+    expect(key(b?.target)).toBe('tenant-2');
+  });
+
+  // (c'') `{{ source }}` resolves to the source tag's stable id.
+  test('templated sessionKey ({{ source }}) resolves to source id', async () => {
+    const n = createMessageNormalizer();
+    const event = await n.normalize(
+      webhookRaw({ msg: 'hi' }),
+      {
+        kindSelector: { const: 'webhook.received' },
+        targetSelector: {
+          type: 'skill',
+          name: 'support',
+          inputs: {},
+          sessionKey: 'src-{{ source }}',
+        },
+      },
+      WEBHOOK_CTX,
+    );
+    // WEBHOOK_CTX.source.triggerId is "support-hook".
+    expect((event?.target as { sessionKey?: string }).sessionKey).toBe('src-support-hook');
+  });
+
+  // (d) Unresolvable template (missing path) ⇒ no key, no throw.
+  test('unresolvable template (missing field) ⇒ no sessionKey, no throw', async () => {
+    const n = createMessageNormalizer();
+    const run = () =>
+      n.normalize(
+        webhookRaw({ present: 'yes' }),
+        {
+          kindSelector: { const: 'webhook.received' },
+          targetSelector: {
+            type: 'skill',
+            name: 'support',
+            inputs: {},
+            sessionKey: 'acct-{{ $.account.id }}',
+          },
+        },
+        WEBHOOK_CTX,
+      );
+    // Must NOT throw — the no-pin fallback resolves cleanly.
+    const event: AgentEvent | null = await run();
+    expect(event).not.toBeNull();
+    expect('sessionKey' in (event?.target ?? {})).toBe(false);
+    expect(event?.target).toEqual({
+      type: 'skill',
+      name: 'support',
+      inputs: {},
+    });
+  });
+
+  // (d') Malformed path inside {{ }} ⇒ no key, no throw (JsonPathError caught).
+  test('malformed path inside {{ }} ⇒ no sessionKey, no throw', async () => {
+    const n = createMessageNormalizer();
+    const event = await n.normalize(
+      webhookRaw({ account: { id: 'A100' } }),
+      {
+        kindSelector: { const: 'webhook.received' },
+        targetSelector: {
+          type: 'skill',
+          name: 'support',
+          inputs: {},
+          // `$..account` (recursive descent) is rejected by the JSONPath parser;
+          // resolution must swallow the error and emit no key.
+          sessionKey: 'acct-{{ $..account }}',
+        },
+      },
+      WEBHOOK_CTX,
+    );
+    expect('sessionKey' in (event?.target ?? {})).toBe(false);
+  });
+
+  // (d'') A non-scalar resolved value (object) ⇒ no key, no throw.
+  test('template resolving to a non-scalar value ⇒ no sessionKey', async () => {
+    const n = createMessageNormalizer();
+    const event = await n.normalize(
+      webhookRaw({ account: { id: 'A100' } }),
+      {
+        kindSelector: { const: 'webhook.received' },
+        targetSelector: {
+          type: 'skill',
+          name: 'support',
+          inputs: {},
+          // Resolves to the `{ id: 'A100' }` object, not a scalar.
+          sessionKey: 'acct-{{ $.account }}',
+        },
+      },
+      WEBHOOK_CTX,
+    );
+    expect('sessionKey' in (event?.target ?? {})).toBe(false);
   });
 });

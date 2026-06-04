@@ -62,11 +62,13 @@ import {
   createEventDispatcher,
   createExtensionRegistry,
   createHookRegistry,
+  createMemoryTools,
   createOtelBridge,
   createPermissionGate,
   createPrometheusRegistry,
   createSendMessageTool,
   createSplunkExporter,
+  createSqliteMemoryStore,
   createSqliteSessionStore,
   createToolRateLimitGate,
   defaultRateForProvider,
@@ -102,7 +104,7 @@ import {
   loadScopedMCPServers,
   startMCPServers,
 } from './mcp-runtime.js';
-import { auditDbPath, sessionsDbPath } from './paths.js';
+import { auditDbPath, configDir, sessionsDbPath } from './paths.js';
 import { type PluginRuntime, startPluginRuntime } from './plugins-runtime.js';
 import { createProviderFromCreds } from './provider-factory.js';
 import { type StartAgentSourcesResult, startAgentSources } from './run-agent-sources.js';
@@ -386,6 +388,18 @@ interface UpRuntime {
    * @since 0.7.x — Enterprise Production Plan §3 Item #7 follow-up
    */
   auditSink?: TenantAuditSink;
+  /**
+   * Opt-in long-term memory store (durable-with-memory "mode 3"). A
+   * single SQLite handle shared across every agent this up-process
+   * hosts — the store is namespaced per-agent internally, so one
+   * connection is correct. Lazily opened on the FIRST agent that sets
+   * `agent.yaml#memory.enabled`; stays `undefined` (and the file is
+   * never created) when no agent opts in, keeping the disabled path
+   * byte-for-byte unchanged. Closed in `doShutdown` only when opened.
+   *
+   * @since 0.5.6
+   */
+  memoryStore?: ReturnType<typeof createSqliteMemoryStore>;
 }
 
 async function runForeground(
@@ -854,6 +868,16 @@ async function runForeground(
       // (test runner, nested spawn) would hand out a closed handle.
       if (sharedAuditSink) {
         await releaseTenantAuditSink({ path: auditSinkPath, owner: 'up-cli' });
+      }
+      // Close the long-term memory store only if some agent opened it.
+      // When no agent enabled memory this is undefined and the file was
+      // never created — nothing to tear down.
+      if (runtime.memoryStore) {
+        try {
+          runtime.memoryStore.close();
+        } catch {
+          // best-effort — never block shutdown on a close failure
+        }
       }
       clearUpState();
       io.out('✓ down\n');
@@ -1345,6 +1369,28 @@ async function attachDispatcherToAgent(opts: {
     );
   }
   extraTools.push(...plugins.tools);
+
+  // Opt-in long-term memory (durable-with-memory "mode 3"). Only when the
+  // agent declares `agent.yaml#memory.enabled: true` do we lazily open the
+  // process-shared SQLite store (a file alongside `sessions.db`) and bind
+  // the memory_write/read/search tools to it under the resolved namespace
+  // (defaulting to the agent id). When disabled we push nothing, so the
+  // runtime tool set + ordering are identical to today. See
+  // `docs/AGENT_MEMORY.md`.
+  if (spec.memory?.enabled) {
+    if (!runtime.memoryStore) {
+      runtime.memoryStore = createSqliteMemoryStore({
+        path: join(configDir(), 'memory.db'),
+      });
+    }
+    const memoryNamespace = spec.memory.namespace ?? spec.name;
+    extraTools.push(
+      ...(createMemoryTools({
+        store: runtime.memoryStore,
+        namespace: memoryNamespace,
+      }).all as import('@declaragent/core').Tool[]),
+    );
+  }
 
   // Enterprise Production Plan §3 Item #7 — per-tool token-bucket gate.
   // Built only when `agent.yaml#tools.rateLimit` has at least one entry,

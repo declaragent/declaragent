@@ -8,6 +8,18 @@ export { GlobTool } from './glob.js';
 export type { GlobInput, GlobOutput } from './glob.js';
 export { Grep } from './grep.js';
 export type { GrepInput, GrepMatch, GrepOutput } from './grep.js';
+export { createMemoryTools } from './memory.js';
+export type {
+  CreateMemoryToolsDeps,
+  MemoryReadInput,
+  MemoryReadOutput,
+  MemorySearchInput,
+  MemorySearchMatch,
+  MemorySearchOutput,
+  MemoryTools,
+  MemoryWriteInput,
+  MemoryWriteOutput,
+} from './memory.js';
 export { Read } from './read.js';
 export type { ReadInput, ReadOutput } from './read.js';
 export { createToolRateLimitGate } from './rate-limit-gate.js';

@@ -237,6 +237,7 @@ export {
   Grep,
   Read,
   Write,
+  createMemoryTools,
   createSendMessageTool,
   createToolRateLimitGate,
   permissionKeyFor as sendMessagePermissionKey,
@@ -246,6 +247,7 @@ export type {
   AgentOutput,
   BashInput,
   BashOutput,
+  CreateMemoryToolsDeps,
   EditInput,
   EditOutput,
   GlobInput,
@@ -253,6 +255,14 @@ export type {
   GrepInput,
   GrepMatch,
   GrepOutput,
+  MemoryReadInput,
+  MemoryReadOutput,
+  MemorySearchInput,
+  MemorySearchMatch,
+  MemorySearchOutput,
+  MemoryTools,
+  MemoryWriteInput,
+  MemoryWriteOutput,
   ReadInput,
   ReadOutput,
   CreateSendMessageToolDeps,
@@ -855,6 +865,14 @@ export type {
   SqliteSessionStore,
   SqliteSessionStoreConfig,
 } from './session/index.js';
+export { createSqliteMemoryStore } from './memory/index.js';
+export type {
+  MemoryRecord,
+  MemorySearchQuery,
+  MemoryStore,
+  MemoryWriteOptions,
+  SqliteMemoryStoreConfig,
+} from './memory/index.js';
 export {
   DEFAULT_FLEET_ENVIRONMENT_ID,
   FLEET_MANIFEST_FILENAME,

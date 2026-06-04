@@ -153,6 +153,23 @@ const agentYamlSchema = z
       .int('agent.yaml: "maxIterations" must be an integer')
       .positive('agent.yaml: "maxIterations" must be a positive integer')
       .optional(),
+    /**
+     * Opt-in long-term memory layer (durable-with-memory "mode 3").
+     * Absent / `enabled: false` → no memory tools registered (the
+     * default; back-compat). `strict()` so a typo'd sub-key or a
+     * non-boolean `enabled` yields a clear, path-anchored validation
+     * error rather than silently passing through. Surfaced onto
+     * {@link AgentSpec.memory}. See `docs/AGENT_MEMORY.md`.
+     *
+     * @since 0.5.6
+     */
+    memory: z
+      .object({
+        enabled: z.boolean(),
+        namespace: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     skills: z.array(z.string()).optional(),
     tools: z
       .object({
@@ -652,6 +669,16 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
     ...(cfg.maxTokens !== undefined && { maxTokens: cfg.maxTokens }),
     ...(cfg.subagentDepthCap !== undefined && { subagentDepthCap: cfg.subagentDepthCap }),
     ...(cfg.maxIterations !== undefined && { maxIterations: cfg.maxIterations }),
+    // Rebuild the memory block explicitly (rather than spreading `cfg.memory`
+    // verbatim) so an absent `namespace` is omitted entirely — under
+    // exactOptionalPropertyTypes a literal `namespace: undefined` is not
+    // assignable to the optional `namespace?: string`.
+    ...(cfg.memory !== undefined && {
+      memory: {
+        enabled: cfg.memory.enabled,
+        ...(cfg.memory.namespace !== undefined && { namespace: cfg.memory.namespace }),
+      },
+    }),
   };
 
   // Normalise the rate-limit block. Missing `burst` defaults to `rps`
