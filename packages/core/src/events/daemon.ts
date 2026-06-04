@@ -43,6 +43,21 @@ const NOOP_LOGGER: Logger = (() => {
   return l;
 })();
 
+/**
+ * Minimal structural slice of a session store that supports keyed
+ * resolve/create (Item A step 1). The {@link SqliteSessionStore}
+ * satisfies this, but the daemon depends only on these two methods so
+ * tests can supply a tiny in-memory stub. The `scope` arg is omitted —
+ * single-process `up` is one-tenant, so the daemon-derived factories use
+ * the default tenant; fleet-run threads tenancy elsewhere.
+ *
+ * @since 0.7.6 — see `docs/AGENT_DURABILITY.md`.
+ */
+export interface SessionStoreForKeys {
+  resolveByKey(sessionKey: string): SessionHandle | undefined;
+  createForKey(sessionKey: string, spec: AgentSpec): SessionHandle;
+}
+
 /** One row from `event-sources.json` or an equivalent test fixture. */
 export interface ConfiguredSource {
   /** Adapter type key (e.g. `"cron"`, `"webhook"`). Must match an entry in `adapters`. */
@@ -168,6 +183,36 @@ export interface StartDaemonOptions {
     parentId: string,
     spec?: Partial<AgentSpec>,
   ) => SessionHandle | Promise<SessionHandle>;
+  /**
+   * Session pinning (Item A step 1). When a {@link SessionStoreForKeys}
+   * is supplied, the daemon derives the dispatcher's
+   * `resolveSessionByKey` / `createSessionForKey` factories from it — so
+   * a `target: skill` route carrying a non-empty `sessionKey` on a real
+   * `declaragent up` resolves-or-creates a durable keyed session and
+   * accumulates transcript across events, instead of returning
+   * `rejected: no-handler`. Omitting it preserves the prior behaviour
+   * (a `sessionKey` route fails safe with `no-handler`).
+   *
+   * Explicit `dispatcherOptions.resolveSessionByKey` /
+   * `createSessionForKey` still win — they're spread after these
+   * derived defaults below — so tests can stub the keyed path without a
+   * real store.
+   *
+   * @since 0.7.6 — see `docs/AGENT_DURABILITY.md`.
+   */
+  sessionStore?: SessionStoreForKeys;
+  /**
+   * Spec used by the derived `createSessionForKey` factory when minting a
+   * brand-new pinned session for a previously-unseen `sessionKey`. The
+   * dispatcher runs the framed event as the first turn, so this spec
+   * establishes the pinned agent's identity/model/system-prompt once at
+   * creation. Required when {@link sessionStore} is supplied and you want
+   * create-on-miss; absent → the daemon can still resolve existing pins
+   * but a first-time key falls through to `no-handler`.
+   *
+   * @since 0.7.6
+   */
+  sessionSpecForKey?: AgentSpec;
   /** Optional logger. Defaults to a noop logger. */
   logger?: Logger;
   /** Override bus options. */
@@ -246,6 +291,23 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
       usage: { inputTokens: 0, outputTokens: 0 },
     }));
 
+  // Session pinning (Item A step 1). Derive the dispatcher's keyed
+  // factories from the session store when one is supplied so a
+  // `target: skill` route carrying a non-empty `sessionKey` resolves-or-
+  // creates a durable keyed session through the daemon. `resolveByKey` is
+  // always derivable; create-on-miss additionally needs a spec, so
+  // `createSessionForKey` is only derived when `sessionSpecForKey` is
+  // present. Both are overridable via `dispatcherOptions` (spread last).
+  const keyedStore = options.sessionStore;
+  const keyedSpec = options.sessionSpecForKey;
+  const resolveSessionByKey = keyedStore
+    ? (sessionKey: string): SessionHandle | undefined => keyedStore.resolveByKey(sessionKey)
+    : undefined;
+  const createSessionForKey =
+    keyedStore && keyedSpec
+      ? (sessionKey: string): SessionHandle => keyedStore.createForKey(sessionKey, keyedSpec)
+      : undefined;
+
   const dispatcher = createEventDispatcher({
     registry: options.registry,
     runAgent,
@@ -256,6 +318,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     ...(options.createChildSession !== undefined && {
       createChildSession: options.createChildSession,
     }),
+    ...(resolveSessionByKey !== undefined && { resolveSessionByKey }),
+    ...(createSessionForKey !== undefined && { createSessionForKey }),
     ...options.dispatcherOptions,
   });
 

@@ -88,7 +88,22 @@ export type EventSourceTag =
 export type EventTarget =
   | { type: 'session'; sessionId: string; mode: 'inject' | 'replace' | 'queue' }
   | { type: 'new-session'; agentSpec?: Partial<AgentSpec>; initialPrompt: string }
-  | { type: 'skill'; name: string; inputs: Readonly<Record<string, unknown>> }
+  | {
+      type: 'skill';
+      name: string;
+      inputs: Readonly<Record<string, unknown>>;
+      /**
+       * Optional session-pinning key (Item A step 1). A stable string —
+       * e.g. per Slack thread, per tenant, or per entity. When present the
+       * dispatcher resolves-or-creates a durable session keyed by it and
+       * appends the event as a NEW TURN on that session (accumulating
+       * transcript) instead of minting a fresh child session. When absent
+       * the dispatcher takes the unchanged fresh-per-event skill path.
+       * See `docs/AGENT_DURABILITY.md`.
+       * @since 0.7.6
+       */
+      sessionKey?: string;
+    }
   | { type: 'sub-agent'; parentSessionId: string; spec: Partial<AgentSpec> }
   | { type: 'broadcast' };
 

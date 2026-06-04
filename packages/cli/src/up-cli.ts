@@ -1395,6 +1395,11 @@ async function attachDispatcherToAgent(opts: {
     createChildSession: () => runtime.sessionStore.create(spec),
     tenant,
     ...(toolRateLimit !== undefined && { toolRateLimit }),
+    // Item A step 3 — register the per-turn iterations histogram +
+    // max-iterations-hit counter on the shared registry that backs the
+    // control-plane `/metrics` route. Without this the engine's
+    // durability series register nowhere on a real `declaragent up`.
+    metrics: runtime.metrics,
   });
 
   // Per-skill circuit breakers (Slice 3 / PR 3.1). A skill that throws
@@ -1444,6 +1449,16 @@ async function attachDispatcherToAgent(opts: {
     ...(eventStore && { store: eventStore }),
     createSession: () => runtime.sessionStore.create(spec),
     createChildSession: () => runtime.sessionStore.create(spec),
+    // Session pinning (Item A step 1) — back the dispatcher's keyed
+    // factories with the SQLite session store so a `target: skill` route
+    // carrying a non-empty `sessionKey` on a real `declaragent up`
+    // resolves-or-creates a durable keyed session and accumulates
+    // transcript across events (instead of `rejected: no-handler`).
+    // `createSessionForKey` mints the pin bound to THIS agent's `spec`,
+    // so the pinned conversation inherits the agent's model + system
+    // prompt. See `docs/AGENT_DURABILITY.md`.
+    resolveSessionByKey: (key) => runtime.sessionStore.resolveByKey(key),
+    createSessionForKey: (key) => runtime.sessionStore.createForKey(key, spec),
     targetBreaker: getBreaker,
   });
 

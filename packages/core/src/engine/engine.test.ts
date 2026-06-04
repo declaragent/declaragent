@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { createEventBus } from '../events/bus.js';
 import { createMailbox } from '../events/mailbox.js';
 import type { AgentEvent } from '../events/types.js';
+import { createPrometheusRegistry } from '../observability/prometheus.js';
 import { createPermissionGate } from '../permission/gate.js';
 import { FakeProvider } from '../testing/fake-provider.js';
 import { createMemorySession } from '../testing/memory-session.js';
@@ -545,5 +546,151 @@ describe('engine — tenant quota wiring (slice 0.2)', () => {
     const result = await engine.runAgent({ session, userMessage: 'go' });
     expect(result.stopReason).toBe('end_turn');
     expect(quotas.snapshot().concurrentToolCalls).toBe(0);
+  });
+});
+
+describe('engine — multi-step observability (D2 / Item A step 3)', () => {
+  // Helper: pull a single numeric sample line out of a Prometheus scrape,
+  // ignoring labels. Returns undefined when the metric/line is absent.
+  function sampleValue(scrape: string, lineStartsWith: string): number | undefined {
+    for (const line of scrape.split('\n')) {
+      if (line.startsWith('#')) continue;
+      if (!line.startsWith(lineStartsWith)) continue;
+      const value = line.slice(line.lastIndexOf(' ') + 1);
+      const n = Number(value);
+      if (Number.isFinite(n)) return n;
+    }
+    return undefined;
+  }
+
+  test('(a) multi-tool-call turn records >1 iteration; text-only records 1', async () => {
+    const metrics = createPrometheusRegistry();
+
+    // Two tool_use rounds, then a final text turn → 3 LLM iterations.
+    const multiProvider = new FakeProvider([
+      toolCallResponse('c-1', 'Read', { path: '/nope-1' }),
+      toolCallResponse('c-2', 'Read', { path: '/nope-2' }),
+      textResponse('done'),
+    ]);
+    const multiEngine = createEngine({
+      provider: multiProvider,
+      tools: [Read],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      metrics,
+    });
+    const multiResult = await multiEngine.runAgent({
+      session: createMemorySession(),
+      userMessage: 'read twice',
+    });
+    expect(multiResult.stopReason).toBe('end_turn');
+    expect(multiProvider.callCount).toBe(3);
+
+    const afterMulti = metrics.scrape();
+    // One observation recorded, summing to 3 steps.
+    expect(sampleValue(afterMulti, 'declaragent_engine_turn_iterations_count')).toBe(1);
+    expect(sampleValue(afterMulti, 'declaragent_engine_turn_iterations_sum')).toBe(3);
+    // No cap was hit, so the counter must not appear.
+    expect(afterMulti).not.toContain('declaragent_engine_turn_max_iterations_hit_total');
+
+    // Contrast: a text-only turn records exactly 1 iteration.
+    const textEngine = createEngine({
+      provider: new FakeProvider([textResponse('hi')]),
+      tools: [],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      metrics,
+    });
+    await textEngine.runAgent({ session: createMemorySession(), userMessage: 'hi' });
+
+    const afterText = metrics.scrape();
+    // Two observations now (3 + 1), summing to 4 across both turns.
+    expect(sampleValue(afterText, 'declaragent_engine_turn_iterations_count')).toBe(2);
+    expect(sampleValue(afterText, 'declaragent_engine_turn_iterations_sum')).toBe(4);
+  });
+
+  test('(b) hitting the maxIterations cap increments the counter and records iterations==cap', async () => {
+    const metrics = createPrometheusRegistry();
+    const responses: LLMResponse[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      responses.push(toolCallResponse(`c-${i}`, 'Read', { path: '/a' }));
+    }
+    const engine = createEngine({
+      provider: new FakeProvider(responses),
+      tools: [Read],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      maxIterations: 3,
+      metrics,
+    });
+    const result = await engine.runAgent({
+      session: createMemorySession(),
+      userMessage: 'loop',
+    });
+    expect(result.stopReason).toBe('max_iterations');
+
+    const scrape = metrics.scrape();
+    // The cap-hit counter fired exactly once.
+    expect(sampleValue(scrape, 'declaragent_engine_turn_max_iterations_hit_total')).toBe(1);
+    // The histogram recorded the capped iteration count (3).
+    expect(sampleValue(scrape, 'declaragent_engine_turn_iterations_count')).toBe(1);
+    expect(sampleValue(scrape, 'declaragent_engine_turn_iterations_sum')).toBe(3);
+  });
+
+  test('(c) spec-level maxIterations override is honored (spec > config > default)', async () => {
+    const responses: LLMResponse[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      responses.push(toolCallResponse(`c-${i}`, 'Read', { path: '/a' }));
+    }
+    const provider = new FakeProvider(responses);
+    const engine = createEngine({
+      provider,
+      tools: [Read],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      // No config.maxIterations: the spec override must drive the cap.
+    });
+    // Spec caps the loop at 2 iterations.
+    const session = createMemorySession({ spec: { maxIterations: 2 } });
+    const result = await engine.runAgent({ session, userMessage: 'loop' });
+
+    expect(result.stopReason).toBe('max_iterations');
+    expect(provider.callCount).toBe(2);
+  });
+
+  test('(c2) config.maxIterations still applies when the spec omits the override', async () => {
+    const responses: LLMResponse[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      responses.push(toolCallResponse(`c-${i}`, 'Read', { path: '/a' }));
+    }
+    const provider = new FakeProvider(responses);
+    const engine = createEngine({
+      provider,
+      tools: [Read],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      maxIterations: 4,
+    });
+    // Spec has no maxIterations → falls back to config (4).
+    const session = createMemorySession();
+    const result = await engine.runAgent({ session, userMessage: 'loop' });
+
+    expect(result.stopReason).toBe('max_iterations');
+    expect(provider.callCount).toBe(4);
+  });
+
+  test('(c3) spec override wins over config when both are set', async () => {
+    const responses: LLMResponse[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      responses.push(toolCallResponse(`c-${i}`, 'Read', { path: '/a' }));
+    }
+    const provider = new FakeProvider(responses);
+    const engine = createEngine({
+      provider,
+      tools: [Read],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      maxIterations: 5,
+    });
+    // Spec (2) takes precedence over the larger config cap (5).
+    const session = createMemorySession({ spec: { maxIterations: 2 } });
+    const result = await engine.runAgent({ session, userMessage: 'loop' });
+
+    expect(result.stopReason).toBe('max_iterations');
+    expect(provider.callCount).toBe(2);
   });
 });

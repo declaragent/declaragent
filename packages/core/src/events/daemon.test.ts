@@ -3,9 +3,14 @@ import { describe, expect, test } from 'bun:test';
 import { createExtensionRegistry } from '../extension/registry.js';
 import type { ExtensionRegistry } from '../extension/types.js';
 import { createPermissionGate } from '../permission/gate.js';
+import { createSqliteSessionStore } from '../session/sqlite.js';
+import { skillExtension } from '../skills/skill-extension.js';
+import type { Skill } from '../skills/types.js';
 import type { LoadedTenant } from '../tenancy/config-loader.js';
 import { DEFAULT_TENANT_ID } from '../tenancy/types.js';
+import type { RunAgent } from '../types/agent.js';
 import type { Logger } from '../types/logger.js';
+import type { AgentSpec } from '../types/session.js';
 import {
   type ControlRequest,
   NDJSONDecoder,
@@ -379,6 +384,132 @@ describe('startDaemon', () => {
     } finally {
       cleanup();
     }
+  });
+
+  // ── Session pinning (Item A step 1) — daemon-derived keyed factories ──
+  describe('session pinning via sessionStore', () => {
+    const PIN_SPEC: AgentSpec = {
+      name: 'support',
+      model: 'claude-opus-4-6',
+      systemPrompt: 'you are support',
+    };
+
+    function makeChatSkill(): Skill {
+      return {
+        descriptor: { id: 'skill:user:chat', kind: 'skill', source: { type: 'user' } },
+        lookupName: 'chat',
+        tier: { type: 'user' },
+        frontmatter: { name: 'chat', description: 'test' },
+        prompt: 'be helpful',
+        filePath: '/skills/chat.md',
+      };
+    }
+
+    /**
+     * A `runAgent` that mirrors what the real engine does to the session:
+     * appends the framed user message + an assistant reply, so the pinned
+     * transcript accumulates across events. Records the transcript length
+     * it saw BEFORE appending so a test can prove event-2 saw event-1.
+     */
+    function appendingRunAgent(): {
+      runAgent: RunAgent;
+      observed: Array<{ sessionId: string; transcriptLenBefore: number }>;
+    } {
+      const observed: Array<{ sessionId: string; transcriptLenBefore: number }> = [];
+      const runAgent: RunAgent = async (input) => {
+        observed.push({
+          sessionId: input.session.id,
+          transcriptLenBefore: input.session.transcript.length,
+        });
+        await input.session.appendMessage({
+          role: 'user',
+          content: [{ type: 'text', text: input.userMessage }],
+        });
+        await input.session.appendMessage({
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ack' }],
+        });
+        return { stopReason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 } };
+      };
+      return { runAgent, observed };
+    }
+
+    function skillEvent(id: string, sessionKey: string): AgentEvent {
+      return {
+        id,
+        kind: 'chat.dm',
+        source: { type: 'user', sessionId: `inbound-${id}` },
+        target: { type: 'skill', name: 'chat', inputs: {}, sessionKey },
+        timestamp: Date.now(),
+        payload: { text: id },
+        auth: { kind: 'local-user' },
+      };
+    }
+
+    test('a sessionKey-routed event resolves-or-creates a keyed session and accumulates transcript across two events', async () => {
+      const db = new Database(':memory:', { create: true });
+      const registry = makeRegistry();
+      await registry.register(skillExtension(makeChatSkill()));
+      const sessionStore = createSqliteSessionStore({ path: ':memory:' });
+      const { runAgent, observed } = appendingRunAgent();
+
+      const daemon = await startDaemon({
+        db,
+        registry,
+        adapters: {},
+        runAgent,
+        sessionStore,
+        sessionSpecForKey: PIN_SPEC,
+      });
+      try {
+        // First event with a brand-new key → create-on-miss + run a turn.
+        const o1 = await daemon.sendEvent(skillEvent('e1', 'support-thread'));
+        // Second event with the SAME key → resolve the existing pin.
+        const o2 = await daemon.sendEvent(skillEvent('e2', 'support-thread'));
+
+        expect(o1.kind).toBe('dispatched');
+        expect(o2.kind).toBe('dispatched');
+        // Both turns ran on the same durable pinned session.
+        const sid1 = o1.kind === 'dispatched' ? o1.sessionId : undefined;
+        const sid2 = o2.kind === 'dispatched' ? o2.sessionId : undefined;
+        expect(sid1).toBeDefined();
+        expect(sid2).toBe(sid1);
+        // Turn 1 started empty; turn 2 saw the 2 messages turn 1 appended.
+        expect(observed).toHaveLength(2);
+        expect(observed[0]?.transcriptLenBefore).toBe(0);
+        expect(observed[1]?.transcriptLenBefore).toBe(2);
+        // The store actually persisted the pin → resolveByKey returns the
+        // accumulated transcript (4 messages after two turns).
+        const resolved = sessionStore.resolveByKey('support-thread');
+        expect(resolved?.id).toBe(sid1);
+        expect(resolved?.transcript.length).toBe(4);
+
+        await daemon.shutdown();
+      } finally {
+        sessionStore.close();
+        db.close();
+      }
+    });
+
+    test('without a sessionStore, a sessionKey route fails safe with no-handler (back-compat)', async () => {
+      const db = new Database(':memory:', { create: true });
+      const registry = makeRegistry();
+      await registry.register(skillExtension(makeChatSkill()));
+      const { runAgent, observed } = appendingRunAgent();
+
+      // No sessionStore supplied → daemon derives no keyed factories.
+      const daemon = await startDaemon({ db, registry, adapters: {}, runAgent });
+      try {
+        const outcome = await daemon.sendEvent(skillEvent('e1', 'support-thread'));
+        expect(outcome.kind).toBe('rejected');
+        if (outcome.kind === 'rejected') expect(outcome.reason).toBe('no-handler');
+        // runAgent never fired — the route was rejected before any turn.
+        expect(observed).toHaveLength(0);
+        await daemon.shutdown();
+      } finally {
+        db.close();
+      }
+    });
   });
 });
 

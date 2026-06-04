@@ -36,6 +36,33 @@ export interface SqliteSessionStore {
    * session exists but belongs to a different tenant.
    */
   open(id: string, scope?: TenantScope): SessionHandle | null;
+  /**
+   * Session pinning (Item A step 1). Resolve a durable session by its
+   * stable `sessionKey` within a tenant scope. Returns `undefined` when
+   * no session is pinned to the key yet (the caller then mints one via
+   * {@link createForKey}). When a mapping exists, the underlying session
+   * is re-opened — so the returned handle carries the accumulated
+   * transcript, exactly like {@link open}. Throws a
+   * {@link TenantBoundaryError} if the keyed session belongs to a
+   * different tenant.
+   *
+   * Wired by the host (`declaragent up` daemon) into the dispatcher's
+   * `resolveSessionByKey` factory. See `docs/AGENT_DURABILITY.md`.
+   *
+   * @since 0.7.6
+   */
+  resolveByKey(sessionKey: string, scope?: TenantScope): SessionHandle | undefined;
+  /**
+   * Session pinning (Item A step 1). Mint a brand-new durable session
+   * and bind it to `sessionKey` within a tenant scope, so a later
+   * {@link resolveByKey} with the same key returns the same transcript.
+   * The mapping is unique per `(tenant_id, sessionKey)`; calling this
+   * twice with the same key throws (the dispatcher always resolves
+   * first, so this is a programming-error guard, not a hot path).
+   *
+   * @since 0.7.6
+   */
+  createForKey(sessionKey: string, spec: AgentSpec, scope?: TenantScope): SessionHandle;
   list(scope?: TenantScope): SessionMetadata[];
   /**
    * Delete a session scoped to a tenant. Returns `false` when the
@@ -92,6 +119,19 @@ const SCHEMA = `
     status TEXT NOT NULL,
     ended_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, turn_id),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  );
+
+  -- Session pinning (Item A step 1). Maps a stable, operator-chosen
+  -- sessionKey to the durable session it pins, scoped per tenant so two
+  -- tenants can reuse the same key without colliding. The session row is
+  -- deleted-cascaded so a removed session can't leave a dangling pin.
+  CREATE TABLE IF NOT EXISTS session_keys (
+    tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
+    session_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, session_key),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
   );
 `;
@@ -193,6 +233,12 @@ export function createSqliteSessionStore(config: SqliteSessionStoreConfig): Sqli
        ORDER BY s.updated_at DESC`,
   );
   const deleteSession = db.prepare('DELETE FROM sessions WHERE id = ?');
+  const selectSessionKey = db.prepare<{ session_id: string }, [string, string]>(
+    'SELECT session_id FROM session_keys WHERE tenant_id = ? AND session_key = ?',
+  );
+  const insertSessionKey = db.prepare(
+    'INSERT INTO session_keys (tenant_id, session_key, session_id, created_at) VALUES (?, ?, ?, ?)',
+  );
 
   function buildHandle(id: string, spec: AgentSpec, initial: Message[]): SessionHandle {
     const messages: Message[] = [...initial];
@@ -251,6 +297,25 @@ export function createSqliteSessionStore(config: SqliteSessionStoreConfig): Sqli
     };
   }
 
+  // Re-open a session by id within a tenant scope. Shared by `open` and
+  // the keyed `resolveByKey` path so both return a handle carrying the
+  // accumulated transcript with identical tenant-boundary semantics.
+  function openWithinTenant(id: string, tenantId: string): SessionHandle | null {
+    const row = selectSession.get(id);
+    if (!row) return null;
+    if (row.tenant_id !== tenantId) {
+      throw new TenantBoundaryError({
+        sourceTenantId: tenantId,
+        targetTenantId: row.tenant_id,
+        resource: 'session',
+        resourceId: id,
+      });
+    }
+    const spec = JSON.parse(row.spec_json) as AgentSpec;
+    const messages = selectMessages.all(id).map(rowToMessage);
+    return buildHandle(id, spec, messages);
+  }
+
   return {
     create(spec: AgentSpec, id?: string, scope?: TenantScope): SessionHandle {
       const tenantId = scope?.tenantId ?? DEFAULT_TENANT_ID;
@@ -262,19 +327,31 @@ export function createSqliteSessionStore(config: SqliteSessionStoreConfig): Sqli
 
     open(id: string, scope?: TenantScope): SessionHandle | null {
       const tenantId = scope?.tenantId ?? DEFAULT_TENANT_ID;
-      const row = selectSession.get(id);
-      if (!row) return null;
-      if (row.tenant_id !== tenantId) {
-        throw new TenantBoundaryError({
-          sourceTenantId: tenantId,
-          targetTenantId: row.tenant_id,
-          resource: 'session',
-          resourceId: id,
-        });
-      }
-      const spec = JSON.parse(row.spec_json) as AgentSpec;
-      const messages = selectMessages.all(id).map(rowToMessage);
-      return buildHandle(id, spec, messages);
+      return openWithinTenant(id, tenantId);
+    },
+
+    resolveByKey(sessionKey: string, scope?: TenantScope): SessionHandle | undefined {
+      const tenantId = scope?.tenantId ?? DEFAULT_TENANT_ID;
+      const mapping = selectSessionKey.get(tenantId, sessionKey);
+      if (!mapping) return undefined;
+      // A dangling pin (mapping present, session row gone) is treated as
+      // "no pinned session" so the caller mints a fresh one — the unique
+      // INSERT below would otherwise wedge. `ON DELETE CASCADE` normally
+      // keeps these in sync; this guards a manually-tampered DB.
+      const handle = openWithinTenant(mapping.session_id, tenantId);
+      return handle ?? undefined;
+    },
+
+    createForKey(sessionKey: string, spec: AgentSpec, scope?: TenantScope): SessionHandle {
+      const tenantId = scope?.tenantId ?? DEFAULT_TENANT_ID;
+      const sessionId = crypto.randomUUID();
+      const now = Date.now();
+      const tx = db.transaction(() => {
+        insertSession.run(sessionId, tenantId, JSON.stringify(spec), now, now);
+        insertSessionKey.run(tenantId, sessionKey, sessionId, now);
+      });
+      tx();
+      return buildHandle(sessionId, spec, []);
     },
 
     list(scope?: TenantScope): SessionMetadata[] {

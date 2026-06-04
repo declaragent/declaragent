@@ -139,6 +139,20 @@ const agentYamlSchema = z
     temperature: z.number().optional(),
     maxTokens: z.number().int().positive().optional(),
     subagentDepthCap: z.number().int().nonnegative().optional(),
+    /**
+     * Max tool-use iterations per turn before the engine loop halts with
+     * `stopReason: 'max_iterations'`. Optional positive integer; absent →
+     * the engine falls back to `DEFAULT_MAX_ITERATIONS` (50). Surfaced on
+     * {@link AgentSpec.maxIterations}, which the engine honours with
+     * precedence `spec > EngineConfig > default`.
+     *
+     * @since 0.7.6
+     */
+    maxIterations: z
+      .number()
+      .int('agent.yaml: "maxIterations" must be an integer')
+      .positive('agent.yaml: "maxIterations" must be a positive integer')
+      .optional(),
     skills: z.array(z.string()).optional(),
     tools: z
       .object({
@@ -637,6 +651,7 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
     ...(cfg.temperature !== undefined && { temperature: cfg.temperature }),
     ...(cfg.maxTokens !== undefined && { maxTokens: cfg.maxTokens }),
     ...(cfg.subagentDepthCap !== undefined && { subagentDepthCap: cfg.subagentDepthCap }),
+    ...(cfg.maxIterations !== undefined && { maxIterations: cfg.maxIterations }),
   };
 
   // Normalise the rate-limit block. Missing `burst` defaults to `rps`

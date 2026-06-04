@@ -48,6 +48,29 @@ export interface DispatcherSessionFactories {
     parentSessionId: string,
     spec?: Partial<AgentSpec>,
   ): SessionHandle | Promise<SessionHandle>;
+  /**
+   * Session pinning (Item A step 1). Look up an existing durable session
+   * by its stable `sessionKey` (e.g. per Slack thread / per tenant / per
+   * entity). Returns `undefined` when no pinned session exists yet, in
+   * which case the dispatcher falls back to {@link createSessionForKey}.
+   * Wired by the host to the SQLite session store; absent in tests that
+   * don't exercise the pinned skill path. See `docs/AGENT_DURABILITY.md`.
+   * @since 0.7.6
+   */
+  resolveSessionByKey?(
+    sessionKey: string,
+  ): SessionHandle | undefined | Promise<SessionHandle | undefined>;
+  /**
+   * Session pinning (Item A step 1). Create-and-persist a brand-new
+   * durable session for `sessionKey` when {@link resolveSessionByKey} found
+   * none. The host keys the session so a later event with the same
+   * `sessionKey` resolves the same transcript.
+   * @since 0.7.6
+   */
+  createSessionForKey?(
+    sessionKey: string,
+    spec?: Partial<AgentSpec>,
+  ): SessionHandle | Promise<SessionHandle>;
 }
 
 export interface CreateEventDispatcherOptions extends DispatcherSessionFactories {
@@ -113,6 +136,8 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
     resolveSession,
     createSession,
     createChildSession,
+    resolveSessionByKey,
+    createSessionForKey,
   } = options;
   const cacheSize = Math.max(1, options.idempotencyCacheSize ?? DEFAULT_IDEMPOTENCY_CACHE_SIZE);
   const ttlMs = options.idempotencyTtlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
@@ -227,6 +252,61 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
       case 'skill': {
         const skill = lookupSkill(registry, target.name);
         if (!skill) return rejected('no-handler', `skill "${target.name}" not registered`);
+
+        // Session pinning (Item A step 1). When the route declared a
+        // non-empty `sessionKey`, resolve-or-create one durable session
+        // keyed by it and append the event as a NEW TURN on that session,
+        // accumulating transcript across events. Empty strings are treated
+        // as absent — the parser already rejects them, but the dispatcher
+        // must not trust upstream. See `docs/AGENT_DURABILITY.md`.
+        const sessionKey =
+          typeof target.sessionKey === 'string' && target.sessionKey.length > 0
+            ? target.sessionKey
+            : undefined;
+        if (sessionKey !== undefined) {
+          if (!resolveSessionByKey && !createSessionForKey) {
+            return rejected(
+              'no-handler',
+              'session-pinning factories (resolveSessionByKey / createSessionForKey) not provided',
+            );
+          }
+          const existing = await resolveSessionByKey?.(sessionKey);
+          const pinned = existing ?? (await createSessionForKey?.(sessionKey));
+          if (!pinned) {
+            return rejected(
+              'no-handler',
+              `pinned session for key "${sessionKey}" could not be resolved or created`,
+            );
+          }
+          // Reuse the per-target circuit breaker for parity with the
+          // unpinned path so a chronically failing pinned skill trips too.
+          const pinnedBreaker = options.targetBreaker?.(target.name);
+          if (pinnedBreaker && !pinnedBreaker.allow()) {
+            return rejected(
+              'circuit-open',
+              `skill "${target.name}" breaker is ${pinnedBreaker.state}; cooldown in progress`,
+            );
+          }
+          try {
+            // Serialize behind the per-session lock and run the EVENT as a
+            // new turn (mirrors the `session` / `new-session` cases). The
+            // pinned conversation accumulates real event turns, not
+            // re-rendered skill prompts — documented in AGENT_DURABILITY.md.
+            const turnResult = await runForSession(pinned.id, async () =>
+              runAgent({
+                session: pinned,
+                userMessage: frameEvent(event),
+                ...(event.meta?.causedBy !== undefined && { causedBy: event.meta.causedBy }),
+              }),
+            );
+            pinnedBreaker?.record(true);
+            return dispatched(pinned.id, turnResult);
+          } catch (err) {
+            pinnedBreaker?.record(false);
+            throw err;
+          }
+        }
+
         if (!createChildSession) {
           return rejected('no-handler', 'createChildSession factory not provided');
         }

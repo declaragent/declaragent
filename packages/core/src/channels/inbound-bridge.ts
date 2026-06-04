@@ -50,6 +50,16 @@ export interface InboundRoute {
   event: string;
   /** Skill `lookupName` to dispatch. */
   skill: string;
+  /**
+   * Optional session-pinning key (Item A step 1). A stable string — e.g.
+   * per Slack thread, per tenant, or per entity. When present the bridged
+   * skill target carries it through so the dispatcher resolves-or-creates a
+   * durable session keyed by it and accumulates transcript across events.
+   * Absent = the unchanged fresh-per-event behavior. See
+   * `docs/AGENT_DURABILITY.md`.
+   * @since 0.7.6
+   */
+  sessionKey?: string;
 }
 
 export interface ChannelInboundBridgeOptions {
@@ -101,7 +111,12 @@ export function createChannelInboundBridge(
         id: id(),
         kind: event.kind,
         source: event.source,
-        target: { type: 'skill', name: route.skill, inputs: basePayload },
+        target: {
+          type: 'skill',
+          name: route.skill,
+          inputs: basePayload,
+          ...(route.sessionKey !== undefined && { sessionKey: route.sessionKey }),
+        },
         timestamp: event.timestamp,
         payload: event.payload,
         auth: event.auth,
