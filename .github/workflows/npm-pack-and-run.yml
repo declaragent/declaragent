@@ -1,0 +1,199 @@
+name: npm pack + run (install → init → next-command)
+
+# P0-2 · The packed-tarball end-to-end gate.
+#
+# npm-install-smoke.yml proves `declaragent --version` runs from a packed
+# tarball; npm-install-e2e.yml proves a REAL registry+release install runs
+# the downloaded binary. NEITHER proves the install → init → first-real-
+# command path actually works from the pack set — i.e. that the templates
+# the prepack `copy-templates` step bundles into the tarball are present
+# and usable by `fleet add`. That's the gap the 0.6→0.7.5 install breakage
+# (templates 404) lived in, and the follow-up the prior hardening pass
+# skipped.
+#
+# This workflow:
+#   1. Builds the CLI + its workspace deps so `dist/` exists.
+#   2. `npm pack`s `@declaragent/cli`. `prepack` runs `copy-templates`,
+#      mirroring `<repo>/templates/` into `packages/cli/templates/` so the
+#      tarball ships the starter packs.
+#   3. Asserts `npm pack --dry-run` lists a `templates/` entry (incl. the
+#      `rpc-server` template the next-command below consumes). Catches a
+#      stale `files` field or a broken copy step before it ships.
+#   4. Installs the tarball into a CLEAN temp prefix (no repo on PATH).
+#   5. In a scratch dir, runs `declaragent init --fleet <name>` and then
+#      the EXACT next command it prints —
+#        `declaragent fleet add --template rpc-server --id pr-reviewer`
+#      — asserting it exits 0 and writes the expected template files into
+#      `agents/pr-reviewer/`.
+#
+# The launcher (`bin/declaragent.js`) routes through the bundled
+# `dist/index.js` via Bun whenever `bun` is on PATH, so this never depends
+# on the GitHub-release binary. `DECLARAGENT_NO_POSTINSTALL=1` keeps the
+# install from reaching for that binary at all.
+#
+# Triggers:
+#   - pull_request — catches breakage before merge.
+#   - workflow_dispatch — manual re-runs.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: npm-pack-and-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pack-and-run:
+    name: pack + init + next-command
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Build the CLI's workspace deps first so their dist/.d.ts exist,
+      # then the CLI itself. `prebuild` runs `copy-templates`, so after
+      # this step `packages/cli/templates/` is populated too.
+      - name: Build CLI's workspace deps
+        run: |
+          bun run --filter '@declaragent/core' build
+          bun run --filter '@declaragent/plugin-agent-rpc' --filter '@declaragent/channel-whatsapp' build
+
+      - name: Build CLI dist
+        run: bun run --filter '@declaragent/cli' build
+
+      - name: Assert pack set contains templates/ files
+        shell: bash
+        working-directory: packages/cli
+        run: |
+          set -euo pipefail
+          # `prepack` runs `copy-templates`, so the dry-run reflects the
+          # exact contents that ship. npm writes the listing to stderr, so
+          # fold it into stdout before grepping.
+          npm pack --dry-run 2>&1 | tee /tmp/npm-pack-dryrun.log
+          if ! grep -qE '(^|[[:space:]])templates/' /tmp/npm-pack-dryrun.log; then
+            echo "::error::npm pack set has no templates/ entry — the copy-templates step or the package.json files field is broken." >&2
+            exit 1
+          fi
+          # The next-command below consumes the rpc-server template; make
+          # sure it specifically made it into the pack set.
+          if ! grep -qE 'templates/rpc-server/agent\.yaml' /tmp/npm-pack-dryrun.log; then
+            echo "::error::npm pack set is missing templates/rpc-server/agent.yaml — fleet add --template rpc-server would 404 for installed users." >&2
+            exit 1
+          fi
+          echo "✓ pack set ships templates/ (incl. rpc-server)"
+
+      - name: Pack npm tarball
+        id: pack
+        shell: bash
+        working-directory: packages/cli
+        run: |
+          set -euo pipefail
+          TGZ="$(npm pack --silent)"
+          echo "tgz=${PWD}/${TGZ}" >> "${GITHUB_OUTPUT}"
+          echo "packed ${TGZ}"
+
+      - name: Install tarball into a clean temp prefix
+        id: install
+        shell: bash
+        env:
+          # Skip the release-binary download entirely: the bundled Bun
+          # launcher path runs dist/index.js directly, so we never need it.
+          DECLARAGENT_NO_POSTINSTALL: '1'
+        run: |
+          set -euo pipefail
+          NPM_PREFIX="${RUNNER_TEMP}/npm-global"
+          mkdir -p "${NPM_PREFIX}"
+          npm config set prefix "${NPM_PREFIX}"
+          echo "${NPM_PREFIX}/bin" >> "${GITHUB_PATH}"
+          export PATH="${NPM_PREFIX}/bin:${PATH}"
+          npm install -g "${{ steps.pack.outputs.tgz }}"
+          echo "prefix=${NPM_PREFIX}" >> "${GITHUB_OUTPUT}"
+
+      - name: Sanity-check the installed launcher
+        shell: bash
+        env:
+          NPM_PREFIX: ${{ steps.install.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          export PATH="${NPM_PREFIX}/bin:${PATH}"
+          command -v declaragent
+          # Bun is on PATH (setup-bun), so the launcher routes through the
+          # bundled dist/index.js — no GitHub-release binary required.
+          out="$(declaragent --version)"
+          echo "declaragent --version → ${out}"
+          if ! echo "${out}" | grep -qE '^declaragent [0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::unexpected --version output: ${out}" >&2
+            exit 1
+          fi
+
+      - name: init → run the EXACT next command init prints
+        shell: bash
+        env:
+          NPM_PREFIX: ${{ steps.install.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          export PATH="${NPM_PREFIX}/bin:${PATH}"
+
+          SCRATCH="${RUNNER_TEMP}/scratch"
+          rm -rf "${SCRATCH}"
+          mkdir -p "${SCRATCH}"
+          cd "${SCRATCH}"
+
+          # 1. Scaffold a fleet. This is the flow that prints the exact
+          #    next command we run below.
+          declaragent init --fleet demo-fleet | tee init.log
+          test -f demo-fleet/fleet.yaml
+
+          # 1a. Prove the printed hint really is the command we run next —
+          #     keeps this gate honest if the hint ever changes.
+          if ! grep -qF 'declaragent fleet add --template rpc-server --id pr-reviewer' init.log; then
+            echo "::error::init did not print the expected next command; this gate is testing a stale command." >&2
+            exit 1
+          fi
+
+          # 2. Run the EXACT next command init printed, from inside the
+          #    fleet dir. Assert it exits 0 (set -e covers the exit code).
+          cd demo-fleet
+          declaragent fleet add --template rpc-server --id pr-reviewer
+
+          # 3. Assert the expected template files landed under the new
+          #    agent dir, sourced from the tarball's bundled templates/.
+          AGENT_DIR="agents/pr-reviewer"
+          for f in \
+            "${AGENT_DIR}/agent.yaml" \
+            "${AGENT_DIR}/capabilities.yaml" \
+            "${AGENT_DIR}/event-sources.yaml" \
+            "${AGENT_DIR}/.env.example" \
+            "${AGENT_DIR}/README.md" \
+            "${AGENT_DIR}/skills/review-pr.md"; do
+            if [ ! -f "${f}" ]; then
+              echo "::error::expected template file missing after fleet add: ${f}" >&2
+              echo "  install → init → next-command path is broken (templates not shipped or not resolvable)." >&2
+              find "${AGENT_DIR}" -type f || true
+              exit 1
+            fi
+          done
+
+          # The agent must be wired into the manifest too — proves the
+          # whole command, not just the file copy, succeeded.
+          if ! grep -qE '(^|[[:space:]])id:[[:space:]]*pr-reviewer' fleet.yaml; then
+            echo "::error::fleet.yaml was not updated with the pr-reviewer agent entry." >&2
+            cat fleet.yaml || true
+            exit 1
+          fi
+
+          echo "✓ install → init → fleet add (rpc-server) succeeded end-to-end from the packed tarball"

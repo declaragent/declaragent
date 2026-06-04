@@ -13,6 +13,7 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "templates",
     "bin/declaragent.js",
     "bin/postinstall.js",
     "bin/README.md",
@@ -20,11 +21,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "prebuild": "bun scripts/write-version.ts",
+    "copy-templates": "node -e \"const{cpSync,rmSync}=require('node:fs');const{join}=require('node:path');const src=join(process.cwd(),'..','..','templates');const dest=join(process.cwd(),'templates');rmSync(dest,{recursive:true,force:true});cpSync(src,dest,{recursive:true});console.log('copy-templates: '+src+' -> '+dest)\"",
+    "prebuild": "bun scripts/write-version.ts && bun run copy-templates",
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "bun run copy-templates",
     "typecheck": "bun scripts/write-version.ts && tsc --noEmit",
     "dev": "bun scripts/write-version.ts && bun run src/index.tsx",
-    "clean": "rm -rf dist bin/declaragent-binary",
+    "clean": "rm -rf dist bin/declaragent-binary templates",
     "regen-snapshots": "bun scripts/regen-k8s-snapshot.ts",
     "postinstall": "node ./bin/postinstall.js"
   },

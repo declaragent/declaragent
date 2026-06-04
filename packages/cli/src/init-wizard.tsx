@@ -47,6 +47,12 @@ export interface InitOptions {
 export interface InitWizardDeps {
   io?: InitWizardIO;
   fs?: UnpackFS;
+  /**
+   * Override the templates root directory. Defaults (inside
+   * {@link unpackTemplate}) to the resolved package/repo `templates/` dir.
+   * Tests inject a fixture root so the unpacker reads from the seeded FS.
+   */
+  templatesDir?: string;
   /** Override the marker-file path. Defaults to `initializedMarkerPath()`. */
   markerPath?: string;
   /** Override the telemetry opt-out path. */
@@ -109,6 +115,7 @@ export async function runInit(options: InitOptions, deps: InitWizardDeps = {}): 
         force: options.force,
         multiTenant: options.multiTenant,
         ...(options.tenantId !== undefined && { tenantId: options.tenantId }),
+        ...(deps.templatesDir !== undefined && { templatesDir: deps.templatesDir }),
       },
       deps.fs,
     );
