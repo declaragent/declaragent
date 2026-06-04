@@ -114,7 +114,12 @@ jobs:
           npm pack --dry-run 2>&1 | tee /tmp/npm-pack-dryrun.log
           grep -q 'bin/declaragent.js' /tmp/npm-pack-dryrun.log
           grep -q 'bin/postinstall.js' /tmp/npm-pack-dryrun.log
-          TGZ="$(npm pack --silent)"
+          # `prepack` (copy-templates) prints to stdout, so the tarball
+          # name is the trailing `.tgz` line, not the whole capture.
+          TGZ="$(npm pack --silent | grep -E '\.tgz$' | tail -n1)"
+          if [ -z "${TGZ}" ] || [ ! -f "${TGZ}" ]; then
+            echo "::error::npm pack did not produce a tarball (got '${TGZ}')." >&2; exit 1
+          fi
           echo "tgz=${PWD}/${TGZ}" >> "${GITHUB_OUTPUT}"
 
       - name: Install globally
