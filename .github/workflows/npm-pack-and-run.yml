@@ -102,7 +102,13 @@ jobs:
         working-directory: packages/cli
         run: |
           set -euo pipefail
-          TGZ="$(npm pack --silent)"
+          # `prepack` (copy-templates) prints to stdout, so the tarball
+          # name is the LAST `.tgz` line — not the whole capture.
+          TGZ="$(npm pack --silent | grep -E '\.tgz$' | tail -n1)"
+          if [ -z "${TGZ}" ] || [ ! -f "${TGZ}" ]; then
+            echo "::error::npm pack did not produce a tarball (got '${TGZ}')." >&2
+            exit 1
+          fi
           echo "tgz=${PWD}/${TGZ}" >> "${GITHUB_OUTPUT}"
           echo "packed ${TGZ}"
 
