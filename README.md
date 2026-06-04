@@ -4,9 +4,16 @@ Declarative, git-versioned AI agent platform. An agent is a stable
 runtime core plus a declarative `agent.yaml` that lives in your repo
 alongside the code it automates.
 
+It is an unusually thoughtful declarative agent runtime with serious primitives
+— hash-chained audit, multi-tenant isolation, MCP, and broker-backed agent RPC —
+currently at `0.x` and seeking its first adopters. It is **not** a finished
+enterprise product; see [Status & honesty](#status--honesty) below.
+
 - **Website:** [declaragent.dev](https://declaragent.dev)
 - **Packages:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) on npm
 - **Source:** [github.com/declaragent/declaragent](https://github.com/declaragent/declaragent)
+- **CLI:** installs as `declaragent` (primary) and `d9t` (alias);
+  [d9t.dev](https://d9t.dev) is an alias domain.
 
 ## Quickstart
 
@@ -20,7 +27,7 @@ declaragent fleet run                  # dev loop for a fleet
 See [declaragent.dev/quickstart](https://declaragent.dev/quickstart)
 for the full walkthrough.
 
-## What ships in 0.1.0
+## What ships
 
 - **Runtime core** — engine loop, built-in tools (Read / Write / Edit /
   Glob / Grep / Bash / Agent / SendMessage), permission gate, session
@@ -30,10 +37,18 @@ for the full walkthrough.
 - **Channels** — Slack, Telegram, Discord, WhatsApp.
 - **Multi-tenant** — per-tenant quotas, audit with hash-chain, Vault /
   AWS-SM / GCP-SM / K8s secret providers, Prometheus metrics.
-- **Agent RPC** (v1.1) — typed request/response between agents over
+- **Agent RPC** — typed request/response between agents over
   any broker. Memory transport for dev.
-- **Fleet** (v1.2) — one `fleet.yaml` declares N agents; `fleet run`
+- **Fleet** — one `fleet.yaml` declares N agents; `fleet run`
   hosts them together; `fleet deploy` rolls them out atomically.
+
+## Built with AI assistance
+
+A substantial share of this codebase is co-authored by Claude (Anthropic) under
+a single human reviewer, who is the accountable owner and final quality gate for
+every change that lands. This is disclosed, not hidden — see the AI-authorship
+note in [GOVERNANCE.md](./GOVERNANCE.md) and the project memory in
+[CLAUDE.md](./CLAUDE.md).
 
 ## Development
 
@@ -52,6 +67,15 @@ bun run lint
 ## Contributing
 
 See `CONTRIBUTING.md`.
+
+## Status & honesty
+
+This is a `0.x` project with serious primitives but no third-party security
+review yet and no published outside production users. For the evidence-backed
+capability ledger see
+[docs/FIRST_PRINCIPLES_VALIDATION.md](./docs/FIRST_PRINCIPLES_VALIDATION.md) and
+[AGENTS.md](./AGENTS.md); to report a vulnerability see
+[SECURITY.md](./SECURITY.md).
 
 ## License
 

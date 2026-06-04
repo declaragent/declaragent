@@ -242,8 +242,17 @@ export async function startChannelRuntime(
  * shape defensively and skip entries that don't match. Shape:
  *
  * ```json
- * "inbound": { "routes": [{ "event": "chat.mention", "skill": "triage" }, …] }
+ * "inbound": {
+ *   "routes": [
+ *     { "event": "chat.mention", "skill": "triage" },
+ *     { "event": "chat.dm", "skill": "chat", "sessionKey": "support-thread" }
+ *   ]
+ * }
  * ```
+ *
+ * The optional `sessionKey` (Item A step 1) pins repeated events to one
+ * durable session so the agent accumulates transcript across events — see
+ * `docs/AGENT_DURABILITY.md`. Absent = the unchanged fresh-per-event path.
  *
  * @since 0.6.0-slice.6
  */
@@ -291,7 +300,24 @@ function parseInboundRoutes(
       });
       continue;
     }
-    out.push({ event: r.event, skill: r.skill });
+    // Optional session-pinning key (Item A step 1). When present it MUST be
+    // a non-empty string; an empty or non-string value drops the whole
+    // route, matching the defensive event/skill checks above.
+    if (
+      r.sessionKey !== undefined &&
+      (typeof r.sessionKey !== 'string' || r.sessionKey.length === 0)
+    ) {
+      logger.warn('channels.inbound-config.route-invalid', {
+        index: i,
+        reason: 'sessionKey must be a non-empty string when present',
+      });
+      continue;
+    }
+    out.push({
+      event: r.event,
+      skill: r.skill,
+      ...(typeof r.sessionKey === 'string' && { sessionKey: r.sessionKey }),
+    });
   }
   return out;
 }

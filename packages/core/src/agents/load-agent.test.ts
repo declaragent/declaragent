@@ -177,6 +177,39 @@ describe('loadAgent', () => {
     await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/rateLimit|rps|validation/i);
   });
 
+  test('maxIterations is undefined on the spec when the yaml omits it (engine falls back to 50)', async () => {
+    // The default AGENT_YAML fixture has no maxIterations.
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.spec.maxIterations).toBeUndefined();
+  });
+
+  test('maxIterations from agent.yaml reaches the spec', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      ['name: x', 'model: y', 'systemPrompt: z', 'maxIterations: 12', ''].join('\n'),
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.spec.maxIterations).toBe(12);
+  });
+
+  test('rejects maxIterations <= 0 with a clear error', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      ['name: x', 'model: y', 'systemPrompt: z', 'maxIterations: 0', ''].join('\n'),
+    );
+    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(
+      /maxIterations|positive|validation/i,
+    );
+  });
+
+  test('rejects a non-integer maxIterations', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      ['name: x', 'model: y', 'systemPrompt: z', 'maxIterations: 2.5', ''].join('\n'),
+    );
+    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/maxIterations|integer|validation/i);
+  });
+
   test('controlPlaneAuth is undefined when block absent (back-compat)', async () => {
     const loaded = await loadAgent({ agentDir: dir });
     expect(loaded.controlPlaneAuth).toBeUndefined();

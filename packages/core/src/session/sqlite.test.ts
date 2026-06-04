@@ -281,6 +281,93 @@ describe('SqliteSessionStore — tenant scoping', () => {
   });
 });
 
+describe('SqliteSessionStore — session pinning (resolveByKey / createForKey)', () => {
+  let dir: string;
+  let store: SqliteSessionStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'declaragent-sqlite-pin-'));
+    store = createSqliteSessionStore({ path: join(dir, 'sessions.db') });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('resolveByKey returns undefined before any session is pinned', () => {
+    expect(store.resolveByKey('thread-1')).toBeUndefined();
+  });
+
+  test('createForKey mints a session; resolveByKey returns the same id', () => {
+    const created = store.createForKey('thread-1', SPEC);
+    const resolved = store.resolveByKey('thread-1');
+    expect(resolved).toBeDefined();
+    expect(resolved?.id).toBe(created.id);
+  });
+
+  test('resolve-or-create accumulates transcript across two events on one key', async () => {
+    // First event: no pin yet → create + run a turn.
+    const first = store.resolveByKey('thread-1') ?? store.createForKey('thread-1', SPEC);
+    await first.appendMessage({ role: 'user', content: [{ type: 'text', text: 'event-1' }] });
+    await first.appendMessage({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'reply-1' }],
+    });
+
+    // Second event with the same key: resolve the existing pinned session.
+    const second = store.resolveByKey('thread-1') ?? store.createForKey('thread-1', SPEC);
+    expect(second).toBeDefined();
+    expect(second.id).toBe(first.id);
+    // The second handle already carries the accumulated transcript.
+    expect(second.transcript.length).toBe(2);
+    await second.appendMessage({ role: 'user', content: [{ type: 'text', text: 'event-2' }] });
+    expect(second.transcript.length).toBe(3);
+  });
+
+  test('different keys map to isolated sessions — no transcript bleed', async () => {
+    const a = store.createForKey('key-a', SPEC);
+    const b = store.createForKey('key-b', SPEC);
+    expect(a.id).not.toBe(b.id);
+    await a.appendMessage({ role: 'user', content: [{ type: 'text', text: 'for-a' }] });
+
+    expect(store.resolveByKey('key-a')?.transcript.length).toBe(1);
+    expect(store.resolveByKey('key-b')?.transcript.length).toBe(0);
+  });
+
+  test('pinned transcript survives store close/reopen (durable)', async () => {
+    const dbPath = join(dir, 'sessions.db');
+    const s = store.createForKey('durable-key', SPEC);
+    await s.appendMessage({ role: 'user', content: [{ type: 'text', text: 'persisted' }] });
+    store.close();
+
+    const reopened = createSqliteSessionStore({ path: dbPath });
+    try {
+      const resolved = reopened.resolveByKey('durable-key');
+      expect(resolved).toBeDefined();
+      expect(resolved?.id).toBe(s.id);
+      expect(resolved?.transcript.length).toBe(1);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  test('keys are tenant-scoped — same key in two tenants is two sessions', () => {
+    const acme = store.createForKey('shared-key', SPEC, { tenantId: 'acme' });
+    const beta = store.createForKey('shared-key', SPEC, { tenantId: 'beta' });
+    expect(acme.id).not.toBe(beta.id);
+    expect(store.resolveByKey('shared-key', { tenantId: 'acme' })?.id).toBe(acme.id);
+    expect(store.resolveByKey('shared-key', { tenantId: 'beta' })?.id).toBe(beta.id);
+    // Default-tenant scope sees neither.
+    expect(store.resolveByKey('shared-key')).toBeUndefined();
+  });
+
+  test('createForKey twice with the same key throws (unique pin guard)', () => {
+    store.createForKey('dup-key', SPEC);
+    expect(() => store.createForKey('dup-key', SPEC)).toThrow();
+  });
+});
+
 describe('SqliteSessionStore — pre-v1.0 migration', () => {
   let dir: string;
   let dbPath: string;

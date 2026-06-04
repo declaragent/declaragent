@@ -131,7 +131,7 @@ export async function eventsShow(id: string, deps: EventsCliDeps = {}): Promise<
   try {
     const record = await store.get(id);
     if (!record) {
-      io.err(`✗ event "${id}" not found\n`);
+      io.err(`✗ event "${id}" not found — list known ids with \`declaragent events list\`.\n`);
       return 1;
     }
     io.out(JSON.stringify(record, null, 2));
@@ -185,7 +185,9 @@ export async function eventsReplayRange(
       },
     });
     if (resp.method !== 'replay-range') {
-      io.err('✗ unexpected response method\n');
+      io.err(
+        `✗ unexpected response method "${resp.method}" (wanted "replay-range"). Restart the daemon with \`declaragent daemon\` and retry.\n`,
+      );
       return 1;
     }
     if ('error' in resp) {
@@ -215,7 +217,7 @@ export async function eventsReplay(id: string, deps: EventsCliDeps = {}): Promis
   try {
     const record = await store.get(id);
     if (!record) {
-      io.err(`✗ event "${id}" not found\n`);
+      io.err(`✗ event "${id}" not found — list known ids with \`declaragent events list\`.\n`);
       return 1;
     }
     const socketPath = deps.socketPath ?? daemonSocketPath();
@@ -234,7 +236,9 @@ export async function eventsReplay(id: string, deps: EventsCliDeps = {}): Promis
         params: { event: replayEvent },
       });
       if (resp.method !== 'send-event') {
-        io.err('✗ unexpected response method\n');
+        io.err(
+          `✗ unexpected response method "${resp.method}" (wanted "send-event"). Restart the daemon with \`declaragent daemon\` and retry.\n`,
+        );
         return 1;
       }
       if ('error' in resp) {

@@ -121,11 +121,17 @@ export async function fleetAdd(args: FleetAddArgs, deps: FleetAddDeps = {}): Pro
 }
 
 /**
- * Resolve the repo's `templates/` dir relative to this module. Walks up
- * from `packages/cli/src/` until we see a `templates/` directory
- * sibling. Only used as a fallback — production deploys must supply
- * their own templates dir via `--templates-dir` (tracked for a later
- * slice once the starter pack ships as a package).
+ * Resolve the `templates/` directory relative to this module.
+ *
+ * Two layouts must work:
+ *  1. **Installed package** (`npm i -g @declaragent/cli`): the runtime
+ *     module lives at `<pkg>/dist/...`, and `templates/` is copied to the
+ *     package root (`<pkg>/templates`) by the `prepack`/`prebuild` copy
+ *     step. There is NO repo root to walk up to. This is the case that
+ *     used to 404 — the same root cause as the binary download.
+ *  2. **Monorepo dev**: the module lives at `packages/cli/src/...` (or
+ *     `packages/cli/dist/...`), and the live templates are at the repo
+ *     root `<repo>/templates`. The walk-up below finds it.
  *
  * Exported (as {@link defaultTemplatesDir}) so the builder toolkit's
  * `DeclaraFleetAdd` tool can reuse the same resolver without
@@ -133,15 +139,43 @@ export async function fleetAdd(args: FleetAddArgs, deps: FleetAddDeps = {}): Pro
  */
 export function defaultTemplatesDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  // packages/cli/src → packages/cli → packages → <root>
+  return resolveTemplatesDir(here, tryIsDir);
+}
+
+/**
+ * Pure resolver behind {@link defaultTemplatesDir}. Split out so the
+ * candidate ordering can be unit-tested against a fake `isDir` for both
+ * the npm-install layout (`<pkg>/templates`) and the monorepo-dev layout
+ * (`<repo>/templates`) without touching the real filesystem.
+ *
+ * @param here   The directory of the running module (`<pkg>/dist` when
+ *               installed, `packages/cli/src` in dev).
+ * @param isDir  Predicate that returns true iff its argument is a real
+ *               directory.
+ */
+export function resolveTemplatesDir(here: string, isDir: (path: string) => boolean): string {
+  // Installed-package candidates, tried first so an npm install never
+  // walks up into a repo root that doesn't exist:
+  //   <pkg>/dist  → <pkg>/templates   (the prepack-copied dir)
+  //   <pkg>/src   → <pkg>/templates   (dev layout if ever colocated)
+  const installCandidates = [join(here, '..', 'templates'), join(here, '..', '..', 'templates')];
+  for (const candidate of installCandidates) {
+    if (isDir(candidate)) return candidate;
+  }
+
+  // Monorepo-dev fallback: walk up from here looking for a sibling
+  // `templates/` directory (the live repo-root source).
   let dir = here;
   for (let depth = 0; depth < 8; depth += 1) {
     const candidate = join(dir, 'templates');
-    if (tryIsDir(candidate)) return candidate;
+    if (isDir(candidate)) return candidate;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
+
+  // Last resort: the historical repo-root guess. Callers surface a clear
+  // "template not found" error if this path is wrong.
   return join(here, '..', '..', '..', 'templates');
 }
 

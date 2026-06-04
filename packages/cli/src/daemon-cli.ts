@@ -142,7 +142,7 @@ async function callDaemon<T>(
     return await body(client);
   } catch (err) {
     process.stderr.write(
-      `failed to talk to daemon: ${err instanceof Error ? err.message : String(err)}\n`,
+      `failed to talk to daemon: ${err instanceof Error ? err.message : String(err)}\n  confirm it is running with 'declaragent daemon-status', or (re)start it with 'declaragent daemon'.\n`,
     );
     return null;
   } finally {
@@ -156,11 +156,15 @@ export async function daemonStatus(): Promise<number> {
   );
   if (!result) return 1;
   if (result.method !== 'status') {
-    process.stderr.write('unexpected response method\n');
+    process.stderr.write(
+      `unexpected response method "${result.method}" (wanted "status"). Restart the daemon with 'declaragent daemon' and retry.\n`,
+    );
     return 1;
   }
   if ('error' in result) {
-    process.stderr.write(`status failed: ${result.error.message}\n`);
+    process.stderr.write(
+      `status failed: ${result.error.message}\n  the daemon rejected the call; check its log and retry, or restart it with 'declaragent daemon'.\n`,
+    );
     return 1;
   }
   const status = result.result;
@@ -191,11 +195,15 @@ export async function daemonReload(): Promise<number> {
   );
   if (!result) return 1;
   if ('error' in result) {
-    process.stderr.write(`reload failed: ${result.error.message}\n`);
+    process.stderr.write(
+      `reload failed: ${result.error.message}\n  the daemon rejected the call; check its log and retry, or restart it with 'declaragent daemon'.\n`,
+    );
     return 1;
   }
   if (result.method !== 'reload') {
-    process.stderr.write('unexpected response method\n');
+    process.stderr.write(
+      `unexpected response method "${result.method}" (wanted "reload"). Restart the daemon with 'declaragent daemon' and retry.\n`,
+    );
     return 1;
   }
   const diff = result.result;
@@ -214,7 +222,9 @@ export async function daemonShutdown(drain = true): Promise<number> {
   );
   if (!result) return 1;
   if ('error' in result) {
-    process.stderr.write(`shutdown failed: ${result.error.message}\n`);
+    process.stderr.write(
+      `shutdown failed: ${result.error.message}\n  the daemon rejected the call; check its log and retry, or restart it with 'declaragent daemon'.\n`,
+    );
     return 1;
   }
   process.stdout.write('shutdown acknowledged.\n');

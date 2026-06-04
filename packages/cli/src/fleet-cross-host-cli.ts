@@ -111,7 +111,10 @@ function filterHosts(
   if (!hostName) return hosts;
   const match = hosts.find((h) => h.name === hostName);
   if (!match) {
-    io.err(`✗ host "${hostName}" not declared in fleet.yaml#hosts\n`);
+    const declared = hosts.map((h) => h.name).join(', ') || '(none)';
+    io.err(
+      `✗ host "${hostName}" not declared in fleet.yaml#hosts. Declared hosts: ${declared}. Re-run without \`--host\` to fan out to all, or add it under fleet.yaml#hosts.\n`,
+    );
     return null;
   }
   return [match];
@@ -124,6 +127,9 @@ function renderFailures(io: FleetCrossHostIO, failures: readonly HostError[]): v
     const code = f.status !== undefined ? ` (HTTP ${f.status})` : '';
     io.err(`  ✗ ${f.host}${code}: ${f.message}\n`);
   }
+  io.err(
+    "  Check each host's `endpoint`/`token` in fleet.yaml#hosts and that the remote control plane is up (`declaragent ps` on the host).\n",
+  );
 }
 
 function client(deps: FleetCrossHostDeps): CrossHostControlPlaneClient {

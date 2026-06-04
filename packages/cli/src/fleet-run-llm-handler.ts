@@ -37,6 +37,7 @@ import {
   type LoadedAgent,
   type LoadedAgentEntry,
   type Message,
+  type MetricsRegistry,
   RPC_ERROR_CODES,
   type RpcRespondResult,
   SkillNotFoundError,
@@ -77,6 +78,19 @@ export interface CreateLLMHandlerFactoryOptions {
    * @since 0.7.2
    */
   loadAgentFn?: (agent: LoadedAgentEntry) => Promise<LoadedAgent>;
+  /**
+   * Item A step 3 — agent-durability observability. When supplied, each
+   * per-agent engine registers the `turn.iterations` histogram +
+   * `max_iterations_hit_total` counter on this registry so a fleet-run
+   * deployment with a `/metrics` exporter surfaces the same durability
+   * signal as `declaragent up`. Absent → the engine runs unmetered
+   * (today's `fleet run` has no metrics exporter, so the caller leaves
+   * this undefined; threading it here keeps the factory ready for when
+   * one lands without another wiring change).
+   *
+   * @since 0.7.6
+   */
+  metrics?: MetricsRegistry;
 }
 
 /**
@@ -190,6 +204,11 @@ export function createLLMHandlerFactory(
       // and the scaffolded agent has already declared its tool set.
       permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
       createChildSession: () => options.sessionStore.create(spec),
+      // Item A step 3 — register the iteration histogram + cap-hit
+      // counter when the caller supplies a metrics registry. `spec`
+      // already carries `maxIterations` from `agent.yaml` (parsed by
+      // loadAgent), so the engine honours the per-agent cap here too.
+      ...(options.metrics !== undefined && { metrics: options.metrics }),
     });
 
     return async (ctx: FleetAgentRequestContext) => {

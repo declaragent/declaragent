@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fleetAdd } from './fleet-add-cli.js';
+import { basename, join } from 'node:path';
+import { defaultTemplatesDir, fleetAdd, resolveTemplatesDir } from './fleet-add-cli.js';
 import { fleetInit } from './fleet-init-cli.js';
 
 function captureIo(): {
@@ -155,5 +155,39 @@ describe('fleetAdd', () => {
     } finally {
       h.cleanup();
     }
+  });
+});
+
+describe('resolveTemplatesDir', () => {
+  test('prefers the installed-package layout (<pkg>/templates)', () => {
+    // Simulate the npm install layout: module runs from `<pkg>/dist`, and
+    // the prepack-copied templates live at `<pkg>/templates`.
+    const here = '/usr/lib/node_modules/@declaragent/cli/dist';
+    const installed = '/usr/lib/node_modules/@declaragent/cli/templates';
+    const isDir = (p: string) => p === installed;
+    expect(resolveTemplatesDir(here, isDir)).toBe(installed);
+  });
+
+  test('falls back to the monorepo repo-root walk when no package dir exists', () => {
+    // Dev layout: module runs from `packages/cli/src`, templates live at
+    // the repo root `<repo>/templates` (3 levels up).
+    const here = '/repo/packages/cli/src';
+    const repoTemplates = '/repo/templates';
+    const isDir = (p: string) => p === repoTemplates;
+    expect(resolveTemplatesDir(here, isDir)).toBe(repoTemplates);
+  });
+
+  test('returns the historical guess when nothing resolves', () => {
+    const here = '/repo/packages/cli/src';
+    const isDir = () => false;
+    // join(here, '..', '..', '..', 'templates')
+    expect(resolveTemplatesDir(here, isDir)).toBe('/repo/templates');
+  });
+
+  test('defaultTemplatesDir resolves a real directory named templates', () => {
+    const dir = defaultTemplatesDir();
+    expect(basename(dir)).toBe('templates');
+    // In the monorepo this is the live repo-root templates dir.
+    expect(existsSync(dir)).toBe(true);
   });
 });

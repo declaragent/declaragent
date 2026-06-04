@@ -128,4 +128,25 @@ describe('declaragent npm launcher', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('binary not found');
   });
+
+  test('recovery hint surfaces pipeline-independent next actions (P1-12)', () => {
+    // No bun, no binary. The hint must point at a fix that works even
+    // when the release pipeline never published a binary.
+    const result = spawnSync(process.execPath, [launcherPath, 'ping'], {
+      env: { ...process.env, PATH: fakeBinDir },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(1);
+    const err = result.stderr;
+    // Leading phrase preserved for the existing assertion + scripts.
+    expect(err).toContain('binary not found');
+    // Fallback #1 — install Bun, no download needed.
+    expect(err).toContain('bun.sh');
+    // Diagnostic — confirm whether the release asset exists (curl -sI …).
+    expect(err).toContain('releases/download');
+    // Env-var clarifications.
+    expect(err).toContain('DECLARAGENT_NO_POSTINSTALL');
+    expect(err).toContain('DECLARAGENT_USE_BINARY');
+  });
 });

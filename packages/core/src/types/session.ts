@@ -22,6 +22,16 @@ export interface AgentSpec {
   temperature?: number;
   maxTokens?: number;
   subagentDepthCap?: number;
+  /**
+   * Max tool-use iterations per turn before the loop halts with
+   * stopReason 'max_iterations'. Defaults to DEFAULT_MAX_ITERATIONS (50).
+   * Settable from `agent.yaml` so operators can tune multi-step depth
+   * per agent. Precedence: spec.maxIterations > EngineConfig.maxIterations
+   * > DEFAULT_MAX_ITERATIONS.
+   *
+   * @since 0.7.6
+   */
+  maxIterations?: number;
 }
 
 /** @since 1.0.0 */

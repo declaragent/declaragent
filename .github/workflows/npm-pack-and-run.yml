@@ -1,0 +1,147 @@
+name: npm pack + run (init → next-command)
+
+# P0-2 · The templates-ship-and-work gate.
+#
+# Two distinct things must hold for `declaragent init` → `fleet add
+# --template` to work for a real user:
+#   1. The starter templates are actually IN the published tarball
+#      (`files` field + the prepack `copy-templates` step).
+#   2. The unpacker resolves + copies them from the installed package
+#      location into the new agent dir.
+#
+# This gate proves both, pre-merge:
+#   - (1) statically: `npm pack --dry-run` must list `templates/` (incl.
+#     the `rpc-server/agent.yaml` the next-command consumes). Catches a
+#     stale `files` field or a broken copy step before it ships.
+#   - (2) behaviourally: run the WORKSPACE-built CLI (`bun
+#     packages/cli/dist/index.js`) through `init` → the exact next command
+#     it prints, asserting the real bundled templates land.
+#
+# Why the workspace build and not a clean `npm i -g <tarball>`? In a
+# monorepo the CLI source legitimately imports symbols from sibling
+# packages (e.g. core) that aren't PUBLISHED until the same release
+# publishes them. A clean registry install pre-release pairs the new CLI
+# with the *old* published core and fails on a missing export — a release
+# artefact that only exists for the publish, not a product bug. The clean
+# real-registry install is covered post-release by npm-install-e2e.yml.
+#
+# Triggers:
+#   - pull_request — catches a templates/unpacker regression before merge.
+#   - workflow_dispatch — manual re-runs.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: npm-pack-and-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pack-and-run:
+    name: pack + init + next-command
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Build the CLI's workspace deps first so their dist/.d.ts exist,
+      # then the CLI itself. `prebuild` runs `copy-templates`, so after
+      # this step `packages/cli/templates/` is populated and the CLI
+      # resolves the matching freshly-built sibling packages at runtime.
+      - name: Build CLI's workspace deps
+        run: |
+          bun run --filter '@declaragent/core' build
+          bun run --filter '@declaragent/plugin-agent-rpc' --filter '@declaragent/channel-whatsapp' build
+
+      - name: Build CLI dist
+        run: bun run --filter '@declaragent/cli' build
+
+      - name: Assert pack set contains templates/ files
+        shell: bash
+        working-directory: packages/cli
+        run: |
+          set -euo pipefail
+          # `npm pack --dry-run` reflects the exact contents that ship.
+          # npm writes the listing to stderr, so fold it into stdout.
+          npm pack --dry-run 2>&1 | tee /tmp/npm-pack-dryrun.log
+          if ! grep -qE '(^|[[:space:]])templates/' /tmp/npm-pack-dryrun.log; then
+            echo "::error::npm pack set has no templates/ entry — the copy-templates step or the package.json files field is broken." >&2
+            exit 1
+          fi
+          # The next-command below consumes the rpc-server template; make
+          # sure it specifically made it into the pack set.
+          if ! grep -qE 'templates/rpc-server/agent\.yaml' /tmp/npm-pack-dryrun.log; then
+            echo "::error::npm pack set is missing templates/rpc-server/agent.yaml — fleet add --template rpc-server would 404 for installed users." >&2
+            exit 1
+          fi
+          echo "✓ pack set ships templates/ (incl. rpc-server)"
+
+      - name: init → run the EXACT next command init prints (workspace CLI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLI="${PWD}/packages/cli/dist/index.js"
+
+          SCRATCH="${RUNNER_TEMP}/scratch"
+          rm -rf "${SCRATCH}"
+          mkdir -p "${SCRATCH}"
+          cd "${SCRATCH}"
+
+          # 1. Scaffold a fleet. This is the flow that prints the exact
+          #    next command we run below.
+          bun "${CLI}" init --fleet demo-fleet | tee init.log
+          test -f demo-fleet/fleet.yaml
+
+          # 1a. Prove the printed hint really is the command we run next —
+          #     keeps this gate honest if the hint ever changes.
+          if ! grep -qF 'declaragent fleet add --template rpc-server --id pr-reviewer' init.log; then
+            echo "::error::init did not print the expected next command; this gate is testing a stale command." >&2
+            exit 1
+          fi
+
+          # 2. Run the EXACT next command init printed, from inside the
+          #    fleet dir. `set -e` covers a non-zero exit.
+          cd demo-fleet
+          bun "${CLI}" fleet add --template rpc-server --id pr-reviewer
+
+          # 3. Assert the expected template files landed under the new
+          #    agent dir, sourced from the bundled templates/.
+          AGENT_DIR="agents/pr-reviewer"
+          for f in \
+            "${AGENT_DIR}/agent.yaml" \
+            "${AGENT_DIR}/capabilities.yaml" \
+            "${AGENT_DIR}/event-sources.yaml" \
+            "${AGENT_DIR}/.env.example" \
+            "${AGENT_DIR}/README.md" \
+            "${AGENT_DIR}/skills/review-pr.md"; do
+            if [ ! -f "${f}" ]; then
+              echo "::error::expected template file missing after fleet add: ${f}" >&2
+              echo "  init → next-command path is broken (templates not shipped or not resolvable)." >&2
+              find "${AGENT_DIR}" -type f || true
+              exit 1
+            fi
+          done
+
+          # The agent must be wired into the manifest too — proves the
+          # whole command, not just the file copy, succeeded.
+          if ! grep -qE '(^|[[:space:]])id:[[:space:]]*pr-reviewer' fleet.yaml; then
+            echo "::error::fleet.yaml was not updated with the pr-reviewer agent entry." >&2
+            cat fleet.yaml || true
+            exit 1
+          fi
+
+          echo "✓ init → fleet add (rpc-server) succeeded end-to-end against the real bundled templates"

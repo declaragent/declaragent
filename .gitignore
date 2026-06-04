@@ -31,6 +31,12 @@ coverage
 # by CI). The public Docusaurus surface remains at `docs-site/docs/`.
 # Compiled standalone binary (built by `bun build --compile`; 62 MB)
 packages/cli/bin/declaragent-binary/
+# Generated copy of the repo-root `templates/` dir. The CLI's
+# `copy-templates` step (prebuild/prepack) mirrors `<repo>/templates/`
+# into `packages/cli/templates/` so the npm tarball ships the starter
+# packs. It's a build artifact — the real source lives at the repo-root
+# `templates/` dir — so keep the generated copy out of git to avoid drift.
+packages/cli/templates/
 # chaos:quick report artifacts (testkit/scripts/chaos-quick.ts writes
 # timestamped JSON + Markdown reports on every run; CI uploads them
 # as artifacts, local runs should not clutter the tree).

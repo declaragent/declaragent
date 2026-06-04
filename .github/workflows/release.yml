@@ -28,6 +28,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Create Release PR or publish
+        id: changesets
         uses: changesets/action@v1
         with:
           publish: bun run release
@@ -37,3 +38,68 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # P0-1 · Cut the `v<cli-version>` git tag + GitHub release that the
+      # binary build keys off. Without this, `@declaragent/cli` publishes
+      # to npm under a scoped `@declaragent/cli@X.Y.Z` tag, no `v*` tag is
+      # ever created, `release-binaries.yml` (on: push: tags: 'v*') never
+      # fires, and the postinstall download 404s — exactly what happened
+      # for every 0.6.0→0.7.5 release (newest v* tag was v0.5.21).
+      #
+      # The tag MUST be `v` + the published `@declaragent/cli` version so
+      # it lines up with `postinstall.js` (`v${pkg.version}`) and the
+      # `--version` output (P1-8 coherence). We read the version straight
+      # from the changesets `publishedPackages` output — never recompute
+      # it from another source.
+      #
+      # Creating the tag+release in a single `gh release create --target`
+      # call makes GitHub create the tag server-side via its API, which
+      # reliably emits the `push: tags` / `release: published` events that
+      # release-binaries.yml + npm-install-e2e.yml consume (a raw
+      # `git push` of a tag with the default GITHUB_TOKEN does not always
+      # re-trigger downstream workflows).
+      - name: Tag CLI release + trigger binary build
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+        run: |
+          set -euo pipefail
+
+          # Find the @declaragent/cli entry in the published-packages JSON.
+          CLI_VERSION="$(
+            printf '%s' "$PUBLISHED_PACKAGES" \
+              | node -e 'const pkgs=JSON.parse(require("node:fs").readFileSync(0,"utf8"));const cli=pkgs.find(p=>p.name==="@declaragent/cli");process.stdout.write(cli?cli.version:"");'
+          )"
+
+          if [ -z "$CLI_VERSION" ]; then
+            echo "@declaragent/cli was not part of this publish — nothing to tag."
+            exit 0
+          fi
+
+          TAG="v${CLI_VERSION}"
+          echo "Resolved CLI release tag: ${TAG}"
+
+          # Idempotency: skip if the tag or release already exists (re-run
+          # safe). release-binaries.yml also creates-if-missing on its
+          # side, so a benign race there is harmless.
+          git fetch --tags --quiet || true
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists — skipping."
+            exit 0
+          fi
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists — skipping."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # `--target $GITHUB_SHA` creates the lightweight tag at the merge
+          # commit through the GitHub API and fires the downstream workflows.
+          gh release create "${TAG}" \
+            --target "${GITHUB_SHA}" \
+            --title "${TAG}" \
+            --generate-notes
+          echo "Created tag + release ${TAG}; release-binaries.yml will now build + attach binaries."

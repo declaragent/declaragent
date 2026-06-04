@@ -1,6 +1,6 @@
 import { frameEvent } from '../events/dispatcher.js';
 import type { Mailbox } from '../events/mailbox.js';
-import type { AgentEvent, EventBus } from '../events/types.js';
+import type { AgentEvent, EventBus, MetricsRegistry } from '../events/types.js';
 import { bindLoopHooks, createHookRegistry } from '../hooks/registry.js';
 import type { HookRegistry } from '../hooks/types.js';
 import { shouldEscalate } from '../permission/gate.js';
@@ -155,6 +155,19 @@ export interface EngineConfig {
    * tenant + session + correlation context.
    */
   toolRateLimit?: ToolRateLimitGate;
+  /**
+   * Item A step 3 — agent-durability observability. When supplied, the
+   * engine records, once per turn:
+   * - histogram `declaragent.engine.turn.iterations` — the number of LLM
+   *   iterations (steps) a turn took, proving agents run a real multi-step
+   *   tool-use loop within a turn, not a single prompt;
+   * - counter `declaragent.engine.turn.max_iterations_hit_total` —
+   *   incremented when a turn exhausts the `maxIterations` cap, so
+   *   operators can spot agents that need a higher cap.
+   * Both carry low-cardinality labels (`agent`, `depth`). Absent → zero
+   * overhead; all emission is guarded by `if (metrics)`.
+   */
+  metrics?: MetricsRegistry;
 }
 
 export interface Engine {
@@ -240,6 +253,7 @@ export function createEngine(config: EngineConfig): Engine {
     tenant,
     quotas,
     toolRateLimit,
+    metrics,
     logger = NOOP_LOGGER,
   } = config;
   const maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -248,10 +262,28 @@ export function createEngine(config: EngineConfig): Engine {
   const hookRegistry = config.hookRegistry ?? createHookRegistry({ logger });
   if (hooks) bindLoopHooks(hookRegistry, hooks);
 
+  // Item A step 3 — register the per-turn iterations histogram once at
+  // engine construction. Registration in PrometheusRegistry is idempotent,
+  // but doing it here means the series exists (with help text) from the
+  // first scrape: every turn records an observation, so the histogram is
+  // always meaningful.
+  //
+  // The `max_iterations_hit_total` counter is registered lazily (only when
+  // a turn actually exhausts the cap) so an operator scraping `/metrics`
+  // never sees a zero-valued "cap hit" series that implies a problem that
+  // hasn't occurred. `metrics.counter(...)` is idempotent, so creating it
+  // at hit time is safe and cheap.
+  const turnIterationsHistogram = metrics?.histogram(
+    'declaragent.engine.turn.iterations',
+    'LLM iterations (tool-use steps) used per turn',
+  );
+
   const runAgent: RunAgent = async (input: RunAgentInput): Promise<RunAgentResult> => {
     const { session, userMessage } = input;
     const depth = input.depth ?? 0;
     const depthCap = session.spec.subagentDepthCap ?? DEFAULT_SUBAGENT_DEPTH_CAP;
+    // Precedence: per-agent spec override > EngineConfig fallback > default.
+    const effectiveMaxIterations = session.spec.maxIterations ?? maxIterations;
 
     if (depth > depthCap) {
       return {
@@ -330,13 +362,19 @@ export function createEngine(config: EngineConfig): Engine {
     let lastAssistantMessage: Message | undefined;
     let stopReason: RunStopReason | null = null;
     let runError: Error | undefined;
+    // Item A step 3 — count the LLM calls (steps) this turn made. At cap
+    // exhaustion this equals `effectiveMaxIterations`; on an early
+    // end_turn/error/abort break it equals the iteration that broke.
+    let iterationsUsed = 0;
 
     try {
-      for (let iter = 0; iter < maxIterations; iter += 1) {
+      for (let iter = 0; iter < effectiveMaxIterations; iter += 1) {
         if (signal.aborted) {
           stopReason = 'aborted';
           break;
         }
+
+        iterationsUsed += 1;
 
         const request: LLMRequest = {
           model: session.spec.model,
@@ -583,6 +621,30 @@ export function createEngine(config: EngineConfig): Engine {
       ...(runError && { error: runError }),
     };
 
+    // Item A step 3 — record per-turn durability signal. Emitted on both
+    // the success and error paths (runError sets stopReason='error' above)
+    // so an erroring turn still reports whatever steps it ran. `hitCap` is
+    // only true when the loop exhausted `effectiveMaxIterations`.
+    const hitCap = stopReason === 'max_iterations';
+    if (metrics) {
+      const depthLabel = String(depth);
+      turnIterationsHistogram?.observe(iterationsUsed, {
+        agent: session.spec.name,
+        depth: depthLabel,
+      });
+      if (hitCap) {
+        // Lazily materialize the counter only on a real cap hit (see the
+        // construction-time comment) so an unexhausted runtime exposes no
+        // zero-valued series.
+        metrics
+          .counter(
+            'declaragent.engine.turn.max_iterations_hit_total',
+            'Turns that exhausted the maxIterations cap',
+          )
+          .inc(1, { agent: session.spec.name, depth: depthLabel });
+      }
+    }
+
     const finalTurnStatus =
       stopReason === 'end_turn' ? 'ok' : stopReason === 'aborted' ? 'aborted' : 'error';
     await session.markTurn(turnId, finalTurnStatus);
@@ -591,6 +653,9 @@ export function createEngine(config: EngineConfig): Engine {
       stopReason,
       inputTokens: totalInputTokens,
       outputTokens: totalOutputTokens,
+      iterations: iterationsUsed,
+      maxIterations: effectiveMaxIterations,
+      maxIterationsHit: hitCap,
     });
 
     if (bus && lastAssistantMessage) {

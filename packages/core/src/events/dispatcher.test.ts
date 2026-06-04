@@ -227,6 +227,246 @@ describe('createEventDispatcher', () => {
     });
   });
 
+  describe('session pinning (Item A step 1)', () => {
+    function appendingRunAgent(): {
+      runAgent: RunAgent;
+      observed: Array<{ sessionId: string; transcriptLenBefore: number }>;
+    } {
+      const observed: Array<{ sessionId: string; transcriptLenBefore: number }> = [];
+      const runAgent: RunAgent = async (input) => {
+        // Snapshot the transcript the turn STARTED with, then append a
+        // user+assistant pair so the next turn on the same session sees it.
+        observed.push({
+          sessionId: input.session.id,
+          transcriptLenBefore: input.session.transcript.length,
+        });
+        await input.session.appendMessage({
+          role: 'user',
+          content: [{ type: 'text', text: input.userMessage }],
+        });
+        await input.session.appendMessage({
+          role: 'assistant',
+          content: [{ type: 'text', text: 'ack' }],
+        });
+        return okResult();
+      };
+      return { runAgent, observed };
+    }
+
+    test('(a) no sessionKey ⇒ a fresh child session per event (unchanged)', async () => {
+      const registry = makeRegistry();
+      await registry.register(makeSkillExtension('greet', 'hi'));
+      const childIds: string[] = [];
+      const { runAgent } = recordingRunAgent();
+      const dispatcher = createEventDispatcher({
+        registry,
+        runAgent,
+        createChildSession: () => {
+          const s = createMemorySession();
+          childIds.push(s.id);
+          return s;
+        },
+      });
+      await dispatcher.handle(
+        makeEvent({ id: 'e1', target: { type: 'skill', name: 'greet', inputs: {} } }),
+      );
+      await dispatcher.handle(
+        makeEvent({ id: 'e2', target: { type: 'skill', name: 'greet', inputs: {} } }),
+      );
+      // Two events → two distinct child sessions, no transcript carryover.
+      expect(childIds).toHaveLength(2);
+      expect(childIds[0]).not.toBe(childIds[1]);
+    });
+
+    test('(b) same sessionKey across two events ⇒ second turn sees the first turn transcript', async () => {
+      const registry = makeRegistry();
+      await registry.register(makeSkillExtension('chat', 'hi'));
+      const shared = createMemorySession({ id: 'pinned' });
+      const { runAgent, observed } = appendingRunAgent();
+      const created: string[] = [];
+      const dispatcher = createEventDispatcher({
+        registry,
+        runAgent,
+        resolveSessionByKey: (k) => (k === 'thread-1' ? shared : undefined),
+        createSessionForKey: (k) => {
+          created.push(k);
+          return shared;
+        },
+      });
+      const o1 = await dispatcher.handle(
+        makeEvent({
+          id: 'e1',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'thread-1' },
+        }),
+      );
+      const o2 = await dispatcher.handle(
+        makeEvent({
+          id: 'e2',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'thread-1' },
+        }),
+      );
+      expect(o1).toEqual({ kind: 'dispatched', sessionId: 'pinned' });
+      expect(o2).toEqual({ kind: 'dispatched', sessionId: 'pinned' });
+      // Both turns ran on the same pinned session.
+      expect(observed.map((o) => o.sessionId)).toEqual(['pinned', 'pinned']);
+      // First turn started empty; second turn saw the accumulated transcript.
+      expect(observed[0]?.transcriptLenBefore).toBe(0);
+      expect(observed[1]?.transcriptLenBefore).toBe(2);
+      // resolveSessionByKey found the session both times → never created.
+      expect(created).toHaveLength(0);
+    });
+
+    test('(b2) create-on-first-miss when resolveSessionByKey returns undefined', async () => {
+      const registry = makeRegistry();
+      await registry.register(makeSkillExtension('chat', 'hi'));
+      const store = new Map<string, ReturnType<typeof createMemorySession>>();
+      const { runAgent, observed } = appendingRunAgent();
+      const dispatcher = createEventDispatcher({
+        registry,
+        runAgent,
+        resolveSessionByKey: (k) => store.get(k),
+        createSessionForKey: (k) => {
+          const s = createMemorySession({ id: `pinned:${k}` });
+          store.set(k, s);
+          return s;
+        },
+      });
+      await dispatcher.handle(
+        makeEvent({
+          id: 'e1',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'tenant-7' },
+        }),
+      );
+      await dispatcher.handle(
+        makeEvent({
+          id: 'e2',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'tenant-7' },
+        }),
+      );
+      expect(observed.map((o) => o.sessionId)).toEqual(['pinned:tenant-7', 'pinned:tenant-7']);
+      expect(observed[1]?.transcriptLenBefore).toBe(2);
+    });
+
+    test('(c) different sessionKeys are isolated', async () => {
+      const registry = makeRegistry();
+      await registry.register(makeSkillExtension('chat', 'hi'));
+      const sessions = new Map<string, ReturnType<typeof createMemorySession>>([
+        ['a', createMemorySession({ id: 'sess-a' })],
+        ['b', createMemorySession({ id: 'sess-b' })],
+      ]);
+      const { runAgent, observed } = appendingRunAgent();
+      const dispatcher = createEventDispatcher({
+        registry,
+        runAgent,
+        resolveSessionByKey: (k) => sessions.get(k),
+        createSessionForKey: (k) => sessions.get(k) ?? createMemorySession(),
+      });
+      await dispatcher.handle(
+        makeEvent({
+          id: 'e1',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'a' },
+        }),
+      );
+      await dispatcher.handle(
+        makeEvent({
+          id: 'e2',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'b' },
+        }),
+      );
+      expect(observed).toHaveLength(2);
+      expect(observed[0]?.sessionId).toBe('sess-a');
+      expect(observed[1]?.sessionId).toBe('sess-b');
+      // Each saw only its own (empty) transcript — no cross-key bleed.
+      expect(observed[0]?.transcriptLenBefore).toBe(0);
+      expect(observed[1]?.transcriptLenBefore).toBe(0);
+    });
+
+    test('(d) sessionKey present but no pinning factories ⇒ no-handler, runAgent not invoked', async () => {
+      const registry = makeRegistry();
+      await registry.register(makeSkillExtension('chat', 'hi'));
+      const { runAgent, calls } = recordingRunAgent();
+      const dispatcher = createEventDispatcher({
+        registry,
+        runAgent,
+        // Note: createChildSession IS provided, proving the pinned path is
+        // chosen by sessionKey, not by which factories exist.
+        createChildSession: () => createMemorySession(),
+      });
+      const outcome = await dispatcher.handle(
+        makeEvent({
+          id: 'e1',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'thread-1' },
+        }),
+      );
+      expect(outcome.kind).toBe('rejected');
+      if (outcome.kind === 'rejected') expect(outcome.reason).toBe('no-handler');
+      expect(calls).toHaveLength(0);
+    });
+
+    test('(e) two same-key events serialize behind the per-session lock', async () => {
+      const registry = makeRegistry();
+      await registry.register(makeSkillExtension('chat', 'hi'));
+      const shared = createMemorySession({ id: 'pinned' });
+      const order: string[] = [];
+      const runAgent: RunAgent = async (input) => {
+        const id = input.userMessage.match(/id="([^"]+)"/)?.[1] ?? '?';
+        order.push(`start:${id}`);
+        await new Promise((r) => setTimeout(r, 15));
+        order.push(`end:${id}`);
+        return okResult();
+      };
+      const dispatcher = createEventDispatcher({
+        registry,
+        runAgent,
+        resolveSessionByKey: () => shared,
+      });
+      const p1 = dispatcher.handle(
+        makeEvent({
+          id: 'a',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'thread-1' },
+        }),
+      );
+      const p2 = dispatcher.handle(
+        makeEvent({
+          id: 'b',
+          target: { type: 'skill', name: 'chat', inputs: {}, sessionKey: 'thread-1' },
+        }),
+      );
+      await Promise.all([p1, p2]);
+      expect(order).toEqual(['start:a', 'end:a', 'start:b', 'end:b']);
+    });
+
+    test('(f) empty-string sessionKey is treated as absent (falls back to fresh-per-event)', async () => {
+      const registry = makeRegistry();
+      await registry.register(makeSkillExtension('greet', 'hi'));
+      let childCount = 0;
+      const { runAgent } = recordingRunAgent();
+      let pinnedCalled = false;
+      const dispatcher = createEventDispatcher({
+        registry,
+        runAgent,
+        createChildSession: () => {
+          childCount += 1;
+          return createMemorySession();
+        },
+        resolveSessionByKey: () => {
+          pinnedCalled = true;
+          return createMemorySession();
+        },
+      });
+      const outcome = await dispatcher.handle(
+        makeEvent({
+          id: 'e1',
+          target: { type: 'skill', name: 'greet', inputs: {}, sessionKey: '' },
+        }),
+      );
+      expect(outcome.kind).toBe('dispatched');
+      // Empty key → fresh child path, pinning never consulted.
+      expect(childCount).toBe(1);
+      expect(pinnedCalled).toBe(false);
+    });
+  });
+
   describe('idempotency', () => {
     test('duplicate event id returns duplicate without re-dispatching', async () => {
       const { runAgent, calls } = recordingRunAgent();

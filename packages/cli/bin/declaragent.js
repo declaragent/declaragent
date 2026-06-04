@@ -82,8 +82,28 @@ if (canUseBun) {
 
 if (!existsSync(binaryPath)) {
   const postinstallPath = resolve(__dirname, 'postinstall.js');
+  // The per-version release asset path so users can probe whether it was
+  // ever published. `<os>-<arch>` mirrors postinstall.js's detectTarget()
+  // (e.g. linux-x64, darwin-arm64).
+  const releaseUrl =
+    'https://github.com/declaragent/declaragent/releases/download/v<version>/declaragent-<os>-<arch>.tar.gz';
+  // One write, multi-line. Ordered so the pipeline-independent fix leads:
+  //   1. Bun fallback (runs the shipped dist/index.js — no download).
+  //   2. Diagnostic (confirm whether the release asset even exists).
+  //   3. The pipeline-dependent remedies, demoted.
+  //   4. Env-var clarifications.
   process.stderr.write(
-    `declaragent: binary not found. Re-run the postinstall step:\n  node "${postinstallPath}"\n(or reinstall: npm install -g @declaragent/cli). If you set DECLARAGENT_NO_POSTINSTALL=1, re-run without it, or download the binary manually from https://github.com/declaragent/declaragent/releases.\n`,
+    `declaragent: binary not found at ${binaryPath}.
+Fastest fix (no download needed): install Bun (https://bun.sh), then re-run.
+  This launcher routes through the bundled ${distEntry} whenever 'bun' is on PATH.
+Confirm the release asset exists before reinstalling:
+  curl -sI ${releaseUrl}
+  A 404 means no binary was published for this version — use the Bun fallback above.
+Otherwise re-run the postinstall step:
+  node "${postinstallPath}"
+(or reinstall: npm install -g @declaragent/cli, or download the binary manually from https://github.com/declaragent/declaragent/releases).
+If DECLARAGENT_NO_POSTINSTALL=1 was set, the download was skipped on purpose — unset it and reinstall, or just install Bun (no download). If DECLARAGENT_USE_BINARY=1 was set, the Bun path was bypassed — unset it to use the dist fallback.
+`,
   );
   process.exit(1);
 }

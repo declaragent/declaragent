@@ -145,6 +145,50 @@ describe('createChannelInboundBridge', () => {
     bridge.detach();
   });
 
+  test('copies sessionKey onto the bridged skill target when the route declares one', async () => {
+    const bus = createEventBus();
+    const captured: AgentEvent[] = [];
+    bus.subscribe('*', (e) => {
+      captured.push(e);
+    });
+    const bridge = createChannelInboundBridge({
+      bus,
+      routesByChannel: {
+        'slack-main': [{ event: 'chat.mention', skill: 'triage', sessionKey: 'thread-1' }],
+      },
+      idFactory: () => 'bridged-1',
+    });
+    await bus.publish(
+      makeChannelEvent({ id: 'inbound-1', kind: 'chat.mention', channelId: 'slack-main' }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    const bridged = captured.find((e) => e.target.type === 'skill');
+    expect(bridged?.target.type === 'skill' && bridged.target.sessionKey).toBe('thread-1');
+    bridge.detach();
+  });
+
+  test('omits sessionKey from the bridged target when the route has none', async () => {
+    const bus = createEventBus();
+    const captured: AgentEvent[] = [];
+    bus.subscribe('*', (e) => {
+      captured.push(e);
+    });
+    const bridge = createChannelInboundBridge({
+      bus,
+      routesByChannel: { 'slack-main': [{ event: 'chat.mention', skill: 'triage' }] },
+      idFactory: () => 'bridged-1',
+    });
+    await bus.publish(
+      makeChannelEvent({ id: 'inbound-1', kind: 'chat.mention', channelId: 'slack-main' }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    const bridged = captured.find((e) => e.target.type === 'skill');
+    expect(bridged).toBeDefined();
+    // No `sessionKey` key emitted at all — byte-for-byte identical to pre-pinning.
+    expect(bridged?.target.type === 'skill' && 'sessionKey' in bridged.target).toBe(false);
+    bridge.detach();
+  });
+
   test('detach stops further bridging', async () => {
     const bus = createEventBus();
     const captured: AgentEvent[] = [];

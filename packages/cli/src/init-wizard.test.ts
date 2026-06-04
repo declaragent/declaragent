@@ -1,8 +1,35 @@
 import { describe, expect, test } from 'bun:test';
 import type { LLMProvider, LLMResponse } from '@declaragent/core';
-import type { UnpackFS } from './init-template-unpacker.js';
+import type { UnpackDirEntry, UnpackFS } from './init-template-unpacker.js';
 import type { InitOptions, InitWizardDeps, InitWizardIO } from './init-wizard.js';
 import { runInit } from './init-wizard.js';
+
+/**
+ * Fixture templates root the in-memory FS is seeded under. Tests inject
+ * this via `baseDeps`'s `templatesDir` so the unpacker reads the seeded
+ * tree instead of the real repo `templates/` directory.
+ */
+const TEMPLATES_ROOT = '/fake/templates';
+
+/**
+ * Seed a fake template tree so the wizard's `unpackTemplate` call has real
+ * directory + file contents to copy. `{{provider}}` is left as a token so
+ * the placeholder substitution that the wizard drives is exercised
+ * end-to-end (it resolves to `provider: anthropic` for these tests).
+ */
+function templateSeed(): Record<string, string> {
+  return {
+    [`${TEMPLATES_ROOT}/concierge/agent.yaml`]: 'name: concierge\nprovider: {{provider}}\n',
+    [`${TEMPLATES_ROOT}/concierge/.env.example`]: '{{envVar}}=sk-ant-...\n',
+    [`${TEMPLATES_ROOT}/concierge/README.md`]: '# concierge\n',
+    [`${TEMPLATES_ROOT}/concierge/skills/concierge.md`]: '# concierge skill\n',
+    [`${TEMPLATES_ROOT}/multi-tenant-starter/agent.yaml`]:
+      'name: multi-tenant-starter\nprovider: {{provider}}\n',
+    [`${TEMPLATES_ROOT}/multi-tenant-starter/.env.example`]: '{{envVar}}=\n',
+    [`${TEMPLATES_ROOT}/multi-tenant-starter/tenants.yaml`]:
+      'version: 1\ntenants:\n  - id: default\n    residency: us\n',
+  };
+}
 
 function captureIo(): { io: InitWizardIO; out: string[]; err: string[] } {
   const out: string[] = [];
@@ -17,20 +44,67 @@ function captureIo(): { io: InitWizardIO; out: string[]; err: string[] } {
   };
 }
 
-function memoryFs(): UnpackFS & { files: Map<string, string> } {
-  const files = new Map<string, string>();
+/**
+ * In-memory FS seeded with the fixture template tree under
+ * {@link TEMPLATES_ROOT}. Implements the full {@link UnpackFS} surface
+ * (`readdir`/`isDir` included) so the wizard's `unpackTemplate` can walk
+ * and copy a real directory tree. Mirrors the helper in
+ * `init-template-unpacker.test.ts`.
+ */
+function memoryFs(seed: Record<string, string> = templateSeed()): UnpackFS & {
+  files: Map<string, string>;
+} {
+  const files = new Map<string, string>(Object.entries(seed));
+  const dirs = new Set<string>();
+  const addDirsFor = (path: string): void => {
+    let dir = path.slice(0, path.lastIndexOf('/'));
+    while (dir && !dirs.has(dir)) {
+      dirs.add(dir);
+      dir = dir.slice(0, dir.lastIndexOf('/'));
+    }
+  };
+  for (const path of files.keys()) addDirsFor(path);
+
   return {
     files,
-    exists: (p) => files.has(p),
+    exists: (p) => files.has(p) || dirs.has(p),
     writeFile: (p, c) => {
       files.set(p, c);
+      addDirsFor(p);
     },
     readFile: (p) => {
       const v = files.get(p);
       if (v === undefined) throw new Error(`no file ${p}`);
       return v;
     },
+    isDir: (p) => dirs.has(p),
+    readdir: (p): readonly UnpackDirEntry[] => {
+      const prefix = `${p}/`;
+      const seen = new Map<string, UnpackDirEntry>();
+      for (const path of files.keys()) {
+        if (!path.startsWith(prefix)) continue;
+        const rest = path.slice(prefix.length);
+        const slash = rest.indexOf('/');
+        if (slash === -1) {
+          seen.set(rest, { name: rest, isFile: true, isDir: false });
+        } else {
+          const name = rest.slice(0, slash);
+          if (!seen.has(name)) seen.set(name, { name, isFile: false, isDir: true });
+        }
+      }
+      return [...seen.values()];
+    },
   };
+}
+
+/**
+ * Paths the wizard *wrote* — i.e. everything in the shared map that is not
+ * part of the seeded `/fake/templates` fixture tree. Keeps assertions from
+ * accidentally matching a seeded source file (both seed and output live in
+ * the same in-memory map).
+ */
+function writtenPaths(fs: { files: Map<string, string> }): string[] {
+  return [...fs.files.keys()].filter((p) => !p.startsWith(`${TEMPLATES_ROOT}/`));
 }
 
 function stubProvider(resp: Partial<LLMResponse> = {}): LLMProvider {
@@ -77,6 +151,7 @@ function baseDeps(
   return {
     io,
     fs,
+    templatesDir: TEMPLATES_ROOT,
     markerPath: '/tmp/declaragent-init-test/.initialized',
     env: {},
     ...extra,
@@ -89,14 +164,12 @@ describe('runInit — non-interactive path', () => {
     const cap = captureIo();
     const code = await runInit(baseOptions(), baseDeps(fs, cap.io));
     expect(code).toBe(0);
-    const paths = [...fs.files.keys()];
+    const paths = writtenPaths(fs);
     expect(paths.some((p) => p.endsWith('/agent.yaml'))).toBe(true);
     expect(paths.some((p) => p.endsWith('/.env.example'))).toBe(true);
     expect(paths.some((p) => p.endsWith('/README.md'))).toBe(true);
     expect(paths.some((p) => p.endsWith('/.initialized'))).toBe(true);
-    const agentYaml = fs.files.get(
-      [...fs.files.keys()].find((p) => p.endsWith('/agent.yaml')) as string,
-    );
+    const agentYaml = fs.files.get(paths.find((p) => p.endsWith('/agent.yaml')) as string);
     expect(agentYaml).toContain('provider: anthropic');
     expect(agentYaml).toContain('name: concierge');
     expect(cap.err.join('')).toBe('');
@@ -108,7 +181,8 @@ describe('runInit — non-interactive path', () => {
     const code = await runInit(baseOptions({ provider: 'nope' }), baseDeps(fs, cap.io));
     expect(code).toBe(1);
     expect(cap.err.join('')).toContain('unknown provider');
-    expect(fs.files.size).toBe(0);
+    // Nothing was written — only the seeded template fixtures remain.
+    expect(writtenPaths(fs)).toEqual([]);
   });
 
   test('rejects unknown template', async () => {
@@ -162,6 +236,7 @@ describe('runInit — multi-tenant toggle', () => {
     const code = await runInit(
       baseOptions({
         outDir: '/tmp/init-mt',
+        template: 'multi-tenant-starter',
         multiTenant: true,
         tenantId: 'acme-prod',
       }),
@@ -176,7 +251,10 @@ describe('runInit — multi-tenant toggle', () => {
   test('no tenants.yaml in single-tenant mode', async () => {
     const fs = memoryFs();
     const cap = captureIo();
-    const code = await runInit(baseOptions({ outDir: '/tmp/init-st' }), baseDeps(fs, cap.io));
+    const code = await runInit(
+      baseOptions({ outDir: '/tmp/init-st', template: 'multi-tenant-starter' }),
+      baseDeps(fs, cap.io),
+    );
     expect(code).toBe(0);
     expect(fs.files.has('/tmp/init-st/tenants.yaml')).toBe(false);
   });
@@ -185,7 +263,11 @@ describe('runInit — multi-tenant toggle', () => {
     const fs = memoryFs();
     const cap = captureIo();
     const code = await runInit(
-      baseOptions({ outDir: '/tmp/init-mt-def', multiTenant: true }),
+      baseOptions({
+        outDir: '/tmp/init-mt-def',
+        template: 'multi-tenant-starter',
+        multiTenant: true,
+      }),
       baseDeps(fs, cap.io),
     );
     expect(code).toBe(0);

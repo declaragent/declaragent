@@ -106,8 +106,44 @@ jobs:
         run: |
           docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml down --volumes || true
 
+  # Write a machine-readable STATUS.json on every scheduled run (green or
+  # red). This is the live CI signal docs/STATUS.md and the site read,
+  # replacing hardcoded status copy (PROD_PARITY_ACTIONS.md P1-11).
+  publish-status:
+    name: Publish STATUS.json
+    needs: kafka-soak
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const soak = ${{ toJSON(needs.kafka-soak.result) }};
+            const status = soak === 'success' ? 'passed' : 'failed';
+            const payload = {
+              workflow: 'weekly-soak',
+              status,
+              conclusion: { 'kafka-soak': soak },
+              timestamp: new Date().toISOString(),
+              commit: context.sha,
+              run_url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            };
+            fs.writeFileSync('STATUS.json', `${JSON.stringify(payload, null, 2)}\n`);
+            core.summary.addRaw(`weekly-soak: **${status}**`).write();
+
+      - name: Upload STATUS.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: status-json-${{ github.run_id }}
+          path: STATUS.json
+          if-no-files-found: error
+
+  # Consolidate failures into ONE rolling tracker issue (find-or-create by
+  # a fixed label), one comment per failure — not one issue per week.
+  # Green-before-merge policy lives in CONTRIBUTING.md.
   report-failure:
-    name: File tracking issue on failure
+    name: Update rolling failure tracker
     needs: kafka-soak
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
@@ -117,22 +153,55 @@ jobs:
       - uses: actions/github-script@v7
         with:
           script: |
-            const title = `weekly Kafka soak failed on ${new Date().toISOString().slice(0, 10)}`;
-            const body = [
-              `Weekly 24h Kafka soak failed.`,
-              ``,
-              `**Workflow run:** ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
-              ``,
-              `Checks: zero dropped envelopes, p99 ≤ 2× baseline, p99 ≤ 3s absolute, no worker crash.`,
-              ``,
-              `Per-run logs (broker + harness) are attached to the run as artifacts.`,
-              ``,
-              `Labeled \`weekly-soak\` for triage. Close when resolved.`,
-            ].join('\n');
-            await github.rest.issues.create({
+            const TRACKER_LABEL = 'ci-tracker:weekly-soak';
+            const TRACKER_TITLE = '[weekly-soak] rolling failure tracker';
+            const soak = ${{ toJSON(needs.kafka-soak.result) }};
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            // Find-or-create the single rolling tracker issue by fixed label.
+            const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              body,
-              labels: ['weekly-soak', 'enterprise-item-1'],
+              labels: TRACKER_LABEL,
+              state: 'open',
+              per_page: 1,
+            });
+            let issueNumber = existing.data[0]?.number;
+            if (!issueNumber) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: TRACKER_TITLE,
+                body: [
+                  `Rolling tracker for **weekly Kafka soak** failures.`,
+                  ``,
+                  `One comment per failure is appended below. Do not close on a single green;`,
+                  `close only when the underlying flake/regression is resolved.`,
+                  ``,
+                  `Soak checks: zero dropped envelopes, p99 ≤ 2× baseline, p99 ≤ 3s absolute, no worker crash.`,
+                  `Per-run broker + harness logs are attached to each run as artifacts.`,
+                  ``,
+                  `Triage each comment by adding a quarantine label:`,
+                  `\`quarantine:flake\` (transient, set a deadline) or`,
+                  `\`quarantine:signal\` (real regression — blocks merges). See CONTRIBUTING.md.`,
+                ].join('\n'),
+                labels: [TRACKER_LABEL, 'weekly-soak', 'enterprise-item-1'],
+              });
+              issueNumber = created.data.number;
+            }
+
+            // Always append one comment per failure.
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                `### Failure — ${new Date().toISOString()}`,
+                ``,
+                `- **Commit:** ${context.sha}`,
+                `- **Run:** ${runUrl}`,
+                `- **kafka-soak:** ${soak}`,
+                ``,
+                `flake-vs-signal: TBD — set \`quarantine:flake\` or \`quarantine:signal\`.`,
+              ].join('\n'),
             });

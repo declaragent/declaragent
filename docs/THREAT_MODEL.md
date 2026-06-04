@@ -1,17 +1,80 @@
-# Threat model — Declaragent v1.0
+# Threat Model — Declaragent
 
-**Status:** Phase 6 slice 8 — first complete pass. External security
-review pending ([PEN_TEST_SIGNOFF.md](./PEN_TEST_SIGNOFF.md)).
+**Status:** Internal threat model for a pre-1.0 (`0.7.x`) runtime. This is the
+maintainer's own analysis; **no external penetration test has been completed
+yet** — see [PEN_TEST_SIGNOFF.md](./PEN_TEST_SIGNOFF.md) for the (not-yet-engaged)
+external-review status. This document is written to be reviewable by a security
+engineer or CISO **without an NDA**.
 
-**Scope.** The runtime as shipped at the close of Phase 6: core engine,
-event sources, channel adapters, built-in tools, MCP client, secret
-resolver, audit sink, and the daemon / control plane. Out of scope:
-per-tenant provisioning UI, billing, SSO (deferred to Phase-7+).
+**Scope.** The runtime as shipped: core engine, event sources, channel adapters,
+built-in tools, MCP client, secret resolver, audit sink, and the daemon /
+control plane. Out of scope: per-tenant provisioning UI, billing, and SSO
+(not yet implemented).
 
 **Methodology.** STRIDE (Spoofing / Tampering / Repudiation /
 Information disclosure / Denial of service / Elevation of privilege)
 per component. Every threat lists its primary mitigations + the
 residual risk that an external review will challenge.
+
+---
+
+## Trust boundaries
+
+The boundaries below are where untrusted input crosses into trusted code, or
+where one trust domain hands off to another. Each maps onto the STRIDE tables in
+§1–§8.
+
+| # | Boundary | What crosses | Enforcement | Tables |
+| - | -------- | ------------ | ----------- | ------ |
+| TB-1 | **Untrusted external input → webhook / channel ingress** | HTTP webhooks, Slack / WhatsApp / Telegram / Discord events | HMAC `timingSafeEqual`, Ed25519 verify, replay window (5-min default), body-size cap (1 MiB default) before auth | §2, §3 |
+| TB-2 | **LLM provider response → permission gate** | Model-proposed tool calls | The model has no privileged path; every tool call is evaluated against the user's permission globs before `execute()` | §1, §4 |
+| TB-3 | **Plugin / MCP-server code → host process** | Tool registration, stdio/HTTP MCP servers | Permission-key contract, `spawn` with an argv array (no shell interpolation), schema validation at registration | §1, §4, §5 |
+| TB-4 | **Per-tenant isolation boundary** | Events, secrets, audit rows scoped to a tenant | `tenantScope` on the event bus, tenant-scoped `SecretProvider`, per-tenant audit chain; cross-tenant access throws `TenantBoundaryError` | §6, §8, §7 |
+| TB-5 | **Inter-agent RPC boundary** | Request/response envelopes between agents | OAuth2/OIDC auth via the per-agent `AuthVerifyRegistry`; `AUTH_REJECTED` on failure | §5, §7 (and the RPC plugin's own auth path) |
+| TB-6 | **Operator / control-plane boundary** | Lifecycle + observability commands | Unix domain socket with `0600` permissions; remote (TCP) control requires explicit bind + bearer auth; `/metrics` defaults to localhost | §7 |
+
+## Assets
+
+What an attacker would want, and the boundary/table that defends it.
+
+| Asset | Why it matters | Defended by |
+| ----- | -------------- | ----------- |
+| **Secrets** (Vault / AWS-SM / GCP-SM / K8s refs) | Bot tokens, broker credentials, API keys | §6 secret resolver; never expanded on runtime payloads, never logged |
+| **Hash-chained audit ledger** | Tamper-evidence + right-to-erasure continuity | §8 SHA-256 per-tenant chain with tombstones |
+| **Tenant data isolation** | One tenant must not read or influence another | §6/§7/§8 `tenantScope` + `TenantBoundaryError` |
+| **Bot / RPC credentials** | Forged messages or impersonated agents | §3 channel signature verification; §5/TB-5 RPC OAuth2/OIDC |
+| **Control-plane access** | Lifecycle, log, and DLQ mutation authority | §7 socket `0600` + bearer auth for TCP |
+
+## Attacker model
+
+Adversaries this model defends against (all are exercised by the §1–§8 tables):
+
+1. **Malicious or compromised plugin / MCP-server author** — supplies a tool or
+   server that lies about its permission key or schema (§1, §4, §5 / TB-3).
+2. **Network attacker forging or replaying webhooks / channel signatures** —
+   spoofs Slack/WhatsApp/Discord/HMAC signatures or replays captured requests
+   (§2, §3 / TB-1).
+3. **Malicious-content / prompt-injection attacker** — embeds instructions in an
+   inbound payload to drive unintended tool calls (§1 / TB-2). The permission
+   gate bounds the blast radius; detection is residual.
+4. **Cross-tenant attacker** — attempts to read another tenant's events,
+   secrets, or audit rows (§6, §7, §8 / TB-4).
+5. **Operator misconfiguration** — footguns the tables flag as "operator owns"
+   (over-broad permission globs, `allowRemote` without a proxy, `shared-with-filter`
+   bus mode).
+6. **Untrusted-network scraper** — scrapes `/metrics` or probes the control
+   socket from a network it should not reach (§7 / TB-6).
+
+**Explicitly out of scope** (so the model is bounded and reviewable without an
+NDA):
+
+- A compromised host or `root` on the host — filesystem-level controls (socket
+  `0600`, disk encryption) assume the host itself is trusted.
+- A **malicious operator** — the operator owns the permission globs, deny-lists,
+  and bind configuration; the model assumes they are trusted but fallible.
+- **LLM-provider trust** — provider-side safety is the provider's review scope;
+  we treat provider responses as untrusted *content* (TB-2) but trust the
+  provider not to be actively malicious.
 
 ---
 
@@ -93,6 +156,9 @@ enforces the permission gate.
 
 ## External review
 
-See [PEN_TEST_SIGNOFF.md](./PEN_TEST_SIGNOFF.md) for the third-party
-review and its outcome. Any CRITICAL findings block Phase 6 signoff;
-HIGH findings are remediated before Phase 7 kickoff.
+**No third-party penetration test has been completed.** One is sought; the
+intended scope and the process to get it signed off are tracked in
+[PEN_TEST_SIGNOFF.md](./PEN_TEST_SIGNOFF.md), which is a template awaiting a real
+engagement — not evidence of a completed audit. Until a firm is engaged and its
+report lands, the mitigations and residual-risk rows above are the maintainer's
+own analysis only.

@@ -14,6 +14,32 @@ const NOOP_LOGGER: Logger = {
   child: () => NOOP_LOGGER,
 };
 
+interface LogLine {
+  level: 'debug' | 'info' | 'warn' | 'error';
+  msg: string;
+  fields?: unknown;
+}
+
+/** Logger that records every line (including child loggers) for assertions. */
+function recordingLogger(sink: LogLine[]): Logger {
+  const make = (): Logger => ({
+    debug(msg, fields) {
+      sink.push({ level: 'debug', msg, fields });
+    },
+    info(msg, fields) {
+      sink.push({ level: 'info', msg, fields });
+    },
+    warn(msg, fields) {
+      sink.push({ level: 'warn', msg, fields });
+    },
+    error(msg, fields) {
+      sink.push({ level: 'error', msg, fields });
+    },
+    child: () => make(),
+  });
+  return make();
+}
+
 function writeFixtureChannelAdapter(root: string, type: string): void {
   const pkgDir = join(root, 'node_modules', '@declaragent', `channel-${type}`);
   mkdirSync(pkgDir, { recursive: true });
@@ -202,6 +228,95 @@ describe('startChannelRuntime', () => {
     expect(rt.channels.list().map((c) => c.id)).toEqual(['ok-1']);
     const brokenSkip = rt.skipped.find((s) => s.type === 'broken');
     expect(brokenSkip?.reason).toContain('channel boot broke');
+    await rt.shutdown();
+  });
+
+  test('parses an inbound route with a valid sessionKey + drops an empty-string sessionKey', async () => {
+    writeFixtureChannelAdapter(agentDir, 'fakebird');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        channels: [
+          {
+            type: 'fakebird',
+            id: 'fakebird-main',
+            inbound: {
+              routes: [
+                // (i) valid sessionKey
+                { event: 'chat.dm', skill: 'chat', sessionKey: 'support-thread' },
+                // (ii) empty-string sessionKey → must be dropped with a warn
+                { event: 'chat.mention', skill: 'triage', sessionKey: '' },
+                // (iii) no sessionKey → must still parse
+                { event: 'chat.file', skill: 'ingest' },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const logs: LogLine[] = [];
+    const rt = await startChannelRuntime({
+      bus,
+      logger: recordingLogger(logs),
+      configPath,
+      sessionsDb,
+      agentDir,
+    });
+
+    // The empty-sessionKey route logs a route-invalid warning.
+    const invalidWarn = logs.find(
+      (l) =>
+        l.level === 'warn' &&
+        l.msg === 'channels.inbound-config.route-invalid' &&
+        typeof l.fields === 'object' &&
+        l.fields !== null &&
+        (l.fields as { reason?: string }).reason?.includes('sessionKey'),
+    );
+    expect(invalidWarn).toBeDefined();
+
+    // The bridge came up because two valid routes survived (i + iii).
+    const ready = logs.find((l) => l.msg === 'channels.inbound-bridge.ready');
+    expect(ready).toBeDefined();
+    expect((ready?.fields as { channelIds?: string[] }).channelIds).toEqual(['fakebird-main']);
+
+    await rt.shutdown();
+  });
+
+  test('a channel whose only inbound route has an empty sessionKey wires no bridge', async () => {
+    writeFixtureChannelAdapter(agentDir, 'fakebird');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        channels: [
+          {
+            type: 'fakebird',
+            id: 'fakebird-main',
+            inbound: {
+              routes: [{ event: 'chat.dm', skill: 'chat', sessionKey: '' }],
+            },
+          },
+        ],
+      }),
+    );
+    const logs: LogLine[] = [];
+    const rt = await startChannelRuntime({
+      bus,
+      logger: recordingLogger(logs),
+      configPath,
+      sessionsDb,
+      agentDir,
+    });
+    // Sole route dropped → no routes → no bridge.
+    expect(logs.find((l) => l.msg === 'channels.inbound-bridge.ready')).toBeUndefined();
+    expect(
+      logs.find(
+        (l) =>
+          l.msg === 'channels.inbound-config.route-invalid' &&
+          (l.fields as { reason?: string }).reason?.includes('sessionKey'),
+      ),
+    ).toBeDefined();
     await rt.shutdown();
   });
 

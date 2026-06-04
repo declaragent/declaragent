@@ -578,6 +578,13 @@ export function App(props: AppProps): JSX.Element {
       registry,
       ...(auditSink !== null && { auditSink }),
     });
+    // NOTE (Item A step 3): the interactive REPL is deliberately left
+    // unmetered — it has no `PrometheusRegistry` and no `/metrics`
+    // exporter (only the builder `ProposalRegistry` above, which is not a
+    // metrics sink). The engine's iteration histogram is therefore not
+    // wired here; it fires through `declaragent up` (see up-cli.ts) where
+    // a real registry backs the control-plane `/metrics` route. If the
+    // REPL gains a metrics surface later, pass `metrics:` here.
     engineRef.current = createEngine({
       provider,
       tools: [...BUILTIN_TOOLS, ...builderTools],

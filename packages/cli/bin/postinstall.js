@@ -159,6 +159,9 @@ async function main() {
   if (process.env.DECLARAGENT_NO_POSTINSTALL === '1') {
     log('DECLARAGENT_NO_POSTINSTALL=1 — skipping binary download.');
     log('Re-run `node bin/postinstall.js` from inside the package to install later.');
+    // Pipeline-independent path: no download required at all.
+    log('Or install Bun (https://bun.sh) — the CLI then runs straight from the');
+    log('shipped dist/index.js with no binary download.');
     return;
   }
 
@@ -168,6 +171,9 @@ async function main() {
       log('Windows is not yet supported natively; run declaragent under WSL2.');
     } else {
       warn(`unsupported platform (${detected.unsupported}); skipping binary download.`);
+      warn(
+        'Install Bun (https://bun.sh) and run via the JS launcher — it has no per-platform binary.',
+      );
     }
     return;
   }
@@ -236,7 +242,14 @@ async function main() {
     // bin/declaragent.js reprints the fix hint on invocation.
     const msg = err instanceof Error ? err.message : String(err);
     warn(`download failed: ${msg}`);
-    warn('skipping binary install; re-run with DECLARAGENT_BASE_URL or rerun postinstall.');
+    // Pipeline-independent fallback first — needs no release asset at all.
+    warn('Fastest fix: install Bun (https://bun.sh) — the CLI then runs straight');
+    warn('from the shipped dist/index.js with no binary download.');
+    // Diagnostic: confirm whether the asset was ever published for this version.
+    warn(`Verify the asset exists: curl -sI ${tarballUrl}`);
+    warn(`  A 404 means no release was published for ${version} — use the Bun fallback above.`);
+    // Enterprise mirror / retry hint, demoted below the fallback.
+    warn(`Otherwise set DECLARAGENT_BASE_URL=<mirror> (target ${target}) and rerun postinstall.`);
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
@@ -245,5 +258,9 @@ async function main() {
 main().catch((err) => {
   const msg = err instanceof Error ? err.message : String(err);
   warn(`unexpected error: ${msg}`);
+  // Point even an unexpected throw at an action that needs no download.
+  warn(
+    'Install Bun (https://bun.sh) to run the CLI from the shipped dist/index.js with no binary.',
+  );
   // Exit 0 — see the exit-behavior note in the header comment.
 });
