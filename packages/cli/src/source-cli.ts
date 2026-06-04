@@ -27,7 +27,9 @@ function loadConfig(path: string): ConfiguredSource[] {
   const raw = readFileSync(path, 'utf-8');
   const parsed = JSON.parse(raw) as unknown;
   if (!Array.isArray(parsed)) {
-    throw new Error(`${path} is not a JSON array`);
+    throw new Error(
+      `${path} is not a JSON array — expected [{type, config}, ...]. Fix or delete the file, then re-add sources with \`declaragent source add\`.`,
+    );
   }
   const out: ConfiguredSource[] = [];
   for (const entry of parsed) {
@@ -95,11 +97,14 @@ export async function sourceAdd(args: SourceAddArgs, deps: SourceCliDeps = {}): 
       const raw = readFileSync(args.configFile, 'utf-8');
       const parsed = JSON.parse(raw) as unknown;
       if (!parsed || typeof parsed !== 'object')
-        throw new Error('config file must contain an object');
+        throw new Error(
+          'config file must contain a JSON object of source settings (e.g. {"id": "..."})',
+        );
       config = parsed as Record<string, unknown>;
     } else if (args.configJson) {
       const parsed = JSON.parse(args.configJson) as unknown;
-      if (!parsed || typeof parsed !== 'object') throw new Error('--config must be a JSON object');
+      if (!parsed || typeof parsed !== 'object')
+        throw new Error('--config must be a JSON object of source settings (e.g. {"id": "..."})');
       config = parsed as Record<string, unknown>;
     } else {
       io.err('✗ provide either --config <json> or --config-file <path>\n');

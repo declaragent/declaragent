@@ -143,7 +143,10 @@ describe('eventsShow', () => {
     const { err, io } = captureIO();
     const code = await eventsShow('nope', { store, io });
     expect(code).toBe(1);
-    expect(err.join('')).toContain('not found');
+    const text = err.join('');
+    expect(text).toContain('not found');
+    // P1-12: surface a next action the user can run.
+    expect(text).toContain('declaragent events list');
   });
 });
 
@@ -168,7 +171,10 @@ describe('eventsReplay', () => {
     const { eventsReplay } = await import('./events-cli.js');
     const code = await eventsReplay('nope', { store, io });
     expect(code).toBe(1);
-    expect(err.join('')).toContain('not found');
+    const text = err.join('');
+    expect(text).toContain('not found');
+    // P1-12: surface a next action the user can run.
+    expect(text).toContain('declaragent events list');
   });
 });
 

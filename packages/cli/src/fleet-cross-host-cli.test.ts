@@ -140,7 +140,31 @@ describe('fleetPs', () => {
     const { io, errBuf } = makeIO();
     const code = await fleetPs({ host: 'jp-tokyo' }, { io, hosts: HOSTS, client });
     expect(code).toBe(1);
-    expect(errBuf.join('')).toContain('host "jp-tokyo" not declared');
+    const err = errBuf.join('');
+    expect(err).toContain('host "jp-tokyo" not declared');
+    // P1-12: name the declared hosts + a concrete next action.
+    expect(err).toContain('us-east');
+    expect(err).toContain('eu-west');
+    expect(err).toContain('fleet.yaml#hosts');
+  });
+
+  it('every host unreachable surfaces a fleet.yaml#hosts next action (P1-12)', async () => {
+    const client: CrossHostControlPlaneClient = {
+      getStatus: async () => {
+        throw new Error('connect ECONNREFUSED');
+      },
+      getEvents: async () => ({ events: [], nextCursor: null }) as EventsResponse,
+      getDlq: async () => ({ rejections: [], nextCursor: null }) as DlqResponse,
+      ...MUTATION_STUBS,
+    };
+    const { io, errBuf } = makeIO();
+    const code = await fleetPs({}, { io, hosts: HOSTS, client });
+    expect(code).toBe(1);
+    const err = errBuf.join('');
+    expect(err).toContain('every host unreachable');
+    // The remedy must name where to look + a verification step.
+    expect(err).toContain('fleet.yaml#hosts');
+    expect(err).toContain('declaragent ps');
   });
 
   it('empty hosts list prints pointer to single-host `ps`', async () => {

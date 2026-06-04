@@ -11,10 +11,20 @@ async function initRepoWithSeed(root: string, file: string, contents: string): P
   await runGitRaw(root, ['init', '-b', 'main']);
   await runGitRaw(root, ['config', 'user.email', 'test@example.com']);
   await runGitRaw(root, ['config', 'user.name', 'Test']);
+  // Disable commit signing for this throwaway repo. A host with a global
+  // `commit.gpgsign=true` (but no usable key, or a key whose agent blocks
+  // on a passphrase prompt) would otherwise either fail the commit — so
+  // captureHead returns undefined — or hang past the test timeout. Mirrors
+  // the `-c commit.gpgsign=false` the production `initRepo` already uses.
+  await runGitRaw(root, ['config', 'commit.gpgsign', 'false']);
   await runGitRaw(root, ['add', '-A']);
-  await runGitRaw(root, ['commit', '-m', 'seed', '--no-verify']);
+  const commit = await runGitRaw(root, ['commit', '-m', 'seed', '--no-verify']);
   const head = await captureHead(root);
-  if (!head) throw new Error('failed to capture head');
+  if (!head) {
+    throw new Error(
+      `failed to capture head (commit exit ${commit.code}: ${commit.stderr.trim() || commit.stdout.trim()})`,
+    );
+  }
   return head;
 }
 
@@ -80,6 +90,10 @@ describe('runUndo', () => {
     expect(res.message).toContain('no git HEAD');
   });
 
+  // Spawns ~8 sequential git subprocesses (seed + checkout + a second
+  // no-op undo). On a cold/slow CI runner that can edge past bun's 5s
+  // default; give it explicit headroom so a slow spawn isn't read as a
+  // hang. The gpgsign-disable in initRepoWithSeed removes the real hang.
   test('happy path: reverts file + clears lastApplied', async () => {
     if (!GIT) return;
     const head = await initRepoWithSeed(root, 'f.txt', 'original\n');
@@ -107,7 +121,7 @@ describe('runUndo', () => {
     const res2 = await runUndo({ registry: reg, scopeRoot: root });
     expect(res2.ok).toBe(false);
     expect(res2.message).toContain('nothing to undo');
-  });
+  }, 20_000);
 
   test('ok:true but no revert when the apply had zero writes', async () => {
     if (!GIT) return;

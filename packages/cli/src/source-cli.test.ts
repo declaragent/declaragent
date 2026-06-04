@@ -59,6 +59,25 @@ describe('sourceList', () => {
       cleanup();
     }
   });
+
+  test('a non-array config file errors with a next action (P1-12)', async () => {
+    // Write a JSON object where an array is expected.
+    const { path, cleanup } = tmpConfig({ type: 'cron', config: { id: 'oops' } });
+    try {
+      const { io } = captureIO();
+      let message = '';
+      try {
+        await sourceList({ io, configPath: path });
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+      expect(message).toContain('not a JSON array');
+      // The remedy must name a concrete next step.
+      expect(message).toContain('declaragent source add');
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe('sourceAdd', () => {

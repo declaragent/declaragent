@@ -118,7 +118,9 @@ export async function dlqShow(
     if (resp.method !== 'dlq-show' || 'error' in resp) return 1;
     const entry: DLQEntry | null = resp.result.entry;
     if (!entry) {
-      io.err(`✗ DLQ entry "${entryId}" not found on source "${sourceId}"\n`);
+      io.err(
+        `✗ DLQ entry "${entryId}" not found on source "${sourceId}" — list current entries with \`declaragent dlq list --source ${sourceId}\`.\n`,
+      );
       return 1;
     }
     io.out(JSON.stringify(entry, null, 2));

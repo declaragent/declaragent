@@ -190,7 +190,10 @@ describe('dlqShow', () => {
     const { err, io } = captureIO();
     const code = await dlqShow('orders', 'ghost', { socketPath: stack.socketPath, io });
     expect(code).toBe(1);
-    expect(err.join('')).toMatch(/not found/);
+    const text = err.join('');
+    expect(text).toMatch(/not found/);
+    // P1-12: surface a next action — the exact list command for this source.
+    expect(text).toContain('declaragent dlq list --source orders');
   });
 });
 
