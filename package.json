@@ -27,5 +27,10 @@
   },
   "engines": {
     "bun": ">=1.1.0"
+  },
+  "overrides": {
+    "fast-xml-builder": "1.2.0",
+    "ip-address": "10.2.0",
+    "ws": "8.21.0"
   }
 }
