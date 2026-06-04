@@ -153,11 +153,46 @@ jobs:
         run: |
           docker compose -f packages/source-nats/test/fixtures/docker-compose.yml down --volumes || true
 
-  # File a tracking issue on failure. PRs don't block — nightly flakes
-  # should be investigated through the issue tracker, not by gating
-  # feature work on an infra test that may be transient.
+  # Write a machine-readable STATUS.json on every scheduled run (green or
+  # red). This is the live CI signal docs/STATUS.md and the site read,
+  # replacing hardcoded status copy (PROD_PARITY_ACTIONS.md P1-11).
+  publish-status:
+    name: Publish STATUS.json
+    needs: [fleet-rpc-kafka, fleet-rpc-nats]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const kafka = ${{ toJSON(needs.fleet-rpc-kafka.result) }};
+            const nats = ${{ toJSON(needs.fleet-rpc-nats.result) }};
+            const status = (kafka === 'success' && nats === 'success') ? 'passed' : 'failed';
+            const payload = {
+              workflow: 'nightly-integration',
+              status,
+              conclusion: { 'fleet-rpc-kafka': kafka, 'fleet-rpc-nats': nats },
+              timestamp: new Date().toISOString(),
+              commit: context.sha,
+              run_url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            };
+            fs.writeFileSync('STATUS.json', `${JSON.stringify(payload, null, 2)}\n`);
+            core.summary.addRaw(`nightly-integration: **${status}**`).write();
+
+      - name: Upload STATUS.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: status-json-${{ github.run_id }}
+          path: STATUS.json
+          if-no-files-found: error
+
+  # Consolidate failures into ONE rolling tracker issue (find-or-create by
+  # a fixed label), one comment per failure — not one issue per night.
+  # PRs don't block here; the green-before-merge policy lives in
+  # CONTRIBUTING.md ("CI status & green-before-merge").
   report-failure:
-    name: File tracking issue on failure
+    name: Update rolling failure tracker
     needs: [fleet-rpc-kafka, fleet-rpc-nats]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
@@ -167,19 +202,54 @@ jobs:
       - uses: actions/github-script@v7
         with:
           script: |
-            const title = `nightly fleet-integration failed on ${new Date().toISOString().slice(0, 10)}`;
-            const body = [
-              `Nightly fleet RPC integration test failed.`,
-              ``,
-              `**Workflow run:** ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
-              ``,
-              `Labeled \`nightly-flake\` for triage. Close when resolved.`,
-              `Reopen automatically disabled — each failure files a fresh issue so trends are visible.`,
-            ].join('\n');
-            await github.rest.issues.create({
+            const TRACKER_LABEL = 'ci-tracker:nightly-integration';
+            const TRACKER_TITLE = '[nightly-integration] rolling failure tracker';
+            const kafka = ${{ toJSON(needs.fleet-rpc-kafka.result) }};
+            const nats = ${{ toJSON(needs.fleet-rpc-nats.result) }};
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            // Find-or-create the single rolling tracker issue by fixed label.
+            const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              body,
-              labels: ['nightly-flake', 'slice-7'],
+              labels: TRACKER_LABEL,
+              state: 'open',
+              per_page: 1,
+            });
+            let issueNumber = existing.data[0]?.number;
+            if (!issueNumber) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: TRACKER_TITLE,
+                body: [
+                  `Rolling tracker for **nightly-integration** failures.`,
+                  ``,
+                  `One comment per failure is appended below. Do not close on a single green;`,
+                  `close only when the underlying flake/regression is resolved.`,
+                  ``,
+                  `Triage each comment by adding a quarantine label:`,
+                  `\`quarantine:flake\` (transient, set a deadline) or`,
+                  `\`quarantine:signal\` (real regression — blocks merges). See CONTRIBUTING.md.`,
+                ].join('\n'),
+                labels: [TRACKER_LABEL, 'nightly-flake', 'slice-7'],
+              });
+              issueNumber = created.data.number;
+            }
+
+            // Always append one comment per failure.
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                `### Failure — ${new Date().toISOString()}`,
+                ``,
+                `- **Commit:** ${context.sha}`,
+                `- **Run:** ${runUrl}`,
+                `- **fleet-rpc-kafka:** ${kafka}`,
+                `- **fleet-rpc-nats:** ${nats}`,
+                ``,
+                `flake-vs-signal: TBD — set \`quarantine:flake\` or \`quarantine:signal\`.`,
+              ].join('\n'),
             });
