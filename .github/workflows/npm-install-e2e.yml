@@ -1,0 +1,139 @@
+name: npm install e2e (real registry + real release)
+
+# P0-1b · The REAL end-to-end install gate.
+#
+# Unlike npm-install-smoke.yml / installer-smoke.yml — which stage a
+# LOCAL `file://` mirror under a fake `v0.0.1-smoke` tag and override
+# DECLARAGENT_BASE_URL/DECLARAGENT_VERSION — this workflow installs
+# `@declaragent/cli` straight from the REAL npm registry and lets the
+# postinstall shim download the REAL GitHub release binary over the
+# network. It is the only check that would have caught the 0.6→0.7.5
+# install breakage (no `v*` tag → binary 404).
+#
+# Deliberately does NOT check out the repo or set any DECLARAGENT_* env
+# overrides: the whole point is to exercise the published artifact +
+# published release exactly as a user would.
+#
+# Triggers:
+#   - workflow_dispatch — manual run (optionally pin a `version`).
+#   - release: published — every real release. Because the release event
+#     can arrive before release-binaries.yml has finished uploading the
+#     tarball assets, the install step retries (see below).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'npm dist-tag or exact version to install (e.g. latest, 0.7.5).'
+        type: string
+        default: 'latest'
+  release:
+    types: [published]
+
+concurrency:
+  group: npm-install-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Install from npm + run real binary (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cross-platform-minimal: ubuntu is the required floor. Uncomment
+        # the macOS rows to extend coverage once the darwin binaries are
+        # notarized (today they need the `xattr -d` workaround the shim
+        # already applies).
+        os:
+          - ubuntu-latest
+          # - macos-13
+          # - macos-14
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Resolve version to install
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          # On a `release: published` event, install the just-published
+          # version derived from the tag (strip the leading `v`). On a
+          # manual run, honor the workflow input (defaults to `latest`).
+          if [ "${{ github.event_name }}" = "release" ]; then
+            RAW="${{ github.event.release.tag_name }}"
+            VERSION="${RAW#v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Installing @declaragent/cli@${VERSION} from the real npm registry."
+
+      - name: Configure user-writable npm prefix
+        id: prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          NPM_PREFIX="${RUNNER_TEMP}/npm-global"
+          mkdir -p "${NPM_PREFIX}"
+          npm config set prefix "${NPM_PREFIX}"
+          echo "${NPM_PREFIX}/bin" >> "${GITHUB_PATH}"
+          echo "prefix=${NPM_PREFIX}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install @declaragent/cli (real registry + real release download)
+        shell: bash
+        env:
+          NPM_PREFIX: ${{ steps.prefix.outputs.prefix }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          export PATH="${NPM_PREFIX}/bin:${PATH}"
+          # The `release: published` event can fire before
+          # release-binaries.yml has uploaded the tarball assets, so the
+          # postinstall download may 404 transiently. Retry the whole
+          # install (postinstall included) a handful of times to absorb
+          # that asset-upload lag.
+          attempt=1
+          max=6
+          until npm install -g "@declaragent/cli@${VERSION}"; do
+            if [ "${attempt}" -ge "${max}" ]; then
+              echo "✗ npm install failed after ${max} attempts" >&2
+              exit 1
+            fi
+            echo "install attempt ${attempt}/${max} failed; waiting 30s for release assets…"
+            attempt=$((attempt + 1))
+            sleep 30
+          done
+
+      - name: Assert declaragent --version runs against the real binary
+        shell: bash
+        env:
+          NPM_PREFIX: ${{ steps.prefix.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          export PATH="${NPM_PREFIX}/bin:${PATH}"
+
+          command -v declaragent
+          out="$(declaragent --version)"
+          echo "declaragent --version → ${out}"
+          if ! echo "${out}" | grep -qE '^declaragent [0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "✗ unexpected --version output: ${out}" >&2
+            exit 1
+          fi
+
+          # The load-bearing difference from the smoke tests: confirm the
+          # REAL release binary was downloaded + landed by the postinstall
+          # shim, not just the Bun/JS fallback. postinstall.js writes it to
+          # <pkg>/bin/declaragent-binary/declaragent only when the download
+          # + checksum succeeded.
+          BIN="${NPM_PREFIX}/lib/node_modules/@declaragent/cli/bin/declaragent-binary/declaragent"
+          if [ ! -x "${BIN}" ]; then
+            echo "✗ real release binary missing/not executable at ${BIN}" >&2
+            echo "  the postinstall download did not succeed — install pipeline is broken." >&2
+            ls -la "${NPM_PREFIX}/lib/node_modules/@declaragent/cli/bin" || true
+            exit 1
+          fi
+          echo "✓ real release binary present at ${BIN}"
