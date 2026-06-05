@@ -152,7 +152,7 @@ const config: Config = {
       additionalLanguages: ['bash', 'yaml', 'json', 'toml', 'docker'],
     },
     colorMode: {
-      defaultMode: 'light',
+      defaultMode: 'dark',
       respectPrefersColorScheme: true,
     },
   } satisfies Preset.ThemeConfig,
