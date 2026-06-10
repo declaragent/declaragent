@@ -45,24 +45,26 @@ describe('findTenantsConfig (WS8)', () => {
 import { readUpState } from './up-lifecycle.js';
 import { CLI_VERSION } from './version.js';
 
-describe('resolveBindAddress (WS3)', () => {
-  test('defaults to 127.0.0.1 (loopback) when unset', () => {
-    expect(resolveBindAddress({ hasAuth: false, env: {} })).toEqual({ hostname: '127.0.0.1' });
+describe('resolveBindAddress (WS3/WS6)', () => {
+  test('defaults to 127.0.0.1 (loopback), full mode, when unset', () => {
+    expect(resolveBindAddress({ hasAuth: false, env: {} })).toEqual({
+      hostname: '127.0.0.1',
+      mode: 'full',
+    });
   });
-  test('loopback bind never requires auth', () => {
+  test('loopback bind never requires auth → full mode', () => {
     expect(
       resolveBindAddress({ hasAuth: false, env: { DECLARAGENT_BIND_ADDRESS: 'localhost' } }),
-    ).toEqual({ hostname: 'localhost' });
+    ).toEqual({ hostname: 'localhost', mode: 'full' });
   });
-  test('non-loopback bind WITHOUT auth is refused (fail-closed)', () => {
+  test('non-loopback bind WITHOUT auth → safe-subset (health/metrics only, never refused)', () => {
     const r = resolveBindAddress({ hasAuth: false, env: { DECLARAGENT_BIND_ADDRESS: '0.0.0.0' } });
-    expect('error' in r).toBe(true);
-    if ('error' in r) expect(r.error).toMatch(/non-loopback|auth/i);
+    expect(r).toEqual({ hostname: '0.0.0.0', mode: 'safe-subset' });
   });
-  test('non-loopback bind WITH auth is allowed', () => {
+  test('non-loopback bind WITH auth → full mode (sensitive routes authed)', () => {
     expect(
       resolveBindAddress({ hasAuth: true, env: { DECLARAGENT_BIND_ADDRESS: '0.0.0.0' } }),
-    ).toEqual({ hostname: '0.0.0.0' });
+    ).toEqual({ hostname: '0.0.0.0', mode: 'full' });
   });
   test('isLoopbackBindAddress', () => {
     expect(isLoopbackBindAddress('127.0.0.1')).toBe(true);

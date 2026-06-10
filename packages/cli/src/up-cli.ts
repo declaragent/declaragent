@@ -797,21 +797,33 @@ async function runForeground(
     // mis-config we refuse to bind insecurely + skip the listener loudly
     // rather than exposing the routes to the network.
     const bindResolution = resolveBindAddress({ hasAuth: controlPlaneAuth !== undefined });
-    if ('error' in bindResolution) {
-      io.err(`⚠ control plane: ${bindResolution.error} Skipping the listener.\n`);
-    } else {
+    {
       const bindHost = bindResolution.hostname;
       const displayHost = isLoopbackBindAddress(bindHost) ? '127.0.0.1' : bindHost;
+      // WS6 — on a non-loopback bind without auth, serve ONLY the safe routes
+      // (/metrics, /healthz, /readyz) so kubelet probes work without exposing
+      // /events,/audit,/dlq unauthenticated. The sensitive routes are dropped,
+      // not merely auth-skipped, so nothing leaks.
+      const servedRoutes =
+        bindResolution.mode === 'safe-subset'
+          ? routes.filter((r) => SAFE_CONTROL_PLANE_PATHS.has(r.path))
+          : routes;
+      if (bindResolution.mode === 'safe-subset') {
+        io.out(
+          '  control plane: non-loopback bind without auth → serving only /metrics,/healthz,/readyz (add controlPlane.auth to expose /events,/audit,/dlq).\n',
+        );
+      }
       try {
         controlPlaneHandle = await startControlPlaneServer({
-          routes,
+          routes: servedRoutes,
           port: metricsPort,
           hostname: bindHost,
-          // A non-loopback bind is only reached here when auth is configured
-          // (resolveBindAddress fails closed otherwise), so accepting remote
-          // Host headers is safe — the bearer handshake still gates every route.
-          ...(controlPlaneAuth !== undefined && {
-            auth: controlPlaneAuth,
+          // Accept non-loopback requests when EITHER auth gates every route
+          // (full mode) OR only the safe subset is served (safe-subset mode) —
+          // otherwise the server defaults to loopback-only and 403s the
+          // kubelet's pod-network probe to /healthz + /readyz (WS6).
+          ...(controlPlaneAuth !== undefined && { auth: controlPlaneAuth }),
+          ...((controlPlaneAuth !== undefined || bindResolution.mode === 'safe-subset') && {
             allowRemote: true,
           }),
         });
@@ -820,15 +832,18 @@ async function runForeground(
         // fire. Stopped in doShutdown so a clean `down` isn't seen as a hang.
         heartbeat = startHeartbeat({ metrics: runtime.metrics });
         io.out(`  metrics: http://${displayHost}:${controlPlaneHandle.port}/metrics\n`);
-        io.out(`  status:  http://${displayHost}:${controlPlaneHandle.port}/status\n`);
-        if (eventStoreForRoutes) {
-          io.out(`  events:  http://${displayHost}:${controlPlaneHandle.port}/events\n`);
-          io.out(`  dlq:     http://${displayHost}:${controlPlaneHandle.port}/dlq\n`);
+        io.out(`  health:  http://${displayHost}:${controlPlaneHandle.port}/healthz (+ /readyz)\n`);
+        if (bindResolution.mode === 'full') {
+          io.out(`  status:  http://${displayHost}:${controlPlaneHandle.port}/status\n`);
+          if (eventStoreForRoutes) {
+            io.out(`  events:  http://${displayHost}:${controlPlaneHandle.port}/events\n`);
+            io.out(`  dlq:     http://${displayHost}:${controlPlaneHandle.port}/dlq\n`);
+          }
+          if (sharedAuditSink) {
+            io.out(`  audit:   http://${displayHost}:${controlPlaneHandle.port}/audit\n`);
+          }
+          io.out(`  logs:    http://${displayHost}:${controlPlaneHandle.port}/logs\n`);
         }
-        if (sharedAuditSink) {
-          io.out(`  audit:   http://${displayHost}:${controlPlaneHandle.port}/audit\n`);
-        }
-        io.out(`  logs:    http://${displayHost}:${controlPlaneHandle.port}/logs\n`);
       } catch (err) {
         io.err(
           `⚠ control-plane exporter failed to bind on :${metricsPort} — ${err instanceof Error ? err.message : String(err)}. Continuing without HTTP endpoints.\n`,
@@ -1847,28 +1862,37 @@ export function isLoopbackBindAddress(host: string): boolean {
   return host === '127.0.0.1' || host === '::1' || host === 'localhost';
 }
 
+/** Routes safe to expose on a non-loopback bind without auth (WS6). */
+export const SAFE_CONTROL_PLANE_PATHS: ReadonlySet<string> = new Set([
+  '/metrics',
+  '/healthz',
+  '/readyz',
+]);
+
 /**
- * WS3 — resolve the control-plane listener bind address.
+ * WS3/WS6 — resolve the control-plane listener bind address + mode.
  *
- * Source: `DECLARAGENT_BIND_ADDRESS` (default `127.0.0.1`). Fail-closed: binding
- * a non-loopback address (e.g. `0.0.0.0` for in-container / cross-host access)
- * REQUIRES a `controlPlane.auth` block — otherwise the mutation + read routes
- * would be exposed unauthenticated to the network. Returns `{ error }` in that
- * case so the caller can refuse to bind insecurely.
+ * Source: `DECLARAGENT_BIND_ADDRESS` (default `127.0.0.1`).
+ *
+ * - Loopback bind, or non-loopback WITH a `controlPlane.auth` block → `full`
+ *   mode: every route (incl. `/events`,`/audit`,`/dlq`) is served (authed when
+ *   a non-loopback bind exposes them).
+ * - Non-loopback bind WITHOUT auth → `safe-subset` mode: bind anyway, but serve
+ *   ONLY `/metrics` + `/healthz` + `/readyz` (the routes safe to expose
+ *   unauthenticated). This is what k8s needs — the kubelet probes the pod IP,
+ *   not loopback — WITHOUT forcing operators to stand up an OIDC IdP just to
+ *   get liveness/readiness. The sensitive routes are simply not registered, so
+ *   nothing is exposed unauthenticated (the WS3 fail-closed guarantee holds).
  */
 export function resolveBindAddress(opts: {
   hasAuth: boolean;
   env?: Record<string, string | undefined>;
-}): { hostname: string } | { error: string } {
+}): { hostname: string; mode: 'full' | 'safe-subset' } {
   const env = opts.env ?? process.env;
   const configured = env.DECLARAGENT_BIND_ADDRESS?.trim();
   const hostname = configured && configured.length > 0 ? configured : '127.0.0.1';
-  if (!isLoopbackBindAddress(hostname) && !opts.hasAuth) {
-    return {
-      error: `refusing to bind the control plane to non-loopback address "${hostname}" without a controlPlane.auth block — it would expose /events,/audit,/dlq unauthenticated. Add auth or bind 127.0.0.1.`,
-    };
-  }
-  return { hostname };
+  const mode = !isLoopbackBindAddress(hostname) && !opts.hasAuth ? 'safe-subset' : 'full';
+  return { hostname, mode };
 }
 
 function buildDetachedArgs(args: UpArgs): string[] {

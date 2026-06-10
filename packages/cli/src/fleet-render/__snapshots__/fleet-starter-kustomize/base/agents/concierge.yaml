@@ -99,7 +99,7 @@ spec:
               readOnly: true
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10

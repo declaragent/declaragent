@@ -23,7 +23,7 @@ export {
 } from './control-plane-server.js';
 export { DAEMON_HEARTBEAT_METRIC, startHeartbeat } from './heartbeat.js';
 export type { HeartbeatHandle, StartHeartbeatOptions } from './heartbeat.js';
-export { OtelSdkError, startOtelSdk } from './otel-sdk.js';
+export { OtelSdkError, otlpTracesUrl, startOtelSdk } from './otel-sdk.js';
 export type { OtelSdkHandle, StartOtelSdkOptions } from './otel-sdk.js';
 export type {
   ControlPlaneRoute,

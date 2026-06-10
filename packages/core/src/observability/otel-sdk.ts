@@ -28,13 +28,29 @@ interface SdkNodeModule {
   NodeSDK: new (config: Record<string, unknown>) => NodeSdkLike;
 }
 
+/** Shape of `@opentelemetry/exporter-trace-otlp-http`'s OTLPTraceExporter. */
+interface OtlpHttpExporterModule {
+  OTLPTraceExporter: new (config: { url: string }) => unknown;
+}
+
 export interface StartOtelSdkOptions {
   /** OTLP endpoint (e.g. `http://collector:4318`). Required to start. */
   endpoint: string;
   /** `service.name` resource attribute. Defaults to `declaragent`. */
   serviceName?: string;
-  /** Peer-dep loader (tests inject a stub `@opentelemetry/sdk-node`). */
+  /** Peer-dep loader (tests inject stub OTel modules). */
   loader?: PeerDepLoader;
+}
+
+/**
+ * Normalize an OTLP HTTP endpoint to the traces URL. The OTLPTraceExporter
+ * wants the full `/v1/traces` path when `url` is set explicitly (unlike the
+ * env-var path, which appends it). So `http://c:4318` → `http://c:4318/v1/traces`,
+ * while an already-suffixed URL is left as-is.
+ */
+export function otlpTracesUrl(endpoint: string): string {
+  const trimmed = endpoint.replace(/\/+$/, '');
+  return trimmed.endsWith('/v1/traces') ? trimmed : `${trimmed}/v1/traces`;
 }
 
 export interface OtelSdkHandle {
@@ -50,24 +66,33 @@ export interface OtelSdkHandle {
  */
 export async function startOtelSdk(opts: StartOtelSdkOptions): Promise<OtelSdkHandle> {
   const loader = opts.loader ?? defaultPeerLoader;
-  let mod: SdkNodeModule;
+  let sdkMod: SdkNodeModule;
+  let expMod: OtlpHttpExporterModule;
   try {
-    mod = (await loader('@opentelemetry/sdk-node')) as SdkNodeModule;
+    sdkMod = (await loader('@opentelemetry/sdk-node')) as SdkNodeModule;
+    expMod = (await loader('@opentelemetry/exporter-trace-otlp-http')) as OtlpHttpExporterModule;
   } catch (err) {
     throw new OtelSdkError(
-      `@opentelemetry/sdk-node is not installed — cannot start span export: ${
+      `OTel SDK peer deps are not installed — cannot start span export: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
   }
-  if (typeof mod?.NodeSDK !== 'function') {
+  if (typeof sdkMod?.NodeSDK !== 'function') {
     throw new OtelSdkError('@opentelemetry/sdk-node did not export a NodeSDK constructor');
   }
-  const sdk = new mod.NodeSDK({
+  if (typeof expMod?.OTLPTraceExporter !== 'function') {
+    throw new OtelSdkError(
+      '@opentelemetry/exporter-trace-otlp-http did not export an OTLPTraceExporter constructor',
+    );
+  }
+  // A REAL SpanExporter instance — NodeSDK's BatchSpanProcessor calls
+  // `exporter.export(...)`, so a plain `{ url }` is not enough (that bug only
+  // surfaces against a live collector; the unit stub now mirrors the real shape).
+  const traceExporter = new expMod.OTLPTraceExporter({ url: otlpTracesUrl(opts.endpoint) });
+  const sdk = new sdkMod.NodeSDK({
     serviceName: opts.serviceName ?? 'declaragent',
-    // The SDK reads OTEL_EXPORTER_OTLP_ENDPOINT from the env by default; we also
-    // pass it explicitly so an injected/test SDK sees the configured value.
-    traceExporter: { url: opts.endpoint },
+    traceExporter,
   });
   try {
     await sdk.start();

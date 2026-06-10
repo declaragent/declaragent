@@ -533,15 +533,15 @@ transports:
       requests: ${o.requestsTopic}
       responses: ${o.responsesTopic}
 capabilities:
-  - name: ${o.agentId}.ping
+  - name: ${o.agentId}-ping
     description: "Soak-harness echo capability for agent ${o.agentId}."
     timeoutMs: 30000
     idempotent: true
-  - name: ${o.agentId}.channel-send
+  - name: ${o.agentId}-channel-send
     description: "Soak-harness channel-style echo for agent ${o.agentId}."
     timeoutMs: 30000
     idempotent: true
-  - name: ${o.agentId}.cron-tick
+  - name: ${o.agentId}-cron-tick
     description: "Soak-harness cron-tick echo for agent ${o.agentId}."
     timeoutMs: 30000
     idempotent: true

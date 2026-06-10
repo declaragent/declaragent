@@ -345,17 +345,17 @@ async function drive(inputs: DriveInputs): Promise<number> {
     case 'rpc-request':
       targetTopic = beta.requestTopic;
       toAgent = 'beta';
-      capability = 'beta.ping';
+      capability = 'beta-ping';
       break;
     case 'channel-send':
       targetTopic = alpha.requestTopic;
       toAgent = 'alpha';
-      capability = 'alpha.channel-send';
+      capability = 'alpha-channel-send';
       break;
     case 'cron-tick':
       targetTopic = alpha.requestTopic;
       toAgent = 'alpha';
-      capability = 'alpha.cron-tick';
+      capability = 'alpha-cron-tick';
       break;
   }
 
