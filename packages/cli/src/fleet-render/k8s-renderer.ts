@@ -65,7 +65,7 @@ const EMBEDDED_CONFIG_FILES = [
   '.mcp.json',
 ] as const;
 
-async function readAgentExtraFiles(agentYamlPath: string): Promise<Record<string, string>> {
+export async function readAgentExtraFiles(agentYamlPath: string): Promise<Record<string, string>> {
   const dir = dirname(agentYamlPath);
   const out: Record<string, string> = {};
   await Promise.all(

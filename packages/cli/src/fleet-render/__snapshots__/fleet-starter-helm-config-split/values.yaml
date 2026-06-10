@@ -8,6 +8,7 @@ replicas:
   default: 1
 metricsPort: 9464
 healthProbePath: /healthz
+readyProbePath: /readyz
 serviceMonitor:
   enabled: true
   interval: 30s

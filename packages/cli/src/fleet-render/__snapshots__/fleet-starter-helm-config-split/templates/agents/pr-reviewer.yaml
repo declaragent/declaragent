@@ -63,6 +63,89 @@ data:
     event-sources:
       - ./event-sources.yaml
 
+  capabilities.yaml: |
+    # Declares the capabilities this agent exposes to the rest of the
+    # fleet. Producer-side `RequestAgent` callers consult this file via
+    # `declaragent capabilities gen --peer pr-reviewer` to produce typed
+    # `Request`/`Response` declarations + the runtime validates payloads
+    # against these schemas on both sides (Enterprise Production Plan #11).
+    version: 1
+    agent: agent://pr-reviewer
+    transports:
+      - kind: memory
+        topics:
+          requests: agents.pr-reviewer.requests
+          responses: agents.pr-reviewer.responses
+      # Kafka variant — uncomment when running across processes:
+      # - kind: kafka
+      #   brokers: ["${env:KAFKA_BROKERS}"]
+      #   topics:
+      #     requests: agents.pr-reviewer.requests
+      #     responses: agents.pr-reviewer.responses
+    capabilities:
+      - name: review-pr
+        description: "Review a GitHub pull request and emit structured findings."
+        timeoutMs: 60000
+        idempotent: true
+        since: "1.1.0"
+        inputSchema:
+          type: object
+          properties:
+            prUrl:
+              type: string
+              description: GitHub PR URL.
+            severity:
+              description: Reviewer's escalation floor — drop findings below this severity.
+              enum: [low, med, high]
+          required: [prUrl, severity]
+          additionalProperties: false
+        outputSchema:
+          type: object
+          properties:
+            verdict:
+              enum: [approve, request-changes, comment]
+            findings:
+              type: array
+              items:
+                type: object
+                properties:
+                  file: { type: string }
+                  line: { type: integer }
+                  severity:
+                    enum: [blocker, major, minor, nit]
+                  message: { type: string }
+                required: [file, severity, message]
+            summary: { type: string }
+          required: [verdict, findings, summary]
+
+  event-sources.yaml: |
+    # PR-reviewer inbox: every `review-pr` request lands here. The adapter
+    # decodes the envelope, verifies tenant scope (if multi-tenant), and
+    # dispatches to the `review-pr` skill with `inputs.payload` carrying the
+    # caller's payload.
+    - type: agent-inbox
+      config:
+        id: inbox
+        agentId: pr-reviewer
+        # Swap memory → kafka below when running across processes:
+        # requestsTopic: agents.pr-reviewer.requests
+        # responsesTopic: agents.pr-reviewer.responses
+      delivery:
+        mode: at-least-once
+        ackStrategy: after-dispatch
+        maxRetries: 3
+        retryBackoff:
+          initialMs: 500
+          maxMs: 10000
+          jitter: true
+        idempotency:
+          strategy: transport-natural
+          store: sqlite
+          ttlMs: 900000
+      limits:
+        concurrency: 4
+        maxInflight: 64
+
 {{- if .Values.configSplit.enabled }}
 ---
 apiVersion: v1
@@ -139,7 +222,7 @@ spec:
           {{- end }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.healthProbePath }}
+              path: {{ .Values.readyProbePath }}
               port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10
