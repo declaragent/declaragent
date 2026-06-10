@@ -35,7 +35,7 @@ Every row uses one of four marks:
 | HMAC RPC auth provider (sign+verify) + `RequestAgent` signer hook | ✅ | `plugin-agent-rpc/src/auth/hmac.ts` + `hmac.test.ts`; e2e sign→verify in `request-agent.test.ts` |
 | Control-plane Host-header bypass fixed (uses real peer IP) | ✅ | `control-plane-auth.ts`; `control-plane-auth.test.ts` ("forged Host:127.0.0.1") |
 | `bindAddress` knob, fail-closed non-loopback-requires-auth | ✅ | `up-cli.ts` `resolveBindAddress` + `up-cli.test.ts` |
-| Cross-host respond on inbound transport + `fleet run` supplies kafka/nats `transportFactories` + **kafka SASL/TLS** (`ssl`/`sasl`, passwordRef resolved) | ✅ **live-verified** | `fleet-run.ts` `selectRespondTransport`; `transport-factories.ts`; `kafka-transport.ts` + tests. **Round-trip verified against live Redpanda + NATS + JetStream** (`kafka-rpc`/`nats-rpc`/`jetstream-rpc` 2/2 each in a docker sandbox). |
+| Cross-host respond on inbound transport + `fleet run` supplies kafka/nats `transportFactories` + **kafka SASL/TLS** (`ssl`/`sasl`, passwordRef resolved) | ✅ **live-verified** | `fleet-run.ts` `selectRespondTransport`; `transport-factories.ts`; `kafka-transport.ts` + tests. **Round-trip verified against live Redpanda + NATS + JetStream** (2/2 each); **SASL/SCRAM handshake round-tripped against a SASL-enabled Redpanda** (not just config). |
 | DLQ requeue actually re-executes (fresh id) | ✅ | `events/dlq.ts` + `dlq.test.ts` |
 | Boot-time crash recovery of interrupted events | ✅ | `events/recovery.ts` + `recovery.test.ts`; wired in `up-cli.ts` |
 | Graceful drain on shutdown (`DECLARAGENT_DRAIN_DEADLINE_MS`) | ✅ | `up-cli.ts` `drainWithDeadline`; `up-lifecycle.test.ts` |

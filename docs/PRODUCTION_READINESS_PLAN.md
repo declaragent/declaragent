@@ -10,6 +10,8 @@
 > - **WS4/WS11** — fleet RPC round-trip verified against live **Redpanda** (`kafka-rpc` 2/2), **NATS** (`nats-rpc` 2/2), **JetStream** (`jetstream-rpc` 2/2); kafka SASL/TLS config exercised.
 > - **WS9** — bounded **45s/~225-cycle soak** green against Redpanda (harness capability-name bug fixed).
 > - **WS2** — OIDC/OAuth2 **rpc-auth round-trip verified** against a live IdP (`navikt/mock-oauth2-server`): valid client_credentials token accepted (JWKS+audience), wrong-audience rejected. Two fixture/test bugs fixed (Dex couldn't boot / doesn't do client_credentials → migrated IdP; signer/verifier kind mismatch).
+> - **WS3** — control-plane auth verified live: an agent with `controlPlane.auth` (OIDC, `allowLoopback:false`) on a non-loopback bind returned **401 on `/events` without a token, 200 with a valid JWKS-verified token**, `/healthz` 200 (exempt).
+> - **WS4/WS11 SASL** — `createKafkaTransport` SASL/SCRAM config **round-tripped against a SASL-enabled Redpanda** (real handshake, not just config mapping).
 > - **WS7** — span emitted via `startOtelSdk` **received by a live OTLP collector** (exporter-shape bug fixed: now builds a real `OTLPTraceExporter`).
 > - **WS6** — rendered manifest deployed to **minikube**; pod reached **Ready (1/1, 0 restarts)**. Fixes verified: full agent-dir ConfigMap embed, `/readyz` readiness probe, control-plane **safe-subset bind** (k8s probes work without an OIDC IdP), + a real `Dockerfile`.
 >
