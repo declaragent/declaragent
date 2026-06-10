@@ -243,11 +243,36 @@ export async function createSqliteAuditSink(
   async function prune(opts: RetentionPruneOptions): Promise<number> {
     const clock = opts.now ?? now;
     const cutoff = clock() - opts.retentionDays * 24 * 60 * 60 * 1000;
-    const res = db
-      .prepare('DELETE FROM audit_records WHERE tenant_id = ? AND ts < ?')
-      .run(opts.tenantId, cutoff);
-    // Bun exposes `changes` on the run result.
-    return Number((res as { changes?: number }).changes ?? 0);
+    // WS8 — retention pruning TOMBSTONES expired rows rather than DELETEing
+    // them. The hash chain is global (`prev = latestHash()`), so a hard delete
+    // orphaned the next row's `prevHash` and broke `verify()` (the audit's
+    // "prune breaks verify" finding). Tombstoning scrubs the PII payload —
+    // satisfying retention/data-minimization — while preserving the row's
+    // seq/prevHash/recordHash so the chain still verifies. Mirrors `erase()`.
+    // Already-tombstoned rows are skipped so re-running prune is idempotent.
+    const rows = db
+      .prepare(
+        "SELECT * FROM audit_records WHERE tenant_id = ? AND ts < ? AND kind != 'erased' ORDER BY seq ASC",
+      )
+      .all(opts.tenantId, cutoff) as RowShape[];
+    const update = db.prepare('UPDATE audit_records SET kind = ?, record_json = ? WHERE seq = ?');
+    let pruned = 0;
+    const tx = db.transaction((targets: RowShape[]) => {
+      for (const row of targets) {
+        const tombstone: ErasedAuditRecord = {
+          kind: 'erased',
+          ts: row.ts,
+          tenantId: row.tenant_id,
+          originalKind: row.kind,
+          erasedAt: clock(),
+          reason: `retention:${opts.retentionDays}d`,
+        };
+        update.run('erased', canonicalizeRecord(tombstone), row.seq);
+        pruned += 1;
+      }
+    });
+    tx(rows);
+    return pruned;
   }
 
   // ── Export cursor (SIEM loop, §3 Item #10) ─────────────────────────────

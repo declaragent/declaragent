@@ -201,7 +201,10 @@ export class SlackChannelInstance extends BaseChannelInstance {
       mode: this.slackConfig.transport.mode,
       team: this.authInfo?.team ?? null,
       botUser: this.authInfo?.user ?? null,
-      socketActive: this.socketTransport !== null,
+      // WS11 — truthful: a transport object exists ≠ the socket is up. Report
+      // the live connection state so a recycled/reconnecting socket reads as
+      // not-active instead of falsely healthy.
+      socketActive: this.socketTransport?.connected() ?? false,
       threadHints: this.threadHints.size,
     };
   }

@@ -220,13 +220,26 @@ function renderDeployment(
   const env: Array<Record<string, unknown>> = [
     { name: 'DECLARAGENT_AGENT_ID', value: src.agent.id },
     { name: 'DECLARAGENT_FLEET_NAME', value: fleetName },
+    // WS6 — foreground `up` defaults the metrics/health listener OFF (port 0);
+    // set it explicitly so the container actually serves /metrics + /healthz +
+    // /readyz for the probes below.
+    { name: 'DECLARAGENT_METRICS_PORT', value: String(resolved.metricsPort) },
+    // WS6 — bind the listener to all interfaces. The kubelet reaches the probe
+    // endpoints via the pod IP, not loopback, so the default 127.0.0.1 bind
+    // would make /healthz + /readyz unreachable (→ CrashLoopBackOff). NOTE: per
+    // the WS3 fail-closed rule, a non-loopback bind REQUIRES a controlPlane.auth
+    // block on the agent — `/healthz` + `/readyz` are auth-exempt, but the read/
+    // mutate routes are not, so the pod refuses to boot without auth configured.
+    { name: 'DECLARAGENT_BIND_ADDRESS', value: '0.0.0.0' },
   ];
 
   const container: Record<string, unknown> = {
     name: 'declaragent',
     image: resolved.image,
     imagePullPolicy: 'IfNotPresent',
-    args: ['up', '-d', '-f', '/etc/declaragent/agent.yaml'],
+    // WS6 — run FOREGROUND (no `-d`): the detached child exits, leaving PID 1
+    // to exit 0 → CrashLoopBackOff. Foreground keeps PID 1 alive for the pod.
+    args: ['up', '-f', '/etc/declaragent/agent.yaml'],
     ports: [{ name: 'metrics', containerPort: resolved.metricsPort, protocol: 'TCP' }],
     env,
     volumeMounts: [{ name: 'agent-config', mountPath: '/etc/declaragent', readOnly: true }],

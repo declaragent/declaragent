@@ -42,11 +42,81 @@ describe('requeue', () => {
     if (result.ok) {
       expect(result.eventId).toBe('evt-1');
       expect(result.attemptsBeforeRequeue).toBe(1);
+      // Re-dispatched under a FRESH id (the old same-id behavior was deduped
+      // away → a no-op). The new id carries lineage back to the original.
+      expect(result.newEventId).not.toBe('evt-1');
+      expect(seen[0]?.id).toBe(result.newEventId);
     }
     expect(seen).toHaveLength(1);
-    expect(seen[0]?.id).toBe('evt-1');
+    expect(seen[0]?.id).not.toBe('evt-1');
+    expect(seen[0]?.meta?.causedBy).toBe('evt-1');
     expect(await store.getRejection('evt-1')).toBeUndefined();
 
+    db.close();
+  });
+
+  test('requeued event actually routes through a deduping dispatcher (not a no-op)', async () => {
+    // Regression for the reproduced blocker: re-publishing the same id made the
+    // dispatcher reject it as a duplicate before routing. With a fresh id +
+    // dropped idempotency key, the re-dispatch executes.
+    const db = memDb();
+    const store = createEventStore({ db });
+    const bus = createEventBus();
+
+    // Original event was already recorded + seen, with an app idempotency key.
+    const event: AgentEvent = {
+      ...makeEvent('evt-dup'),
+      meta: { idempotencyKey: 'delivery-123' },
+    };
+    await store.record(event);
+    await store.upsertRejection('evt-dup', 'circuit-open', 'tripped');
+
+    // Simulate the dispatcher's dedup: anything whose id OR idempotency key was
+    // already seen is dropped. The requeued clone must dodge BOTH.
+    const seenIds = new Set<string>(['evt-dup']);
+    const seenKeys = new Set<string>(['delivery-123']);
+    const executed: string[] = [];
+    const dispatch = async (e: AgentEvent) => {
+      if (seenIds.has(e.id) || (e.meta?.idempotencyKey && seenKeys.has(e.meta.idempotencyKey))) {
+        return { kind: 'duplicate', eventId: e.id, firstSeenAt: 0 } as const;
+      }
+      executed.push(e.id);
+      return { kind: 'dispatched', sessionId: 's-1' } as const;
+    };
+
+    const result = await requeue({ store, bus, eventId: 'evt-dup', dispatch });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // The real outcome is returned and it actually ran (not 'duplicate').
+      expect(result.outcome?.kind).toBe('dispatched');
+      expect(executed).toEqual([result.newEventId]);
+    }
+    db.close();
+  });
+
+  test('newId / now seams are honored', async () => {
+    const db = memDb();
+    const store = createEventStore({ db });
+    const bus = createEventBus();
+    await store.record(makeEvent('evt-seam'));
+    await store.upsertRejection('evt-seam', 'no-handler', undefined);
+
+    const seen: AgentEvent[] = [];
+    bus.subscribe('*', async (e) => {
+      seen.push(e);
+    });
+
+    const result = await requeue({
+      store,
+      bus,
+      eventId: 'evt-seam',
+      newId: () => 'fixed-new-id',
+      now: () => 4242,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.newEventId).toBe('fixed-new-id');
+    expect(seen[0]?.id).toBe('fixed-new-id');
+    expect(seen[0]?.timestamp).toBe(4242);
     db.close();
   });
 
@@ -102,7 +172,8 @@ describe('requeue', () => {
     if (!second.ok) {
       expect(second.reason).toBe('dlq-miss');
     }
-    // Critical: the second call MUST NOT have republished.
+    // Critical: the second call MUST NOT have re-dispatched (DLQ row was
+    // already acknowledged by the first), so only one publish happened.
     expect(seen).toHaveLength(1);
 
     db.close();

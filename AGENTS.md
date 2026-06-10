@@ -23,6 +23,34 @@ Every row uses one of four marks:
 
 ---
 
+## 0 · Production-readiness pass (in-flight, 0.7.6 branch `agent-durability-followups`)
+
+> Added after a multi-agent audit (see [`docs/PRODUCTION_READINESS_PLAN.md`](docs/PRODUCTION_READINESS_PLAN.md)) found several primitives **designed but not wired at runtime** — the exact 🟡 trap this file warns about. The items below are **runtime-wired + tested** in the working tree (full suite green; not yet released). Each is honest about what remains.
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Tool permissions ENFORCED in `up`/`fleet run` (was `mode:'bypass'` + full builtin set) | ✅ | `packages/cli/src/resolve-tools.ts` + `resolve-tools.test.ts`; wired at `up-cli.ts`, `fleet-run-llm-handler.ts` |
+| Bash subprocess secret-env scrub | ✅ | `packages/core/src/tools/bash-env.ts` + `bash.test.ts` ("does not leak secret env") |
+| RPC verify fails CLOSED on unknown senders (`strictAuth`) | ✅ | `agent-inbox.ts` + `fleet-run.ts`; `agent-inbox.test.ts`, `fleet-run.test.ts` |
+| HMAC RPC auth provider (sign+verify) + `RequestAgent` signer hook | ✅ | `plugin-agent-rpc/src/auth/hmac.ts` + `hmac.test.ts`; e2e sign→verify in `request-agent.test.ts` |
+| Control-plane Host-header bypass fixed (uses real peer IP) | ✅ | `control-plane-auth.ts`; `control-plane-auth.test.ts` ("forged Host:127.0.0.1") |
+| `bindAddress` knob, fail-closed non-loopback-requires-auth | ✅ | `up-cli.ts` `resolveBindAddress` + `up-cli.test.ts` |
+| Cross-host respond on inbound transport + `fleet run` supplies kafka/nats `transportFactories` + **kafka SASL/TLS** (`ssl`/`sasl`, passwordRef resolved) | ✅ wiring | `fleet-run.ts` `selectRespondTransport`; `transport-factories.ts`; `kafka-transport.ts` (ssl/sasl → kafkajs) + tests. Live broker handshake still needs a real broker. |
+| DLQ requeue actually re-executes (fresh id) | ✅ | `events/dlq.ts` + `dlq.test.ts` |
+| Boot-time crash recovery of interrupted events | ✅ | `events/recovery.ts` + `recovery.test.ts`; wired in `up-cli.ts` |
+| Graceful drain on shutdown (`DECLARAGENT_DRAIN_DEADLINE_MS`) | ✅ | `up-cli.ts` `drainWithDeadline`; `up-lifecycle.test.ts` |
+| Outbound channel send retry (was at-most-once drop) | ✅ | `channels/outbound-bridge.ts` + `outbound-bridge.test.ts` |
+| LLM golden signals (latency/errors/tokens/cost) + daemon heartbeat + **OTel NodeSDK actually starts** (spans export) | ✅ | `engine.ts` + tests; `heartbeat.ts`; `otel-sdk.ts` (`startOtelSdk` loads sdk-node + `start()`) + `otel-sdk.test.ts`, wired in `up-cli.ts`. Span receipt still needs a live collector. |
+| WS8 multi-tenancy: spend brake + `tenants.yaml` load + GDPR `erase --user` + per-tenant **and** per-end-user memory isolation + tamper-safe retention | ✅ | `engine.ts` (`quota_exceeded`); `findTenantsConfig`/`resolveTenantContext`; `eraseSubject`+`erase-cli.ts`; `scopedNamespace` (`ctx.tenant`+`ctx.subject`); `audit prune` tombstones so `verify` passes (+ tests). Only separate-chain-per-tenant remains as further hardening. |
+| `/healthz`+`/readyz` auth-exempt routes; renderers run foreground `up` | ✅ | `control-plane-server.ts` + `control-plane-server.test.ts`; `k8s-renderer.ts`, `helm-renderer.ts` |
+| `declaragent agent validate` + unknown-key lint | ✅ | `cli/src/agent-cli.ts` + `agent-cli.test.ts` |
+| Slack Socket Mode reconnect-with-backoff + truthful `socketActive` | ✅ | `channel-slack/src/client.ts` + `client.test.ts`; `instance.ts` health |
+| Hermetic flagship E2E (event→dispatch→LLM→channel→outcome) | ✅ | `testkit/src/fleet-integration/hermetic-e2e.test.ts` |
+
+**Still genuinely incomplete (infrastructure- or calendar-gated, NOT done):** CLI live broker-factory wiring + transport SASL/TLS (need a real Kafka/NATS broker to verify); k8s probe-reachability (`0.0.0.0` bind + rendered auth secret) + the kind-cluster smoke gate (need a cluster); real OTel SDK span export (needs the SDK packages + an OTLP collector); multi-tenant `tenants.yaml` loading + GDPR erasure + per-tenant memory isolation; branch protection + the 7-week soak streak (GitHub admin + calendar); and the coordinated **0.8.0** breaking-change cutover (strict-schema throw + the four default flips). Treat those rows in the sections below as still 🟡/🔵 until verified with the relevant infrastructure.
+
+---
+
 ## 1 · Define agents with capabilities + skills
 
 | Capability | Status | Evidence |

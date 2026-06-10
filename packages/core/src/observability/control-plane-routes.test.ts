@@ -443,7 +443,10 @@ describe('dlqRequeueRoute', () => {
     expect(body.op).toBe('requeue');
     expect(body.attemptsBeforeOp).toBe(1);
     expect(published).toHaveLength(1);
-    expect(published[0]?.id).toBe('evt-r');
+    // Re-dispatched under a fresh id with lineage (same-id republish was a
+    // dedup no-op).
+    expect(published[0]?.id).not.toBe('evt-r');
+    expect(published[0]?.meta?.causedBy).toBe('evt-r');
     const gone = await store.getRejection('evt-r');
     expect(gone).toBeFalsy();
     await handle.close();

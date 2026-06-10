@@ -136,6 +136,21 @@ export interface LoadedTenantsConfig {
   readonly rawText: string;
 }
 
+/**
+ * WS8 — resolve a tenant id against a loaded `tenants.yaml` to its
+ * {@link TenantContext} (id + quotas + residency). Returns undefined when the
+ * id isn't declared, so the caller can fail loud (a typo'd tenant must not
+ * silently fall back to an unquota'd default). Pure; unit-testable.
+ *
+ * @since 0.7.6
+ */
+export function resolveTenantContext(
+  loaded: LoadedTenantsConfig,
+  tenantId: string,
+): TenantContext | undefined {
+  return loaded.tenants.find((t) => t.context.id === tenantId)?.context;
+}
+
 // ── Loader ──────────────────────────────────────────────────────────────
 
 export interface LoadTenantsOptions {

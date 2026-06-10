@@ -8,9 +8,70 @@ import type {
   StartAgentSourcesResult,
   startAgentSources,
 } from './run-agent-sources.js';
-import { up } from './up-cli.js';
+import { findTenantsConfig, isLoopbackBindAddress, resolveBindAddress, up } from './up-cli.js';
+
+describe('findTenantsConfig (WS8)', () => {
+  test('finds tenants.yaml at the agent dir', () => {
+    const root = mkdtempSync(join(tmpdir(), 'declaragent-tenants-find-'));
+    try {
+      writeFileSync(join(root, 'tenants.yaml'), 'version: 1\ntenants: []\n');
+      expect(findTenantsConfig(root)).toBe(join(root, 'tenants.yaml'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('walks up to a fleet-root tenants.yaml from <root>/agents/<name>/', () => {
+    const root = mkdtempSync(join(tmpdir(), 'declaragent-tenants-find-'));
+    try {
+      writeFileSync(join(root, 'tenants.yaml'), 'version: 1\ntenants: []\n');
+      const agentDir = join(root, 'agents', 'concierge');
+      mkdirSync(agentDir, { recursive: true });
+      expect(findTenantsConfig(agentDir)).toBe(join(root, 'tenants.yaml'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('returns undefined when no tenants.yaml exists', () => {
+    const root = mkdtempSync(join(tmpdir(), 'declaragent-tenants-find-'));
+    try {
+      expect(findTenantsConfig(root)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 import { readUpState } from './up-lifecycle.js';
 import { CLI_VERSION } from './version.js';
+
+describe('resolveBindAddress (WS3)', () => {
+  test('defaults to 127.0.0.1 (loopback) when unset', () => {
+    expect(resolveBindAddress({ hasAuth: false, env: {} })).toEqual({ hostname: '127.0.0.1' });
+  });
+  test('loopback bind never requires auth', () => {
+    expect(
+      resolveBindAddress({ hasAuth: false, env: { DECLARAGENT_BIND_ADDRESS: 'localhost' } }),
+    ).toEqual({ hostname: 'localhost' });
+  });
+  test('non-loopback bind WITHOUT auth is refused (fail-closed)', () => {
+    const r = resolveBindAddress({ hasAuth: false, env: { DECLARAGENT_BIND_ADDRESS: '0.0.0.0' } });
+    expect('error' in r).toBe(true);
+    if ('error' in r) expect(r.error).toMatch(/non-loopback|auth/i);
+  });
+  test('non-loopback bind WITH auth is allowed', () => {
+    expect(
+      resolveBindAddress({ hasAuth: true, env: { DECLARAGENT_BIND_ADDRESS: '0.0.0.0' } }),
+    ).toEqual({ hostname: '0.0.0.0' });
+  });
+  test('isLoopbackBindAddress', () => {
+    expect(isLoopbackBindAddress('127.0.0.1')).toBe(true);
+    expect(isLoopbackBindAddress('::1')).toBe(true);
+    expect(isLoopbackBindAddress('localhost')).toBe(true);
+    expect(isLoopbackBindAddress('0.0.0.0')).toBe(false);
+    expect(isLoopbackBindAddress('10.0.0.5')).toBe(false);
+  });
+});
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -408,6 +469,11 @@ describe('up verb — single agent', () => {
         'controlPlane:',
         '  auth:',
         '    enabled: true',
+        // WS3: Host-header spoofing can no longer simulate a remote peer (the
+        // server now trusts the real connection IP), so exercise the auth path
+        // with zero-trust loopback — every request needs a token regardless of
+        // origin. Genuine loopback-bypass is unit-tested in control-plane-auth.
+        '    allowLoopback: false',
         '    provider: oidc',
         '    issuer: "https://dex.test.local"',
         '    audience: "declaragent-control-plane"',
@@ -502,13 +568,13 @@ describe('up verb — single agent', () => {
       if (driverErr !== undefined) throw driverErr;
       expect(code).toBe(0);
       expect(cap.out.join('')).toContain('control-plane auth enabled');
-      // Loopback bypass — /status served without a token.
-      expect(loopbackStatus).toBe(200);
-      // Remote without token — 401.
+      // allowLoopback:false → even a loopback request without a token is 401.
+      expect(loopbackStatus).toBe(401);
+      // No token — 401.
       expect(remoteMissingStatus).toBe(401);
-      // Remote with a good token — 200.
+      // Valid token — 200.
       expect(remoteValidStatus).toBe(200);
-      // Remote with a bad-audience token — 401.
+      // Wrong-audience token — 401.
       expect(remoteBadAudStatus).toBe(401);
     } finally {
       try {
@@ -652,9 +718,11 @@ describe('up verb — single agent', () => {
       // doesn't declare it, so this assertion holds for CI; if a dev
       // installs it locally the "otel: tracing enabled" stdout banner
       // appears instead and the error stream stays empty.
-      const otelActive = cap.out.join('').includes('otel: tracing enabled');
+      const otelActive = cap.out.join('').includes('otel: spans exporting');
       if (!otelActive) {
-        expect(errText).toContain('tracing could not start');
+        // WS7 — the bridge load failed (no @opentelemetry/api in CI); the
+        // warning names the missing peer dep and the install command.
+        expect(errText).toContain('could not load');
         expect(errText).toContain('npm i @opentelemetry/api');
       }
     } finally {

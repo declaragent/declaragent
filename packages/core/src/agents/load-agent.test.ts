@@ -56,6 +56,36 @@ describe('loadAgent', () => {
     expect(loaded.skillConflicts).toEqual([]);
   });
 
+  test('parses a quotas block (WS8)', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      'name: q-bot\nmodel: m\nquotas:\n  dailyTokenUSD: 5\n  maxConcurrentToolCalls: 10\n',
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.quotas).toEqual({ dailyTokenUSD: 5, maxConcurrentToolCalls: 10 });
+  });
+
+  test('omits quotas when the block is absent', async () => {
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.quotas).toBeUndefined();
+  });
+
+  test('parses the tenant field (WS8)', async () => {
+    writeFileSync(join(dir, 'agent.yaml'), 'name: t\nmodel: m\ntenant: acme-prod\n');
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.tenantId).toBe('acme-prod');
+  });
+
+  test('omits tenantId when the field is absent', async () => {
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.tenantId).toBeUndefined();
+  });
+
+  test('rejects a typo in the strict quotas block', async () => {
+    writeFileSync(join(dir, 'agent.yaml'), 'name: q\nmodel: m\nquotas:\n  dailyTokensUSD: 5\n');
+    await expect(loadAgent({ agentDir: dir })).rejects.toBeInstanceOf(AgentConfigError);
+  });
+
   test('returns an empty skills array when skills/ is empty or missing', async () => {
     rmSync(join(dir, 'skills'), { recursive: true });
     const loaded = await loadAgent({ agentDir: dir });

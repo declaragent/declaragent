@@ -16,6 +16,7 @@ import {
   type LoadedCapabilities,
   type LoadedPeers,
   RpcAbandonedError,
+  type RpcAuth,
   RpcBusyError,
   type RpcError,
   RpcNoPeerError,
@@ -115,6 +116,17 @@ export interface CreateRequestAgentToolOptions {
    * Omit to leave envelopes unstamped (the default). @since 1.2.0
    */
   fleetVersion?: string;
+  /**
+   * WS2 — outbound envelope signer. When supplied, the `auth` block is replaced
+   * with the signer's output (e.g. an HMAC provider's `sign()`), so the
+   * receiver's fail-closed verify accepts the call. Omit to keep the legacy
+   * `auth:{kind:'internal'}` (works only with verify off / non-strict). The
+   * signer receives the fully-built envelope; signing is over the canonical
+   * form, which excludes `auth`, so a placeholder auth doesn't affect it.
+   *
+   * @since 0.7.6 — production-readiness WS2
+   */
+  signOutbound?: (envelope: AgentRpcEnvelope) => Promise<RpcAuth>;
   /** Clock. Default `Date.now`. */
   now?: () => number;
   /** UUID generator. Default `crypto.randomUUID`. */
@@ -267,6 +279,13 @@ export function createRequestAgentTool(
         }),
         auth: { kind: 'internal' },
       };
+
+      // WS2 — sign the outbound envelope when a signer is wired. The signature
+      // is computed over the canonical form (auth excluded), so replacing the
+      // placeholder `auth` afterwards is safe.
+      if (opts.signOutbound !== undefined) {
+        envelope.auth = await opts.signOutbound(envelope);
+      }
 
       // ── fire-and-forget ─────────────────────────────────────────────
       if (mode === 'fire-and-forget') {
@@ -474,11 +493,21 @@ function resolveTarget(input: RequestAgentInput, peers: LoadedPeers): ResolvedTa
   return { kind: entry.transport.kind, address: entry.address };
 }
 
-function brokerKind(addr: BrokerAddress): RpcTransportKind | undefined {
+/**
+ * Parse the transport scheme from a `BrokerAddress` (e.g. `kafka://orders.in`
+ * → `'kafka'`). Returns undefined for an unknown/malformed scheme. Exported so
+ * the receive side (fleet-run) can pick the RIGHT transport to publish a
+ * response on, instead of hard-pinning the response to one transport.
+ */
+export function brokerAddressKind(addr: BrokerAddress): RpcTransportKind | undefined {
   const scheme = addr.split('://')[0] as RpcTransportKind | undefined;
   if (!scheme) return undefined;
   const known: readonly RpcTransportKind[] = ['kafka', 'nats', 'sqs', 'amqp', 'mqtt', 'memory'];
   return known.includes(scheme) ? scheme : undefined;
+}
+
+function brokerKind(addr: BrokerAddress): RpcTransportKind | undefined {
+  return brokerAddressKind(addr);
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -51,6 +51,19 @@ export interface ChannelOutboundBridgeDeps {
    * `assistant.message`. Defaults to false.
    */
   streaming?: boolean;
+  /**
+   * WS5 — outbound durability. Total attempts for a channel send before giving
+   * up. `1` disables retry (the pre-WS5 at-most-once behavior). Default 3.
+   * Sends carry a deterministic idempotency key, so a retry after a transient
+   * failure never double-posts. On exhaustion the bridge logs
+   * `channels.outbound.exhausted` at ERROR (a loud, auditable signal) instead
+   * of silently dropping the customer-facing reply.
+   */
+  sendMaxAttempts?: number;
+  /** Backoff (ms) before retry attempt N (0-indexed). Default exponential 500ms→5s. */
+  sendBackoffMs?: (attempt: number) => number;
+  /** Sleep seam (tests). Defaults to a real `setTimeout` sleep. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface ChannelOutboundBridge {
@@ -108,6 +121,10 @@ export function createChannelOutboundBridge(
   const { bus, channels, sessionChannelContext, logger } = deps;
   const typingEnabled = deps.typingEnabled ?? false;
   const streamingEnabled = deps.streaming ?? false;
+  const sendMaxAttempts = Math.max(1, deps.sendMaxAttempts ?? 3);
+  const sendBackoffMs =
+    deps.sendBackoffMs ?? ((attempt: number) => Math.min(500 * 2 ** attempt, 5000));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   // Active per-session stream state. In streaming mode an `assistant.final`
   // after a streamed turn should be a no-op; the state survives until
@@ -282,16 +299,35 @@ export function createChannelOutboundBridge(
     channel: ChannelInstance,
     params: Parameters<ChannelInstance['send']>[0],
   ): Promise<SentMessage | null> {
-    try {
-      return await channel.send(params);
-    } catch (err) {
-      logger.warn('channels.outbound.failed', {
-        channelId: channel.id,
-        conversationId: params.conversation.conversationId,
-        message: err instanceof Error ? err.message : String(err),
-      });
-      return null;
+    // At-least-once with bounded retry. The idempotency key on `params` means a
+    // retry after a transient failure (network blip, channel 5xx) does not
+    // double-post. On exhaustion we log ERROR — the failure is loud + auditable,
+    // not a silent drop (the WS5 reliability seam).
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < sendMaxAttempts; attempt += 1) {
+      try {
+        return await channel.send(params);
+      } catch (err) {
+        lastErr = err;
+        const isLast = attempt === sendMaxAttempts - 1;
+        if (isLast) break;
+        logger.warn('channels.outbound.retry', {
+          channelId: channel.id,
+          conversationId: params.conversation.conversationId,
+          attempt: attempt + 1,
+          maxAttempts: sendMaxAttempts,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        await sleep(sendBackoffMs(attempt));
+      }
     }
+    logger.error('channels.outbound.exhausted', {
+      channelId: channel.id,
+      conversationId: params.conversation.conversationId,
+      attempts: sendMaxAttempts,
+      message: lastErr instanceof Error ? lastErr.message : String(lastErr),
+    });
+    return null;
   }
 
   function start(): () => void {

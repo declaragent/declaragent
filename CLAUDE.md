@@ -23,7 +23,11 @@ When the plan and a background doc disagree, `SPEC_AND_PLAN.md` wins.
 
 ## First-principles scoreboard
 
-The enterprise pitch — "an agent to build and manage fleets of agents" — decomposes into **five** pillars, not four. The builder-as-agent is the differentiator and has its own row. Current state (see `docs/FIRST_PRINCIPLES_VALIDATION.md` for evidence + ranked gap list):
+The enterprise pitch — "an agent to build and manage fleets of agents" — decomposes into **five** pillars, not four. The builder-as-agent is the differentiator and has its own row.
+
+> ⚠️ **Accuracy note (2026-06, branch `agent-durability-followups`).** A multi-agent audit found the "✅ enterprise (5 of 5)" marks below **overstated** — several primitives were designed but not wired at runtime (bypass permission gates, memory-pinned cross-host respond, DLQ-requeue no-op, etc.). A production-readiness pass (see [`docs/PRODUCTION_READINESS_PLAN.md`](./docs/PRODUCTION_READINESS_PLAN.md) and the evidence ledger in [`AGENTS.md §0`](./AGENTS.md)) has since closed the security/reliability/observability/cost spine across all 11 workstreams (tested), but **enterprise readiness is still partial** — live-broker cross-host delegation, k8s deploy, real OTel export, multi-tenancy, and the soak proof remain. Trust the AGENTS.md ledger + the plan doc over the marks in this table until they're reconciled at release.
+
+Current state (see `docs/FIRST_PRINCIPLES_VALIDATION.md` for evidence + ranked gap list):
 
 | Pillar | Single-machine | Enterprise (multi-host, soak-proven, SSO/SIEM/GitOps) |
 | --- | --- | --- |

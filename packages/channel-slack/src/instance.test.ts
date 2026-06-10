@@ -173,15 +173,21 @@ function makeStubSocket(): {
       return closes;
     },
   };
+  let connected = false;
   const transport: SocketModeTransport = {
     async connect() {
       connects += 1;
+      connected = true;
     },
     onEvent(h) {
       handler = h;
     },
+    connected() {
+      return connected;
+    },
     async close() {
       closes += 1;
+      connected = false;
     },
   };
   return {

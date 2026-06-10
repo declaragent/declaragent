@@ -21,6 +21,7 @@ import {
   findFleetRoot,
   loadFleet,
 } from '@declaragent/core';
+import { validateAgentDir } from './agent-cli.js';
 
 export interface FleetCliIO {
   out: (s: string) => void;
@@ -228,6 +229,20 @@ export async function fleetValidate(
   if (fleet === 1) return 1;
 
   const findings = runValidations(fleet);
+
+  // WS10 — validate each member's agent.yaml body (schema + unknown keys +
+  // tool-permission resolution), not just the peer/capability graph. A typo'd
+  // or schema-invalid agent body now fails `fleet validate` instead of at boot.
+  for (const agent of fleet.agents) {
+    const result = await validateAgentDir(agent.path);
+    for (const f of result.findings) {
+      findings.push({
+        severity: f.severity,
+        code: `agent.${f.code}`,
+        message: `[${agent.id}] ${f.message}`,
+      });
+    }
+  }
 
   if (args.json) {
     io.out(

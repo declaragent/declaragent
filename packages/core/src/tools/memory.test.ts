@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { type MemoryStore, createSqliteMemoryStore } from '../memory/sqlite-memory.js';
+import { DEFAULT_TENANT_CONTEXT } from '../tenancy/types.js';
 import { collectToolEvents, makeToolContext } from '../testing/context.js';
 import { type MemoryTools, createMemoryTools } from './memory.js';
 
@@ -115,5 +116,89 @@ describe('memory tools', () => {
     );
     expect(supportRead.result?.value).toBe('support-value');
     expect(salesRead.result?.value).toBe('sales-value');
+  });
+
+  describe('per-tenant isolation (WS8)', () => {
+    const tenant = (id: string) => ({ id, residency: 'us' as const });
+
+    test('two tenants sharing one base namespace cannot read each other', async () => {
+      // Tenant "acme" writes a key.
+      await collectToolEvents(
+        tools.memoryWrite.execute(
+          { key: 'pii', value: 'acme-secret' },
+          makeToolContext({ tenant: tenant('acme') }),
+        ),
+      );
+      // Tenant "beta" reads the SAME key under the SAME base namespace → isolated.
+      const betaRead = await collectToolEvents(
+        tools.memoryRead.execute({ key: 'pii' }, makeToolContext({ tenant: tenant('beta') })),
+      );
+      expect(betaRead.result?.found).toBe(false);
+      // acme reads its own back.
+      const acmeRead = await collectToolEvents(
+        tools.memoryRead.execute({ key: 'pii' }, makeToolContext({ tenant: tenant('acme') })),
+      );
+      expect(acmeRead.result?.value).toBe('acme-secret');
+    });
+
+    test('write reports the tenant-scoped namespace', async () => {
+      const out = await collectToolEvents(
+        tools.memoryWrite.execute(
+          { key: 'k', value: 'v' },
+          makeToolContext({ tenant: tenant('acme') }),
+        ),
+      );
+      expect(out.result?.namespace).toBe('support::t::acme');
+    });
+
+    test('two end-users (subjects) of the same agent+tenant are isolated', async () => {
+      // Same tenant "acme", two different end-users.
+      await collectToolEvents(
+        tools.memoryWrite.execute(
+          { key: 'fav', value: 'tea' },
+          makeToolContext({ tenant: tenant('acme'), subject: 'user-A' }),
+        ),
+      );
+      // user-B reads the same key → isolated (does not see user-A's value).
+      const bRead = await collectToolEvents(
+        tools.memoryRead.execute(
+          { key: 'fav' },
+          makeToolContext({ tenant: tenant('acme'), subject: 'user-B' }),
+        ),
+      );
+      expect(bRead.result?.found).toBe(false);
+      // user-A reads its own.
+      const aRead = await collectToolEvents(
+        tools.memoryRead.execute(
+          { key: 'fav' },
+          makeToolContext({ tenant: tenant('acme'), subject: 'user-A' }),
+        ),
+      );
+      expect(aRead.result?.value).toBe('tea');
+    });
+
+    test('write reports the subject-scoped namespace', async () => {
+      const out = await collectToolEvents(
+        tools.memoryWrite.execute(
+          { key: 'k', value: 'v' },
+          makeToolContext({ tenant: tenant('acme'), subject: 'user-A' }),
+        ),
+      );
+      expect(out.result?.namespace).toBe('support::t::acme::sub::user-A');
+    });
+
+    test('default tenant keeps the bare namespace (backward-compatible, no migration)', async () => {
+      // A default-tenant write lands on "support", readable by a no-tenant ctx.
+      await collectToolEvents(
+        tools.memoryWrite.execute(
+          { key: 'legacy', value: 'kept' },
+          makeToolContext({ tenant: DEFAULT_TENANT_CONTEXT }),
+        ),
+      );
+      const read = await collectToolEvents(
+        tools.memoryRead.execute({ key: 'legacy' }, makeToolContext()),
+      );
+      expect(read.result?.value).toBe('kept');
+    });
   });
 });

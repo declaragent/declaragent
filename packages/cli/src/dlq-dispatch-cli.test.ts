@@ -233,11 +233,13 @@ describe('dlqDispatchRequeue (integration)', () => {
     expect(out.join('')).toContain('requeued "evt-1"');
     expect(out.join('')).toContain('attempts before requeue: 2');
 
-    // Bus observed the re-publish.
+    // Bus observed the re-dispatch — under a FRESH id (the same-id behavior was
+    // a dedup no-op), with lineage back to the original.
     expect(delivered.length).toBe(1);
     const first = delivered[0];
     if (!first) throw new Error('expected delivered event');
-    expect(first.id).toBe('evt-1');
+    expect(first.id).not.toBe('evt-1');
+    expect(first.meta?.causedBy).toBe('evt-1');
 
     // Rejection row is gone (the helper deletes it after publish).
     expect(await store.getRejection('evt-1')).toBeUndefined();

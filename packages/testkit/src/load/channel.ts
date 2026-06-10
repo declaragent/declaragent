@@ -191,6 +191,9 @@ export function createChannelLoadHarness(options: ChannelLoadHarnessOptions): Ch
       channels: registry,
       sessionChannelContext,
       logger,
+      // The load harness measures raw inbound→outbound throughput + failure
+      // counts; the WS5 send-retry would distort both. One attempt per event.
+      sendMaxAttempts: 1,
     });
     const detachBridge = bridge.start();
 

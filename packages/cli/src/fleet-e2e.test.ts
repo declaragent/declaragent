@@ -39,12 +39,12 @@ describe('fleet e2e — init → add → list → validate', () => {
       writeTemplate(
         root,
         'templates/rpc-client/agent.yaml',
-        'name: concierge\nmodel: m\nsystemPrompt: hi\n',
+        'name: concierge\nmodel: m\nsystemPrompt: hi\ntools:\n  defaults: [RequestAgent]\n',
       );
       writeTemplate(
         root,
         'templates/rpc-server/agent.yaml',
-        'name: pr-reviewer\nmodel: m\nsystemPrompt: hi\n',
+        'name: pr-reviewer\nmodel: m\nsystemPrompt: hi\ntools:\n  defaults: [Read]\n',
       );
       writeTemplate(
         root,

@@ -53,4 +53,47 @@ describe('Bash tool', () => {
   test('is not readonly', () => {
     expect(Bash.readonly).toBeUndefined();
   });
+
+  // Regression: a prompt-injected command must not be able to read the
+  // daemon's secret environment. THREAT_MODEL.md depends on this.
+  test('does not leak secret env vars to the subprocess', async () => {
+    const SECRETS = ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'AWS_SECRET_ACCESS_KEY'];
+    const prior = SECRETS.map((k) => [k, process.env[k]] as const);
+    for (const k of SECRETS) process.env[k] = `leak-${k}`;
+    try {
+      const out = await collectToolEvents(Bash.execute({ command: 'env' }, makeToolContext()));
+      const printed = out.result?.stdout ?? '';
+      for (const k of SECRETS) {
+        expect(printed).not.toContain(`leak-${k}`);
+        expect(printed).not.toContain(`${k}=`);
+      }
+      // Safe vars still reach the subprocess.
+      expect(printed).toContain('PATH=');
+    } finally {
+      for (const [k, v] of prior) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  test('allowlist env var lets an operator pass a specific key through', async () => {
+    const KEYS = ['MY_SCRIPT_VAR', 'ANOTHER_VAR', 'DECLARAGENT_BASH_ENV_ALLOW'];
+    const prior = KEYS.map((k) => [k, process.env[k]] as const);
+    process.env.MY_SCRIPT_VAR = 'visible-value';
+    process.env.ANOTHER_VAR = 'hidden-value';
+    process.env.DECLARAGENT_BASH_ENV_ALLOW = 'MY_SCRIPT_VAR';
+    try {
+      const out = await collectToolEvents(Bash.execute({ command: 'env' }, makeToolContext()));
+      const printed = out.result?.stdout ?? '';
+      expect(printed).toContain('MY_SCRIPT_VAR=visible-value');
+      expect(printed).not.toContain('ANOTHER_VAR=hidden-value');
+      expect(printed).toContain('PATH=');
+    } finally {
+      for (const [k, v] of prior) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
 });

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'bun:test';
+import type { ControlPlaneAuth } from './control-plane-auth.js';
 import {
   type ControlPlaneServerInstance,
   type ControlPlaneServerListenOptions,
   DEFAULT_IDLE_TIMEOUT_SECONDS,
   STREAMING_ROUTE_PATHS,
   type UpStatusSnapshot,
+  healthRoute,
   metricsRoute,
+  readyRoute,
   startControlPlaneServer,
   statusRoute,
 } from './control-plane-server.js';
@@ -17,7 +20,7 @@ interface FakeServer extends ControlPlaneServerInstance {
 
 async function startFake(
   routes: Parameters<typeof startControlPlaneServer>[0]['routes'],
-  options: { allowRemote?: boolean } = {},
+  options: { allowRemote?: boolean; auth?: ControlPlaneAuth } = {},
 ): Promise<{
   handle: Awaited<ReturnType<typeof startControlPlaneServer>>;
   server: FakeServer;
@@ -43,10 +46,68 @@ async function startFake(
     ...(options.allowRemote !== undefined && {
       allowRemote: options.allowRemote,
     }),
+    ...(options.auth !== undefined && { auth: options.auth, allowRemote: true }),
   });
   if (!captured) throw new Error('listen stub did not run');
   return { handle, server: captured };
 }
+
+describe('healthRoute / readyRoute (WS6)', () => {
+  it('healthRoute always returns 200 ok', async () => {
+    const { server } = await startFake([healthRoute()]);
+    const res = await server.fetch(
+      new Request('http://127.0.0.1/healthz', { headers: LOCAL_HEADERS }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('ok');
+  });
+
+  it('readyRoute returns 503 until ready, then 200', async () => {
+    let ready = false;
+    const { server } = await startFake([readyRoute(() => ready)]);
+    const before = await server.fetch(
+      new Request('http://127.0.0.1/readyz', { headers: LOCAL_HEADERS }),
+    );
+    expect(before.status).toBe(503);
+    ready = true;
+    const after = await server.fetch(
+      new Request('http://127.0.0.1/readyz', { headers: LOCAL_HEADERS }),
+    );
+    expect(after.status).toBe(200);
+  });
+
+  it('health/ready routes are AUTH-EXEMPT (kubelet probes send no token)', async () => {
+    // Auth that rejects everything without a token.
+    const auth: ControlPlaneAuth = {
+      verifyToken: async () => ({ ok: false, reason: 'malformed-token', message: 'no' }),
+      allowLoopback: false,
+    };
+    const snapshot: UpStatusSnapshot = {
+      version: 1,
+      cliVersion: 'test',
+      pid: 1,
+      startedAt: new Date(0).toISOString(),
+      manifestPath: '/tmp/agent.yaml',
+      agents: [],
+    };
+    const { server } = await startFake(
+      [healthRoute(), readyRoute(() => true), statusRoute(() => snapshot)],
+      { auth },
+    );
+    const REMOTE = { host: 'pod.internal:9464' } as const;
+    // /healthz + /readyz bypass auth even from a remote, token-less caller.
+    expect((await server.fetch(new Request('http://x/healthz', { headers: REMOTE }))).status).toBe(
+      200,
+    );
+    expect((await server.fetch(new Request('http://x/readyz', { headers: REMOTE }))).status).toBe(
+      200,
+    );
+    // /status still requires auth → 401.
+    expect((await server.fetch(new Request('http://x/status', { headers: REMOTE }))).status).toBe(
+      401,
+    );
+  });
+});
 
 const LOCAL_HEADERS = { host: '127.0.0.1:9464' } as const;
 

@@ -5,16 +5,94 @@ import { join } from 'node:path';
 import {
   type UpState,
   clearUpState,
+  drainWithDeadline,
   isAlive,
   openAgentLog,
   readUpState,
   reapStaleState,
+  resolveDetachInvocation,
+  resolveDrainDeadlineMs,
   rotatedAgentLogPath,
   upLogPath,
   upPidPath,
   upStatePath,
   writeUpState,
 } from './up-lifecycle.js';
+
+describe('resolveDrainDeadlineMs', () => {
+  test('defaults to 15s when unset', () => {
+    expect(resolveDrainDeadlineMs({})).toBe(15_000);
+  });
+  test('honors a valid override', () => {
+    expect(resolveDrainDeadlineMs({ DECLARAGENT_DRAIN_DEADLINE_MS: '30000' })).toBe(30_000);
+  });
+  test('0 disables draining', () => {
+    expect(resolveDrainDeadlineMs({ DECLARAGENT_DRAIN_DEADLINE_MS: '0' })).toBe(0);
+  });
+  test('invalid / negative → default', () => {
+    expect(resolveDrainDeadlineMs({ DECLARAGENT_DRAIN_DEADLINE_MS: 'abc' })).toBe(15_000);
+    expect(resolveDrainDeadlineMs({ DECLARAGENT_DRAIN_DEADLINE_MS: '-5' })).toBe(15_000);
+  });
+});
+
+describe('drainWithDeadline', () => {
+  test('returns "drained" when drain completes in time', async () => {
+    const r = await drainWithDeadline(async () => {}, 1000);
+    expect(r).toBe('drained');
+  });
+  test('returns "timeout" when drain exceeds the deadline', async () => {
+    const r = await drainWithDeadline(() => new Promise<void>(() => {}), 20);
+    expect(r).toBe('timeout');
+  });
+  test('returns "skipped" when deadline is 0 (draining disabled)', async () => {
+    let ran = false;
+    const r = await drainWithDeadline(async () => {
+      ran = true;
+    }, 0);
+    expect(r).toBe('skipped');
+    expect(ran).toBe(false);
+  });
+});
+
+describe('resolveDetachInvocation', () => {
+  test('interpreter launcher (bun) prepends the entry script', () => {
+    const inv = resolveDetachInvocation({
+      execPath: '/usr/local/bin/bun',
+      argv: ['/usr/local/bin/bun', '/app/dist/index.js', 'up', '-d'],
+      bunMain: '/app/dist/index.js',
+    });
+    expect(inv.launcher).toBe('/usr/local/bin/bun');
+    expect(inv.scriptArgs).toEqual(['/app/dist/index.js']);
+  });
+
+  test('node interpreter also prepends the entry script', () => {
+    const inv = resolveDetachInvocation({
+      execPath: '/usr/bin/node',
+      argv: ['/usr/bin/node', '/app/dist/index.js', 'up'],
+      bunMain: undefined,
+    });
+    expect(inv.scriptArgs).toEqual(['/app/dist/index.js']);
+  });
+
+  test('compiled binary launcher takes the subcommand directly (no script prefix)', () => {
+    const inv = resolveDetachInvocation({
+      execPath: '/usr/local/bin/declaragent',
+      argv: ['/usr/local/bin/declaragent', 'up', '-d'],
+      bunMain: '/somewhere/embedded',
+    });
+    expect(inv.launcher).toBe('/usr/local/bin/declaragent');
+    expect(inv.scriptArgs).toEqual([]);
+  });
+
+  test('bun on Windows (bun.exe) is detected as an interpreter', () => {
+    const inv = resolveDetachInvocation({
+      execPath: 'C:\\tools\\bun.exe',
+      argv: ['C:\\tools\\bun.exe', 'C:\\app\\index.js', 'up'],
+      bunMain: 'C:\\app\\index.js',
+    });
+    expect(inv.scriptArgs).toEqual(['C:\\app\\index.js']);
+  });
+});
 
 describe('up-lifecycle state R/W', () => {
   let dir: string;

@@ -97,6 +97,20 @@ export interface CreateAgentInboxAdapterOptions {
    */
   authRegistry?: AuthVerifyRegistry;
   /**
+   * Fail-CLOSED mode. When `true` and an {@link authRegistry} is present, an
+   * envelope whose `from` has no registry entry is REJECTED (reason
+   * `unknown-peer`) instead of falling through to the legacy accept path. This
+   * closes the spoof where an attacker sets `from: agent://not-in-registry` to
+   * bypass verification.
+   *
+   * Defaults to `false` for backward compatibility; `declaragent up` sets it to
+   * `true` whenever `agent.yaml#rpc.auth.enabled: true` (explicit opt-in), and
+   * it becomes the default at the 0.8.0 zero-trust cutover.
+   *
+   * @since 0.7.6 — production-readiness WS2
+   */
+  strictAuth?: boolean;
+  /**
    * Sink for auth-rejected envelopes. Receivers wire this to
    * `EventStore.upsertRejection` so rejects land in `rejected_events`
    * under `kind=auth-rejected`.
@@ -310,8 +324,35 @@ class AgentInboxInstance implements EventSourceInstance {
     }
     const entry = registry.resolve(envelope.from);
     if (!entry) {
-      // Peer not registered → fall through to legacy path. We still
-      // emit an accept audit record so ops can see which peers bypass.
+      if (this.opts.strictAuth) {
+        // Fail closed: an unregistered sender cannot be verified, so reject
+        // rather than accept. Closes the `from: agent://not-in-registry` spoof.
+        this.metrics_.authRejected += 1;
+        this.deps.logger.warn('agent-inbox.auth-rejected', {
+          id: this.id,
+          from: envelope.from,
+          reason: 'unknown-peer',
+          messageId: envelope.messageId,
+        });
+        await this.emitAuthCheck(envelope, 'reject', 'none', undefined, 'unknown-peer');
+        if (this.opts.authRejectSink) {
+          try {
+            await this.opts.authRejectSink({
+              envelope,
+              reason: 'unknown-peer',
+              message: `sender ${envelope.from} is not in the auth registry (strict mode)`,
+            });
+          } catch (err) {
+            this.deps.logger.error('agent-inbox.auth-reject-sink-error', {
+              id: this.id,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+        return false;
+      }
+      // Non-strict (legacy): fall through to the legacy path. We still emit an
+      // accept audit record so ops can see which peers bypass verification.
       await this.emitAuthCheck(envelope, 'accept', envelope.auth?.kind ?? 'none');
       return true;
     }

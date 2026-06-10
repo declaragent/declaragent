@@ -60,6 +60,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RpcTransport } from '@declaragent/core';
 import { createKafkaTransport } from '@declaragent/plugin-agent-rpc';
+import { resolveKafkaJsModule } from './kafkajs-resolver.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -397,6 +398,7 @@ export async function startTwoAgentFleet(
         brokers: opts.brokers,
         clientId,
         groupId: `${clientId}-${Date.now()}-${randomSuffix()}`,
+        kafkajsModule: resolveKafkaJsModule(),
       });
     },
     async stopAll(graceMs = 5_000): Promise<void> {

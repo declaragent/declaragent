@@ -196,7 +196,15 @@ export type DispatchOutcome =
          * until the cool-down elapses and a probe succeeds.
          * @since 0.6.0-slice.3
          */
-        | 'circuit-open';
+        | 'circuit-open'
+        /**
+         * The event's dispatch was interrupted by a crash/SIGKILL (its row was
+         * left with no outcome). At the next boot, recovery marks the original
+         * with this reason and re-dispatches a fresh-id clone so the work isn't
+         * silently lost. Terminal, so a subsequent restart won't re-recover it.
+         * @since 0.7.6 — production-readiness WS5
+         */
+        | 'interrupted';
       details?: string;
     };
 

@@ -27,6 +27,14 @@ systemPrompt: |
   - Never comment on PRs from bot accounts (`user.type === "Bot"`).
   - Never comment on draft PRs.
   - Keep the top-level summary under 250 words.
+tools:
+  # Read-only review surface — the agent inspects code and reports findings;
+  # it never needs Bash/Write/Edit. Declaring the set keeps the runtime from
+  # exposing destructive tools to an agent fed untrusted PR content (WS1).
+  defaults:
+    - Read
+    - Glob
+    - Grep
 skills:
   - skills/review.md
 plugins:

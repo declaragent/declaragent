@@ -137,9 +137,27 @@ const oauth2ClientPeerAuthSchema = z
   })
   .strict();
 
+/**
+ * WS2 — HMAC peer auth: the zero-infra default. A shared secret (resolved via
+ * `secretRef`, never inlined) signs/verifies the canonical envelope with
+ * HMAC-SHA256. `keyId` is a non-secret rotation label.
+ *
+ * @since 0.7.6
+ */
+const hmacPeerAuthSchema = z
+  .object({
+    provider: z.literal('hmac'),
+    keyId: z.string().min(1),
+    /** Resolver reference (e.g. `secret://platform/rpc-hmac`). */
+    secretRef: z.string().min(1),
+    scopes: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
 export const peerAuthSchema = z.discriminatedUnion('provider', [
   oidcPeerAuthSchema,
   oauth2ClientPeerAuthSchema,
+  hmacPeerAuthSchema,
 ]);
 
 export type PeerAuthConfig = z.infer<typeof peerAuthSchema>;

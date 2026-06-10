@@ -25,6 +25,8 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { loadSkills } from '../skills/loader.js';
 import type { Skill } from '../skills/types.js';
+import type { TenantQuotas } from '../tenancy/types.js';
+import type { PermissionRule } from '../types/permission.js';
 import type { AgentSpec } from '../types/session.js';
 
 export class AgentConfigError extends Error {
@@ -32,6 +34,61 @@ export class AgentConfigError extends Error {
     super(message);
     this.name = 'AgentConfigError';
   }
+}
+
+/**
+ * Top-level `agent.yaml` keys that are either consumed by {@link loadAgent} or
+ * are legitimate forward-compat blocks parsed by adjacent loaders (channels,
+ * secrets, deployment, …) or scaffolds. Anything outside this set is almost
+ * certainly a typo (e.g. `rcp:` for `rpc:`) that the `passthrough()` schema
+ * would otherwise swallow silently — `declaragent agent validate` warns on it.
+ *
+ * @since 0.7.6 — production-readiness WS10 (config integrity)
+ */
+export const KNOWN_AGENT_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  // Consumed by loadAgent
+  'name',
+  'model',
+  'systemPrompt',
+  'temperature',
+  'maxTokens',
+  'subagentDepthCap',
+  'maxIterations',
+  'memory',
+  'skills',
+  'tools',
+  'permissions',
+  'audit',
+  'rpc',
+  'controlPlane',
+  'mcp',
+  // Forward-compat / parsed by adjacent loaders or scaffolds
+  'channels',
+  'event-sources',
+  'secrets',
+  'plugins',
+  'deployment',
+  'observability',
+  'reliability',
+  'quotas',
+  'tenants',
+  'identity',
+  'description',
+  'version',
+]);
+
+/**
+ * Return the top-level keys of a parsed `agent.yaml` object that are not in
+ * {@link KNOWN_AGENT_TOP_LEVEL_KEYS} — likely typos. Pure; takes already-parsed
+ * YAML so callers control parsing/error handling.
+ *
+ * @since 0.7.6 — production-readiness WS10
+ */
+export function lintUnknownTopLevelKeys(raw: unknown): string[] {
+  if (raw === null || typeof raw !== 'object') return [];
+  return Object.keys(raw as Record<string, unknown>).filter(
+    (k) => !KNOWN_AGENT_TOP_LEVEL_KEYS.has(k),
+  );
 }
 
 /**
@@ -194,6 +251,58 @@ const agentYamlSchema = z
       })
       .passthrough()
       .optional(),
+    /**
+     * WS1 — declarative tool-permission rules compiled into the runtime
+     * permission gate. Each rule's `pattern` is matched (glob) against
+     * `"<ToolName>:<permissionKey>"`; an explicit `deny` beats any allow.
+     * Rules let an operator scope a declared tool to a subset of its keys
+     * (e.g. allow `Bash:git *` but deny `Bash:**`). The runtime additionally
+     * synthesizes allow rules for every tool named in `tools.defaults`, so a
+     * `permissions` block is only needed for finer-grained control.
+     *
+     * @since 0.7.6 — production-readiness WS1 (tool-permission enforcement)
+     */
+    permissions: z
+      .object({
+        rules: z
+          .array(
+            z.object({
+              pattern: z.string().min(1),
+              decision: z.union([z.literal('allow'), z.literal('deny')]),
+            }),
+          )
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    /**
+     * WS8 — per-agent runtime quotas. Enforced by the engine's QuotaTracker
+     * when `up`/`fleet run` build one from this block. `dailyTokenUSD` is the
+     * dollar spend brake: once a day's estimated LLM spend reaches it, turns
+     * halt fail-closed (`stopReason: 'quota_exceeded'`). Strict so a typo'd
+     * sub-key fails loudly instead of silently disabling the cap.
+     *
+     * @since 0.7.6 — production-readiness WS8
+     */
+    quotas: z
+      .object({
+        dailyTokenUSD: z.number().positive().optional(),
+        maxActiveSessions: z.number().int().positive().optional(),
+        maxConcurrentToolCalls: z.number().int().positive().optional(),
+        maxEventIngressPerSec: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+    /**
+     * WS8 — the tenant this agent belongs to. When set and a `tenants.yaml`
+     * is present, the runtime resolves this id to the tenant's `TenantContext`
+     * (id + quotas + residency) and uses the TENANT's quotas (so a fleet of
+     * agents shares one tenant's `dailyTokenUSD` budget) instead of the agent's
+     * inline `quotas`. Absent → the implicit default tenant (single-tenant).
+     *
+     * @since 0.7.6 — production-readiness WS8
+     */
+    tenant: z.string().min(1).optional(),
     /**
      * Enterprise Production Plan §3 Item #10 — SIEM audit export. When
      * `audit.export.kind` is set, the `up` daemon starts an in-process
@@ -535,6 +644,31 @@ export interface LoadedAgent {
   /** Tool names declared under `tools.defaults`. CLI resolves to actual `Tool` objects. */
   readonly toolNames: readonly string[];
   /**
+   * Permission rules parsed from `agent.yaml#permissions.rules`. Empty when
+   * the block is omitted. The CLI compiles these (plus synthesized allow rules
+   * for every declared tool) into the headless runtime's permission gate.
+   *
+   * @since 0.7.6 — production-readiness WS1
+   */
+  readonly permissionRules: readonly PermissionRule[];
+  /**
+   * Per-agent quotas parsed from `agent.yaml#quotas`. Undefined when the block
+   * is omitted. The CLI builds a `QuotaTracker` from this and threads it into
+   * the engine so `dailyTokenUSD` (the dollar spend brake) and the rate quotas
+   * are enforced at runtime.
+   *
+   * @since 0.7.6 — production-readiness WS8
+   */
+  readonly quotas?: TenantQuotas;
+  /**
+   * Tenant id declared in `agent.yaml#tenant`. The CLI resolves this against a
+   * loaded `tenants.yaml` to pick the tenant's `TenantContext` + quotas.
+   * Undefined → the implicit default tenant.
+   *
+   * @since 0.7.6 — production-readiness WS8
+   */
+  readonly tenantId?: string;
+  /**
    * Per-tool rate limits parsed from `tools.rateLimit`. Empty when the
    * block is omitted. CLI passes this straight to `createToolRateLimitGate`.
    */
@@ -760,10 +894,31 @@ export async function loadAgent(options: LoadAgentOptions): Promise<LoadedAgent>
     }
   }
 
+  // Build TenantQuotas explicitly, omitting undefined keys — zod `.optional()`
+  // yields `T | undefined`, which `exactOptionalPropertyTypes` rejects against
+  // `TenantQuotas`'s exact-optional fields.
+  let quotas: TenantQuotas | undefined;
+  if (cfg.quotas !== undefined) {
+    const q = cfg.quotas;
+    quotas = {
+      ...(q.dailyTokenUSD !== undefined && { dailyTokenUSD: q.dailyTokenUSD }),
+      ...(q.maxActiveSessions !== undefined && { maxActiveSessions: q.maxActiveSessions }),
+      ...(q.maxConcurrentToolCalls !== undefined && {
+        maxConcurrentToolCalls: q.maxConcurrentToolCalls,
+      }),
+      ...(q.maxEventIngressPerSec !== undefined && {
+        maxEventIngressPerSec: q.maxEventIngressPerSec,
+      }),
+    };
+  }
+
   return {
     spec,
     skills: skillLoad.skills,
     toolNames: cfg.tools?.defaults ?? [],
+    permissionRules: cfg.permissions?.rules ?? [],
+    ...(quotas !== undefined && { quotas }),
+    ...(cfg.tenant !== undefined && { tenantId: cfg.tenant }),
     toolRateLimits,
     ...(auditExport !== undefined && { auditExport }),
     rpcAuthEnabled,

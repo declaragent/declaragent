@@ -69,6 +69,8 @@ function collectingLogger(): CollectingLogger {
 
 interface FakeChannelOptions {
   throwOnSend?: boolean;
+  /** Throw on the first N send attempts, then succeed (transient-failure sim). */
+  failTimes?: number;
   capabilities?: ChannelCapabilities;
   throwOnEdit?: boolean;
 }
@@ -100,6 +102,9 @@ function fakeChannel(id: string, overrides: FakeChannelOptions = {}): FakeChanne
     send: async (params: SendMessageParams): Promise<SentMessage> => {
       calls.push(params);
       if (overrides.throwOnSend) throw new Error('boom');
+      if (overrides.failTimes !== undefined && calls.length <= overrides.failTimes) {
+        throw new Error(`transient-${calls.length}`);
+      }
       return { id: `${id}-msg-${calls.length}`, conversation: params.conversation };
     },
   };
@@ -350,7 +355,7 @@ describe('ChannelOutboundBridge', () => {
     expect(sl.calls[0]?.idempotencyKey).toBe('event:evt-abc');
   });
 
-  test('logs + swallows send errors so the bus subscriber does not crash', async () => {
+  test('logs (ERROR) + swallows send errors after exhausting retries', async () => {
     const bus = createEventBus();
     const channels = createChannelRegistry();
     const sessionChannelContext = createSessionChannelContextStore();
@@ -359,12 +364,51 @@ describe('ChannelOutboundBridge', () => {
     channels.register(tg);
     sessionChannelContext.set('sess-7', { channelOrigin: CONV });
 
-    const bridge = createChannelOutboundBridge({ bus, channels, sessionChannelContext, logger });
+    const bridge = createChannelOutboundBridge({
+      bus,
+      channels,
+      sessionChannelContext,
+      logger,
+      sendMaxAttempts: 3,
+      sleep: async () => {}, // no-op for a fast test
+    });
     bridge.start();
     await bus.publish(assistantFinalEvent('sess-7'));
     await bus.drained();
 
-    expect(logger.warns.some((w) => w[0] === 'channels.outbound.failed')).toBe(true);
+    // Retried up to the cap, then surfaced loudly at ERROR (not a silent drop).
+    expect(logger.errors.some((w) => w[0] === 'channels.outbound.exhausted')).toBe(true);
+    expect(logger.warns.filter((w) => w[0] === 'channels.outbound.retry')).toHaveLength(2);
+    // All 3 attempts hit the channel.
+    expect(tg.calls).toHaveLength(3);
+  });
+
+  test('retries a transient send failure and eventually delivers (at-least-once)', async () => {
+    const bus = createEventBus();
+    const channels = createChannelRegistry();
+    const sessionChannelContext = createSessionChannelContextStore();
+    const logger = collectingLogger();
+    // Fail the first attempt, succeed on the second.
+    const tg = fakeChannel('telegram-main', { failTimes: 1 });
+    channels.register(tg);
+    sessionChannelContext.set('sess-retry', { channelOrigin: CONV });
+
+    const bridge = createChannelOutboundBridge({
+      bus,
+      channels,
+      sessionChannelContext,
+      logger,
+      sendMaxAttempts: 3,
+      sleep: async () => {},
+    });
+    bridge.start();
+    await bus.publish(assistantFinalEvent('sess-retry'));
+    await bus.drained();
+
+    // Delivered on the retry — no exhausted error.
+    expect(tg.calls).toHaveLength(2);
+    expect(logger.errors.some((w) => w[0] === 'channels.outbound.exhausted')).toBe(false);
+    expect(logger.warns.filter((w) => w[0] === 'channels.outbound.retry')).toHaveLength(1);
   });
 
   test('detach unsubscribes from the bus', async () => {

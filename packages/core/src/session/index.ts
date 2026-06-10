@@ -1,5 +1,5 @@
-export { PRICE_TABLE, estimateCostUSD } from './pricing.js';
-export type { ModelPrice } from './pricing.js';
+export { PRICE_TABLE, estimateCostUSD, hasPriceFor } from './pricing.js';
+export type { EstimateCostOptions, ModelPrice } from './pricing.js';
 export { createSqliteSessionStore } from './sqlite.js';
 export type {
   SessionMetadata,

@@ -29,7 +29,40 @@
  */
 
 import type { MemoryStore } from '../memory/sqlite-memory.js';
+import { type TenantContext, isDefaultTenant } from '../tenancy/types.js';
 import type { Tool } from '../types/tool.js';
+
+/**
+ * WS8 — per-tenant memory isolation. Long-term memory is keyed `(namespace,
+ * key)` with `namespace` defaulting to the agent id, so in a multi-tenant fleet
+ * every tenant's end-users would share ONE namespace and commingle their stored
+ * PII. This scopes the namespace by the executing tenant: the default
+ * (single-tenant) deployment keeps the bare namespace — no migration, fully
+ * backward-compatible — while each non-default tenant gets an isolated
+ * `<namespace>::t::<tenantId>` partition that another tenant's turns can't read
+ * or overwrite. (Per-end-user isolation within a tenant additionally needs a
+ * subject identity threaded through `ToolContext`; that remains.)
+ */
+export function tenantScopedNamespace(base: string, tenant?: TenantContext): string {
+  if (tenant === undefined || isDefaultTenant(tenant)) return base;
+  return `${base}::t::${tenant.id}`;
+}
+
+/**
+ * WS8 — full memory partition for a turn: tenant scope (above) plus an optional
+ * per-end-user `subject` segment. With a subject present, two end-users of the
+ * SAME agent + tenant get isolated memory (`…::sub::<id>`), so one user's
+ * preferences/PII never leak into another's recall. No subject → tenant-only
+ * scope (unchanged), so single-user agents and cron/webhook turns are
+ * unaffected. The subject is threaded from the inbound event's channel
+ * principal via `ToolContext.subject`.
+ */
+export function scopedNamespace(base: string, tenant?: TenantContext, subject?: string): string {
+  const tenantScoped = tenantScopedNamespace(base, tenant);
+  return subject !== undefined && subject !== ''
+    ? `${tenantScoped}::sub::${subject}`
+    : tenantScoped;
+}
 
 // ── Input / output shapes ──────────────────────────────────────────────────
 
@@ -116,13 +149,14 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
         return;
       }
       try {
+        const ns = scopedNamespace(namespace, ctx.tenant, ctx.subject);
         store.write(
-          namespace,
+          ns,
           input.key,
           input.value,
           input.tags !== undefined ? { tags: input.tags } : undefined,
         );
-        yield { type: 'result', output: { key: input.key, namespace } };
+        yield { type: 'result', output: { key: input.key, namespace: ns } };
       } catch (err) {
         yield {
           type: 'error',
@@ -153,7 +187,7 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
         return;
       }
       try {
-        const rec = store.read(namespace, input.key);
+        const rec = store.read(scopedNamespace(namespace, ctx.tenant, ctx.subject), input.key);
         if (!rec) {
           yield { type: 'result', output: { key: input.key, found: false } };
           return;
@@ -199,7 +233,7 @@ export function createMemoryTools(deps: CreateMemoryToolsDeps): MemoryTools {
         return;
       }
       try {
-        const records = store.search(namespace, {
+        const records = store.search(scopedNamespace(namespace, ctx.tenant, ctx.subject), {
           ...(input.query !== '' && { substring: input.query }),
           ...(input.tags !== undefined && input.tags.length > 0 && { tags: input.tags }),
         });

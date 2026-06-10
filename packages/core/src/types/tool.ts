@@ -49,6 +49,13 @@ export interface ToolContext {
    */
   tenant?: TenantContext;
   /**
+   * WS8 — end-user subject this turn runs on behalf of (channel principal's
+   * `platformUserId`). Subject-scoped tools (long-term memory) read this to
+   * isolate one end-user's data from another within the same agent + tenant.
+   * Absent = no subject partition (cron/webhook triggers, or single-user).
+   */
+  subject?: string;
+  /**
    * Phase 6 slice-2 addition. Correlation id of the originating event.
    * Tools that publish bus events should stamp this on
    * `event.meta.correlationId` so the full causal chain (source →

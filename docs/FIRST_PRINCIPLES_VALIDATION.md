@@ -42,7 +42,7 @@ What an agent **is**, what it **can do**, who **talks to it**, who **it calls**.
 
 - **Agent identity** — `agent.yaml` loaded by `packages/core/src/agents/load-agent.ts:57-172` (Zod-validated: name, model, systemPrompt, temperature, maxTokens, subagentDepthCap, skills[], tools.defaults[]). Hard-fails on malformed skill frontmatter.
 - **Markdown skills** — tiered discovery + frontmatter inputs/outputs + `{{var}}` interpolation in `packages/core/src/skills/{loader,frontmatter,runner}.ts`.
-- **Tool allowlist per skill** — composed with channel + tenant overrides by the permission gate.
+- **Tool allowlist** — `agent.yaml#tools.defaults` is now ENFORCED in every headless runtime (`up`, `fleet run`): the engine is handed only the declared tools, an unknown tool name fails boot, and a real `default`-mode permission gate denies anything undeclared (`packages/cli/src/resolve-tools.ts`; verified by `resolve-tools.test.ts`). Capability tools (SendMessage/RequestAgent/memory_*) and plugin tools are auto-exempt. `agent.yaml#permissions.rules` adds per-key allow/deny scoping. Per-channel / per-tenant override composition (`resolveForChannel`) is built but not yet threaded per-turn — tracked under WS1.
 - **Inbound event sources** — webhook, cron, file-watch in-process + `@declaragent/source-{kafka,nats,sqs,amqp,mqtt}` auto-discovered by `packages/cli/src/run-agent-sources.ts`.
 - **Outbound channels** — Slack, Telegram, Discord, WhatsApp via `createSendMessageTool` wired in `packages/core/src/channels/channels-runtime.ts`.
 - **Inbound channels → skills** — route table in `channels.json#inbound.routes` via `createChannelInboundBridge` (0.6.0 Slice 6).

@@ -65,6 +65,13 @@ export interface ControlPlaneRoute {
   fetch(request: Request): Promise<Response | undefined> | Response | undefined;
 }
 
+/**
+ * Paths exempt from control-plane auth (WS6). Kubelet probes send no bearer
+ * token; these routes expose only liveness/readiness booleans. Kept here (not
+ * per-route) so the exemption is one obvious, auditable list.
+ */
+export const HEALTH_CHECK_PATHS: ReadonlySet<string> = new Set(['/healthz', '/readyz']);
+
 // ── Server ─────────────────────────────────────────────────────────────────
 
 export interface ControlPlaneServerListenOptions {
@@ -173,7 +180,12 @@ export async function startControlPlaneServer(
     // a non-loopback request with a bad / missing token gets a typed
     // 401 straight from the middleware. Per-route scope overrides land
     // in the same 401 flow (`insufficient-scope` reason).
-    if (auth) {
+    //
+    // WS6 — health-check paths are auth-EXEMPT: kubelet liveness/readiness
+    // probes send no bearer token, and these routes expose only "process up" /
+    // "sources bound" booleans, no sensitive data. Exempting them lets a
+    // rendered pod pass its probes on a 0.0.0.0 authed bind.
+    if (auth && !HEALTH_CHECK_PATHS.has(url.pathname)) {
       const authContext: ControlPlaneAuthContext = {
         ...(ctx?.peerIp !== undefined && { peerIp: ctx.peerIp }),
         ...(scopeLookupPath !== undefined && { routePath: scopeLookupPath }),
@@ -493,6 +505,52 @@ export function statusRoute(
         const message = err instanceof Error ? err.message : String(err);
         return jsonError(500, `status provider failed: ${message}`);
       }
+    },
+  };
+}
+
+/**
+ * WS6 — kubelet liveness probe. Always 200 while the process can serve HTTP;
+ * auth-exempt (see {@link HEALTH_CHECK_PATHS}). A pod that can't answer this is
+ * restarted by the kubelet. Path defaults to `/healthz`.
+ */
+export function healthRoute(opts: { path?: string } = {}): ControlPlaneRoute {
+  const path = opts.path ?? '/healthz';
+  return {
+    path,
+    fetch(req) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return new Response('method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });
+      }
+      return new Response(req.method === 'HEAD' ? null : 'ok', {
+        status: 200,
+        headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    },
+  };
+}
+
+/**
+ * WS6 — kubelet readiness probe. 200 once the agent's sources are bound (ready
+ * to serve traffic), 503 until then so k8s holds traffic off a pod that booted
+ * but hasn't finished wiring. Auth-exempt. Path defaults to `/readyz`.
+ */
+export function readyRoute(
+  isReady: () => boolean,
+  opts: { path?: string } = {},
+): ControlPlaneRoute {
+  const path = opts.path ?? '/readyz';
+  return {
+    path,
+    fetch(req) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return new Response('method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });
+      }
+      const ready = isReady();
+      return new Response(req.method === 'HEAD' ? null : ready ? 'ready' : 'not ready', {
+        status: ready ? 200 : 503,
+        headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+      });
     },
   };
 }

@@ -332,4 +332,36 @@ describe('createEventStore: rejected_events (dispatch DLQ)', () => {
     const rows = await store.listRejections({ limit: 3 });
     expect(rows).toHaveLength(3);
   });
+
+  describe('eraseByPlatformUser (WS8 GDPR)', () => {
+    test("hard-deletes only the subject's events (+ their DLQ rows), returns the count", async () => {
+      const db = memDb();
+      const store = createEventStore({ db });
+      // Two events for alice, one for bob, one with no principal.
+      await store.record(makeEvent({ id: 'a1', meta: { principal: { platformUserId: 'alice' } } }));
+      await store.record(makeEvent({ id: 'a2', meta: { principal: { platformUserId: 'alice' } } }));
+      await store.record(makeEvent({ id: 'b1', meta: { principal: { platformUserId: 'bob' } } }));
+      await store.record(makeEvent({ id: 'n1' }));
+      await store.upsertRejection('a1', 'invalid', undefined, 1000);
+
+      const erased = await store.eraseByPlatformUser('alice');
+      expect(erased).toBe(2);
+      // Alice's events are gone.
+      expect(await store.get('a1')).toBeUndefined();
+      expect(await store.get('a2')).toBeUndefined();
+      // Alice's DLQ row is gone too.
+      expect(await store.getRejection('a1')).toBeUndefined();
+      // Bob's + the principal-less event survive.
+      expect(await store.get('b1')).toBeDefined();
+      expect(await store.get('n1')).toBeDefined();
+    });
+
+    test('returns 0 when no event matches the subject', async () => {
+      const db = memDb();
+      const store = createEventStore({ db });
+      await store.record(makeEvent({ id: 'x1', meta: { principal: { platformUserId: 'carol' } } }));
+      expect(await store.eraseByPlatformUser('nobody')).toBe(0);
+      expect(await store.get('x1')).toBeDefined();
+    });
+  });
 });

@@ -604,13 +604,34 @@ export class KafkaSourceInstance extends BaseSourceInstance {
     };
   }
 
+  /**
+   * Consumer lag per `topic:partition` = end offset − committed offset, clamped
+   * to ≥ 0. (Previously this returned the raw end offset, which monotonically
+   * grows and never reflects how far behind the consumer actually is — making
+   * the metric useless for alerting.) A partition with no committed offset
+   * (kafkajs returns `-1`, or it is absent) is treated as fully unconsumed, so
+   * its lag is the end offset.
+   */
   async lag(): Promise<Record<string, number>> {
     const admin = await this.ensureAdmin();
     const out: Record<string, number> = {};
     for (const topic of this.subscribed) {
       const endOffsets = await admin.fetchTopicEndOffsets(topic);
+      let committed: Array<{ partition: number; offset: string }> = [];
+      try {
+        committed = (await this.consumer?.fetchCommittedOffsets(topic)) ?? [];
+      } catch {
+        // Consumer not in a group yet / transient admin error → treat as
+        // fully unconsumed rather than failing the whole lag read.
+        committed = [];
+      }
+      const committedByPartition = new Map(committed.map((c) => [c.partition, c.offset]));
       for (const eo of endOffsets) {
-        out[`${topic}:${eo.partition}`] = Number(eo.offset);
+        const end = BigInt(eo.offset);
+        const raw = committedByPartition.get(eo.partition);
+        const consumed = raw === undefined || raw === '-1' ? 0n : BigInt(raw);
+        const lag = end - consumed;
+        out[`${topic}:${eo.partition}`] = lag > 0n ? Number(lag) : 0;
       }
     }
     return out;

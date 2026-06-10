@@ -53,8 +53,24 @@ export interface KafkaClientLike {
   consumer(config: { groupId: string }): KafkaConsumerLike;
 }
 
+/**
+ * WS4/WS11 — SASL auth for production brokers. Mirrors kafkajs's `sasl` block.
+ * The `password` arrives ALREADY RESOLVED (via the secrets resolver, from a
+ * `passwordRef`); it is never read from inlined config.
+ */
+export interface KafkaSaslConfig {
+  readonly mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512';
+  readonly username: string;
+  readonly password: string;
+}
+
 export interface KafkaJSModule {
-  Kafka: new (config: { clientId: string; brokers: readonly string[] }) => KafkaClientLike;
+  Kafka: new (config: {
+    clientId: string;
+    brokers: readonly string[];
+    ssl?: boolean;
+    sasl?: KafkaSaslConfig;
+  }) => KafkaClientLike;
 }
 
 export interface CreateKafkaTransportOptions {
@@ -62,6 +78,10 @@ export interface CreateKafkaTransportOptions {
   brokers: readonly string[];
   /** Kafka client id — surfaces in broker logs. */
   clientId?: string;
+  /** WS11 — enable TLS to the brokers (kafkajs `ssl`). */
+  ssl?: boolean;
+  /** WS11 — SASL credentials (password pre-resolved from its secret ref). */
+  sasl?: KafkaSaslConfig;
   /**
    * Consumer group id. Each up-process joins its own group so multiple
    * replicas don't miss deliveries; setting this lets callers share a
@@ -88,6 +108,8 @@ export async function createKafkaTransport(
   const kafka = new mod.Kafka({
     clientId: opts.clientId ?? 'declaragent-rpc',
     brokers: opts.brokers,
+    ...(opts.ssl !== undefined && { ssl: opts.ssl }),
+    ...(opts.sasl !== undefined && { sasl: opts.sasl }),
   });
   const producer = kafka.producer();
   await producer.connect();

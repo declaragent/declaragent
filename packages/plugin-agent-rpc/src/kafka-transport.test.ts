@@ -29,6 +29,8 @@ interface FakeKafka {
   /** Force the consumer for a topic to throw on the next disconnect. */
   consumers: Map<string, FakeConsumer>;
   producer: FakeProducer;
+  /** The config the kafkajs `Kafka` constructor received (for ssl/sasl assertions). */
+  captured: { config?: Record<string, unknown> };
 }
 
 interface FakeProducer extends KafkaProducerLike {
@@ -66,6 +68,7 @@ function makeFakeKafka(): FakeKafka {
       for (const msg of record.messages) sent.push({ topic: record.topic, value: msg.value });
     },
   };
+  const captured: { config?: Record<string, unknown> } = {};
   const module: KafkaJSModule = {
     Kafka: class {
       readonly brokers: readonly string[];
@@ -73,6 +76,7 @@ function makeFakeKafka(): FakeKafka {
       constructor(config: { clientId: string; brokers: readonly string[] }) {
         this.brokers = config.brokers;
         this.clientId = config.clientId;
+        captured.config = config as Record<string, unknown>;
       }
       producer(): FakeProducer {
         return producer;
@@ -101,6 +105,7 @@ function makeFakeKafka(): FakeKafka {
     sent,
     consumers,
     producer,
+    captured,
     deliver: async (topic, envelope) => {
       // Mirror kafkajs's eachMessage: value is a Buffer.
       const payload = Buffer.from(JSON.stringify(envelope), 'utf-8');
@@ -125,6 +130,34 @@ const sampleEnvelope: AgentRpcEnvelope = {
 };
 
 describe('createKafkaTransport', () => {
+  test('passes ssl + sasl through to the kafkajs client (WS11)', async () => {
+    const fake = makeFakeKafka();
+    const t = await createKafkaTransport({
+      brokers: ['localhost:9092'],
+      kafkajsModule: fake.module,
+      ssl: true,
+      sasl: { mechanism: 'scram-sha-256', username: 'svc', password: 'pw' },
+    });
+    expect(fake.captured.config?.ssl).toBe(true);
+    expect(fake.captured.config?.sasl).toEqual({
+      mechanism: 'scram-sha-256',
+      username: 'svc',
+      password: 'pw',
+    });
+    await t.close();
+  });
+
+  test('omits ssl/sasl when not configured (plaintext dev brokers)', async () => {
+    const fake = makeFakeKafka();
+    const t = await createKafkaTransport({
+      brokers: ['localhost:9092'],
+      kafkajsModule: fake.module,
+    });
+    expect(fake.captured.config?.ssl).toBeUndefined();
+    expect(fake.captured.config?.sasl).toBeUndefined();
+    await t.close();
+  });
+
   test('publish encodes the envelope and routes it to the configured topic', async () => {
     const fake = makeFakeKafka();
     const t = await createKafkaTransport({

@@ -69,9 +69,10 @@ spec:
         - name: declaragent
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # WS6 - foreground up (no -d): the detached child exits, leaving PID 1
+          # to exit 0 (CrashLoopBackOff). Foreground keeps PID 1 alive.
           args:
             - up
-            - -d
             - -f
             - /etc/declaragent/agent.yaml
           ports:
@@ -83,6 +84,15 @@ spec:
               value: concierge
             - name: DECLARAGENT_FLEET_NAME
               value: {{ include "declaragent.name" . | quote }}
+            # WS6 — foreground up defaults the listener OFF; set it so the pod
+            # serves /metrics + /healthz + /readyz for the probes.
+            - name: DECLARAGENT_METRICS_PORT
+              value: "{{ .Values.metricsPort }}"
+            # WS6 — bind all interfaces so the kubelet reaches the probes via the
+            # pod IP (default 127.0.0.1 → probes unreachable). Requires a
+            # controlPlane.auth block per the WS3 fail-closed rule.
+            - name: DECLARAGENT_BIND_ADDRESS
+              value: "0.0.0.0"
           {{- if gt (len .Values.secrets) 0 }}
           envFrom:
             - secretRef:

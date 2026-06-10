@@ -887,6 +887,89 @@ describe('startFleetDaemon — slice 5 (transport factories + RequestAgent wirin
     }
   });
 
+  test('(WS4) response is published on the inbound transport (per-envelope replyTo), not pinned to memory', async () => {
+    const h = mkHarness();
+    try {
+      const real = await twoAgentFleet(h);
+      // Graft a kafka transport onto pr-reviewer.
+      const kafkaOn = real.agents.map((a) => {
+        if (!a.capabilities || a.id !== 'pr-reviewer') return a;
+        return {
+          ...a,
+          capabilities: {
+            ...a.capabilities,
+            config: {
+              ...a.capabilities.config,
+              transports: [
+                ...a.capabilities.config.transports,
+                {
+                  kind: 'kafka' as const,
+                  brokers: ['broker:9092'],
+                  topics: { requests: 'agents.pr-reviewer.requests.kafka' },
+                },
+              ],
+            },
+          },
+        };
+      });
+      const grafted = {
+        ...real,
+        agents: kafkaOn,
+        agentsById: new Map(kafkaOn.map((a) => [a.id, a])),
+      };
+
+      // Fake kafka transport: records what's published + lets us inject a request.
+      const kafkaPublished: { topic: string; envelope: AgentRpcEnvelope }[] = [];
+      let kafkaHandler: ((e: AgentRpcEnvelope) => Promise<void>) | undefined;
+      const kafkaFactory: FleetTransportFactory = () => ({
+        kind: 'kafka' as const,
+        publish: async (topic: string, envelope: AgentRpcEnvelope) => {
+          kafkaPublished.push({ topic, envelope });
+        },
+        subscribe: (_topic: string, handler: (e: AgentRpcEnvelope) => Promise<void>) => {
+          kafkaHandler = handler;
+          return () => {};
+        },
+        close: async () => {},
+      });
+
+      const bus = createMemoryBus();
+      const daemon = await startFleetDaemon({
+        fleet: grafted,
+        bus,
+        transportFactories: { kafka: kafkaFactory },
+        makeHandler: () => defaultHandler,
+      });
+      try {
+        if (!kafkaHandler) throw new Error('kafka transport never subscribed');
+        // A request that arrived over kafka, asking for a kafka reply.
+        await kafkaHandler({
+          version: 1,
+          kind: 'request',
+          messageId: 'm-kafka-1',
+          correlationId: 'c-kafka-1',
+          from: 'agent://concierge',
+          to: 'agent://pr-reviewer',
+          capability: 'review-pr',
+          replyTo: 'kafka://agents.concierge.responses',
+          payload: { prUrl: 'x' },
+          auth: { kind: 'internal' },
+        } as AgentRpcEnvelope);
+        await new Promise((r) => setTimeout(r, 30));
+
+        // The response went out on the KAFKA transport (the fix) — not memory.
+        expect(kafkaPublished).toHaveLength(1);
+        expect(kafkaPublished[0]?.topic).toBe('agents.concierge.responses');
+        expect(kafkaPublished[0]?.envelope.kind).toBe('response');
+        expect(kafkaPublished[0]?.envelope.correlationId).toBe('c-kafka-1');
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
   test('unregistered transport kind is warned about + skipped (not fatal)', async () => {
     const h = mkHarness();
     try {
@@ -1103,6 +1186,64 @@ describe('fleet-run #4 inline verify-auth', () => {
         expect(metrics?.received).toBe(1);
         expect(metrics?.responded).toBe(0);
         await conciergeTransport.close();
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  // WS2 — strictAuth fails closed on a sender with no registry entry.
+  test('strictAuth rejects an unregistered sender (unknown-peer), handler never runs', async () => {
+    const h = mkHarness();
+    try {
+      const fleet = await twoAgentFleet(h);
+      const bus = createMemoryBus();
+      const { sink, records } = makeMemoryAuditSink();
+      // Registry that knows about NOBODY — every resolve misses.
+      const emptyRegistry: AuthVerifyRegistry = { resolve: () => undefined };
+
+      const dlqDrops: Array<{ id: string; reason: string }> = [];
+      const daemon = await startFleetDaemon({
+        fleet,
+        bus,
+        authRegistry: emptyRegistry,
+        strictAuth: true,
+        auditSink: sink,
+        authRejectSink: (entry) => {
+          dlqDrops.push({ id: entry.envelope.messageId, reason: entry.reason });
+        },
+        makeHandler: () => async () => {
+          throw new Error('handler should never run — unknown peer rejected first');
+        },
+      });
+      try {
+        const attackerTransport = createMemoryTransport({ bus });
+        await attackerTransport.publish('agents.pr-reviewer.requests', {
+          version: 1,
+          kind: 'request',
+          messageId: 'msg-spoof-1',
+          correlationId: 'corr-spoof-1',
+          from: 'agent://attacker-not-in-registry',
+          to: 'agent://pr-reviewer',
+          capability: 'review-pr',
+          payload: { prUrl: 'x' },
+          auth: { kind: 'internal' },
+        } as AgentRpcEnvelope);
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(dlqDrops).toHaveLength(1);
+        expect(dlqDrops[0]?.reason).toBe('auth-rejected');
+        const authChecks = records.filter((r) => r.kind === 'auth_check');
+        expect(authChecks).toHaveLength(1);
+        const rec = authChecks[0];
+        if (rec === undefined || rec.kind !== 'auth_check') throw new Error('expected auth_check');
+        expect(rec.decision).toBe('reject');
+        expect(rec.reason).toBe('unknown-peer');
+        const metrics = daemon.agents.get('pr-reviewer')?.metrics();
+        expect(metrics?.responded).toBe(0);
+        await attackerTransport.close();
       } finally {
         await daemon.shutdown();
       }

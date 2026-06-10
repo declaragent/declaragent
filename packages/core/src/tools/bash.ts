@@ -1,4 +1,5 @@
 import type { Tool } from '../types/tool.js';
+import { resolveBashEnvPolicy, scrubBashEnv } from './bash-env.js';
 
 export interface BashInput {
   command: string;
@@ -56,6 +57,10 @@ export const Bash: Tool<BashInput, BashOutput> = {
         cmd: ['/bin/sh', '-c', input.command],
         stdout: 'pipe',
         stderr: 'pipe',
+        // Scrub secrets out of the inherited environment so a prompt-injected
+        // command cannot exfiltrate provider keys / control-plane tokens. The
+        // explicit `env` replaces (not merges) the inherited one.
+        env: scrubBashEnv(process.env, resolveBashEnvPolicy()),
         ...(input.cwd !== undefined && { cwd: input.cwd }),
         signal: controller.signal,
       });

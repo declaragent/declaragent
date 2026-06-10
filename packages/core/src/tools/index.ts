@@ -2,13 +2,21 @@ export { Agent } from './agent.js';
 export type { AgentInput, AgentOutput } from './agent.js';
 export { Bash, DEFAULT_BASH_TIMEOUT_MS } from './bash.js';
 export type { BashInput, BashOutput } from './bash.js';
+export {
+  BASH_ENV_KEEP_SET,
+  looksSecret,
+  parseEnvKeyList,
+  resolveBashEnvPolicy,
+  scrubBashEnv,
+} from './bash-env.js';
+export type { BashEnvPolicy } from './bash-env.js';
 export { Edit } from './edit.js';
 export type { EditInput, EditOutput } from './edit.js';
 export { GlobTool } from './glob.js';
 export type { GlobInput, GlobOutput } from './glob.js';
 export { Grep } from './grep.js';
 export type { GrepInput, GrepMatch, GrepOutput } from './grep.js';
-export { createMemoryTools } from './memory.js';
+export { createMemoryTools, scopedNamespace, tenantScopedNamespace } from './memory.js';
 export type {
   CreateMemoryToolsDeps,
   MemoryReadInput,

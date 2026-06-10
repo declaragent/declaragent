@@ -14,10 +14,17 @@ export type {
   ControlPlaneTokenVerifyResult,
 } from './control-plane-auth.js';
 export {
+  HEALTH_CHECK_PATHS,
+  healthRoute,
   metricsRoute,
+  readyRoute,
   startControlPlaneServer,
   statusRoute,
 } from './control-plane-server.js';
+export { DAEMON_HEARTBEAT_METRIC, startHeartbeat } from './heartbeat.js';
+export type { HeartbeatHandle, StartHeartbeatOptions } from './heartbeat.js';
+export { OtelSdkError, startOtelSdk } from './otel-sdk.js';
+export type { OtelSdkHandle, StartOtelSdkOptions } from './otel-sdk.js';
 export type {
   ControlPlaneRoute,
   ControlPlaneServerHandle,

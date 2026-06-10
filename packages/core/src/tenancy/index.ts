@@ -39,8 +39,11 @@ export type { ExtensionRegistryView } from './extension-view.js';
 export {
   TenantsConfigError,
   loadTenantsConfig,
+  resolveTenantContext,
   tenantsConfigSchema,
 } from './config-loader.js';
+export { eraseSubject } from './erase-subject.js';
+export type { EraseSubjectResult, EraseSubjectStores } from './erase-subject.js';
 export type {
   BusStrategy,
   ExtensionScope,

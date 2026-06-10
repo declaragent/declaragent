@@ -35,6 +35,17 @@ const kafkaTransportSchema = z
         responses: z.string().min(1).optional(),
       })
       .strict(),
+    // WS11 — TLS + SASL for production brokers. The password is a resolver ref
+    // (e.g. `secret://platform/kafka`), never inlined; resolved at factory time.
+    ssl: z.boolean().optional(),
+    sasl: z
+      .object({
+        mechanism: z.enum(['plain', 'scram-sha-256', 'scram-sha-512']),
+        username: z.string().min(1),
+        passwordRef: z.string().min(1),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

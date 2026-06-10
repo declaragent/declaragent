@@ -21,6 +21,7 @@
 
 import type { LoadedPeers, PeerAuthConfig } from '@declaragent/core';
 import type { AuthVerifyRegistry } from '../agent-inbox.js';
+import { createHmacAuthProvider } from './hmac.js';
 import { createOAuth2ClientAuthProvider } from './oauth2-client.js';
 import { createOidcAuthProvider } from './oidc.js';
 import type { RpcAuthProvider } from './types.js';
@@ -93,6 +94,12 @@ async function buildProviderForPeer(
   auth: PeerAuthConfig,
   opts: BuildAuthVerifyRegistryOptions,
 ): Promise<RpcAuthProvider> {
+  if (auth.provider === 'hmac') {
+    // WS2 — resolve the shared secret eagerly so the hot verify path never
+    // touches the secret resolver. `secret` never leaves this closure.
+    const secret = await opts.secrets(auth.secretRef);
+    return createHmacAuthProvider({ secret, keyId: auth.keyId });
+  }
   if (auth.provider === 'oidc') {
     const token = opts.oidcTokenFor !== undefined ? await opts.oidcTokenFor(peerId) : '';
     const providerOpts: Parameters<typeof createOidcAuthProvider>[0] = {
