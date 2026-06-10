@@ -9,10 +9,11 @@
 > **🟢 LIVE-VERIFIED in a local sandbox (docker + minikube), 2026-06-10.** The infra-gated workstreams were run against real systems and PASSED — and the live runs caught 3 real bugs (OTel exporter shape, soak capability names, control-plane safe-subset bind), all fixed + re-verified:
 > - **WS4/WS11** — fleet RPC round-trip verified against live **Redpanda** (`kafka-rpc` 2/2), **NATS** (`nats-rpc` 2/2), **JetStream** (`jetstream-rpc` 2/2); kafka SASL/TLS config exercised.
 > - **WS9** — bounded **45s/~225-cycle soak** green against Redpanda (harness capability-name bug fixed).
+> - **WS2** — OIDC/OAuth2 **rpc-auth round-trip verified** against a live IdP (`navikt/mock-oauth2-server`): valid client_credentials token accepted (JWKS+audience), wrong-audience rejected. Two fixture/test bugs fixed (Dex couldn't boot / doesn't do client_credentials → migrated IdP; signer/verifier kind mismatch).
 > - **WS7** — span emitted via `startOtelSdk` **received by a live OTLP collector** (exporter-shape bug fixed: now builds a real `OTLPTraceExporter`).
 > - **WS6** — rendered manifest deployed to **minikube**; pod reached **Ready (1/1, 0 restarts)**. Fixes verified: full agent-dir ConfigMap embed, `/readyz` readiness probe, control-plane **safe-subset bind** (k8s probes work without an OIDC IdP), + a real `Dockerfile`.
 >
-> Still genuinely outstanding: the **7-week calendar** soak streak (WS9), GitHub **branch protection** admin (WS9), the **0.8.0 breaking release** (WS10), the in-container monorepo build reconciliation + helm parity (WS6), and a live OIDC `rpc-auth` run (needs Dex).
+> Still genuinely outstanding: the **7-week calendar** soak streak (WS9), GitHub **branch protection** admin (WS9), the **0.8.0 breaking release** (WS10), the in-container monorepo build reconciliation + helm render parity (WS6), and a **multi-host** (cross-machine, not single-cluster) broker-delegation soak.
 
 > Landed on `agent-durability-followups` (all changes tested; full suite green at 3202 pass / 0 fail, lint + typecheck + build clean):
 > - **WS1(d)** Bash subprocess env scrub (`scrubBashEnv` + Bash tool wiring + THREAT_MODEL corrected). ✅
