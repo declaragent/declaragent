@@ -113,6 +113,8 @@ Usage:
   declaragent audit erase --user <platformUserId> [--reason R] [--json]
   declaragent audit prune --tenant <id> --retention-days <N> [--json]
 
+  declaragent erase --user <platformUserId> [--reason R] [--json]   # GDPR: erase a subject across audit + events
+
   declaragent secrets list [--provider <name>] [--json]
   declaragent secrets describe <ref> [--json]
   declaragent secrets rotate <ref> [--tenant X] [--reason R] [--json]

@@ -36,6 +36,7 @@
   "overrides": {
     "fast-xml-builder": "1.2.0",
     "ip-address": "10.2.0",
+    "shell-quote": "1.8.4",
     "ws": "8.21.0"
   }
 }
