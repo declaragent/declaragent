@@ -262,7 +262,10 @@
         <header class="sec__head">
           <p class="sec__label">// what's in the box</p>
           <h2 id="caps-title">Everything an agent needs — declared, not wired by hand.</h2>
-          <p class="sec__sub">Four groups, no duplication. Each capability ships in <code>@declaragent/cli@0.7.7</code> and is graded in the status ledger below.</p>
+          <!-- email_off/email_on: Cloudflare's Email Address Obfuscation
+               otherwise rewrites `cli@<version>` into an email-protection
+               link and the page renders "[email protected]". -->
+          <p class="sec__sub">Four groups, no duplication. Each capability ships in <!--email_off--><code>@declaragent/cli@0.7.7</code><!--email_on--> and is graded in the status ledger below.</p>
         </header>
         <div class="caps__grid">
           <article class="cap">
