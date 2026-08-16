@@ -51,6 +51,7 @@ import { fleetRender } from './fleet-render-cli.js';
 import { fleetRun } from './fleet-run.js';
 import { fleetStatus } from './fleet-status-cli.js';
 import { type InitOptions, InitWizard, type WizardResult, runInit } from './init-wizard.js';
+import { createKubectlDeployTarget } from './kubectl-deploy-target.js';
 import { logs as tailLogs } from './logs-cli.js';
 import { mailboxDepth, mailboxDrain } from './mailbox-cli.js';
 import {
@@ -991,16 +992,24 @@ async function runFleetSubcommand(
     const canaryWaitMs =
       canaryWaitMsRaw !== undefined ? Number.parseInt(canaryWaitMsRaw, 10) : undefined;
     const resolvedStrategy = canaryFlag ? 'canary' : strategy;
-    return fleetDeploy({
-      ...(target !== undefined && { target }),
-      ...(agents.length > 0 && { agents }),
-      ...(resolvedStrategy !== undefined && { strategy: resolvedStrategy }),
-      ...(dryRun && { dryRun: true }),
-      ...(rollback && { rollback: true }),
-      ...(targetConfigPath !== undefined && { targetConfigPath }),
-      ...(Number.isFinite(canaryWaitMs) && { canaryWaitMs: canaryWaitMs as number }),
-      json,
-    });
+    return fleetDeploy(
+      {
+        ...(target !== undefined && { target }),
+        ...(agents.length > 0 && { agents }),
+        ...(resolvedStrategy !== undefined && { strategy: resolvedStrategy }),
+        ...(dryRun && { dryRun: true }),
+        ...(rollback && { rollback: true }),
+        ...(targetConfigPath !== undefined && { targetConfigPath }),
+        ...(Number.isFinite(canaryWaitMs) && { canaryWaitMs: canaryWaitMs as number }),
+        json,
+      },
+      {
+        // WS6 — default adapter registry. `kind: kubectl` deploys the
+        // `fleet render --target k8s` output via kubectl apply +
+        // rollout-status (+ rollout-undo on failure).
+        targetFactory: (kind) => (kind === 'kubectl' ? createKubectlDeployTarget() : undefined),
+      },
+    );
   }
   if (action === 'graph') {
     const fmtRaw = flagValue(rest, '--format');

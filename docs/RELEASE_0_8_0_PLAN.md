@@ -135,8 +135,7 @@ PRP risk 2 requires a **passing mixed-version rehearsal** before tagging:
   version. Clock starts at the first green Sunday after B2; earliest claim
   ≈ 7 weeks later. The release-gate-consumes-streak wiring (WS9 tail) lands
   when a streak exists to consume.
-- **WS7 traceparent propagation + engine spans** (backlog #57), **WS6
-  kind-smoke gate + `fleet deploy` kubectl adapter + published image**,
+- **WS7 traceparent propagation + engine spans** (backlog #57), **WS6 kind-smoke gate + published image** (the `fleet deploy` kubectl adapter shipped 2026-08-17 — `createKubectlDeployTarget`, default-registered for `kind: kubectl`, live-verified on minikube),
   **WS11 channel/transport parity tail**, **real `/status` counters (WS3)**,
   **`RequestAgent` in `up` (WS4)** — production-readiness tails; none changes
   the 0.8.0 config contract, so none blocks the cutover.
