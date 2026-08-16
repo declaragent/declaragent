@@ -75,7 +75,9 @@ for (const { label, re, replace } of PATTERNS) {
   const hits = html.match(re);
   if (hits === null) {
     console.error(`✗ pattern not found in website/index.html: ${label}`);
-    console.error('  The version spot moved or was removed — update scripts/website-inject-version.ts to match.');
+    console.error(
+      '  The version spot moved or was removed — update scripts/website-inject-version.ts to match.',
+    );
     process.exit(1);
   }
   const next = html.replace(re, replace(version));
