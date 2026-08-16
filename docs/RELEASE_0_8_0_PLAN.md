@@ -116,6 +116,8 @@ One PR (plus its changesets), containing the four flips together:
    fleets → no action.
 
 ## 5 · Rolling-upgrade rehearsal (gate, not paperwork)
+> **✅ BUILT 2026-08-16**: `packages/testkit/src/fleet-integration/rolling-upgrade.test.ts` + dispatchable `rolling-upgrade.yml`. Verified live against Redpanda with old=published **0.7.7**: signed round-trips to both sides green; old side's response comes back `internal` (0.7.7 has no signer — the assertion is version-aware and flips to requiring `hmac` at ≥0.7.8, which is the pre-tag bar); unsigned + unregistered senders get explicit signed/`internal` `AUTH_REJECTED` replies. **Pre-tag gate: dispatch with `old-version=0.7.8` after 0.7.8 ships — must be fully green including the signed leg B.**
+
 
 PRP risk 2 requires a **passing mixed-version rehearsal** before tagging:
 - Scripted in testkit (service-container Kafka): a two-agent fleet where

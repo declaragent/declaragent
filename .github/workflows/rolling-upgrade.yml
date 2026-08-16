@@ -1,0 +1,73 @@
+name: rolling-upgrade rehearsal
+
+# 0.8.0 mixed-version rolling-upgrade rehearsal (RELEASE_0_8_0_PLAN.md §5).
+#
+# Boots the PUBLISHED @declaragent/cli (default: latest from npm) and the
+# working-tree CLI as two single-agent fleets over a live Redpanda, rpc.auth
+# on with hmac both sides, and asserts the mixed-version wire contract:
+# signed round-trips both directions (version-aware for the old side's
+# response signing), fail-closed AUTH_REJECTED for unsigned + unregistered
+# senders.
+#
+# Pre-tag gate for 0.8.0: run with old-version=0.7.8 once it ships and the
+# rehearsal must be fully green (including the signed-response leg B).
+
+on:
+  workflow_dispatch:
+    inputs:
+      old-version:
+        description: 'Published @declaragent/cli version for the old side'
+        required: false
+        default: 'latest'
+
+concurrency:
+  group: rolling-upgrade-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rehearsal:
+    name: mixed-version fleet over Kafka
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build core + plugin-agent-rpc
+        run: |
+          bun run --filter '@declaragent/core' build
+          bun run --filter '@declaragent/plugin-agent-rpc' build
+
+      - name: Start Redpanda broker
+        run: |
+          set -euo pipefail
+          docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml up -d
+          echo "Waiting for Redpanda to go healthy..."
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' declaragent-kafka-redpanda 2>/dev/null || echo 'missing')"
+            echo "  attempt $i: $status"
+            [ "${status}" = "healthy" ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' declaragent-kafka-redpanda | grep -q healthy
+
+      - name: Run rehearsal
+        env:
+          ROLLING_UPGRADE: '1'
+          KAFKA_BROKERS: localhost:19092
+          REHEARSAL_VERBOSE: '1'
+          DECLARAGENT_REHEARSAL_OLD_VERSION: ${{ github.event.inputs.old-version || 'latest' }}
+        run: |
+          set -euo pipefail
+          bun test packages/testkit/src/fleet-integration/rolling-upgrade.test.ts
+
+      - name: Stop Redpanda
+        if: always()
+        run: |
+          docker compose -f packages/source-kafka/test/fixtures/docker-compose.yml down --volumes || true
