@@ -39,15 +39,14 @@ All three are verified in CI (`templates-verify.yml`, per-adapter unit tests, ch
 
 | Package | Exposes | Status |
 | --- | --- | --- |
-| [`@declaragent/plugin-agent-rpc`](https://github.com/declaragent/declaragent/tree/main/packages/plugin-agent-rpc) | `RequestAgent` tool + `agent-inbox` source + `ctx.respond` hook + in-memory transport. See [Agent RPC](/reference/rpc). | v1.1 |
+| [`@declaragent/plugin-agent-rpc`](https://github.com/declaragent/declaragent/tree/main/packages/plugin-agent-rpc) | `RequestAgent` tool + `agent-inbox` source + `ctx.respond` hook + transports (memory, Kafka, NATS, JetStream, SQS, AMQP, MQTT) + OIDC/OAuth2 envelope-auth providers. See [Agent RPC](/reference/rpc). | shipped |
 | `@declaragent/plugin-github` _(TBD)_ | GitHub PR review tools — used by the `pr-review` template | planned — lands post-v1.0 |
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] The `@declaragent/plugin-github` package
-is referenced by the `pr-review` template but is not yet published.
-`declaragent up` on that template will fail plugin load until the
-Phase-2 ecosystem publishes the package.
-</div>
+:::caution Plugin not yet published
+`@declaragent/plugin-github` is referenced by the `pr-review` template but is
+not on npm yet — `declaragent up` on that template fails plugin load until it
+ships.
+:::
 
 ## Adding your own
 

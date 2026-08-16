@@ -15,7 +15,9 @@ sustained for 15 minutes.
 If the tracker has drifted, resync:
 
 ```bash
-declaragent channels whatsapp resync-windows --id <id>
+# There is no resync verb — the tracker rebuilds from platform state on
+# restart:
+declaragent down && declaragent up -d
 ```
 
 Otherwise no action — the expiry is a signal about engagement, not a

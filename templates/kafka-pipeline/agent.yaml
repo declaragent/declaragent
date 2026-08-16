@@ -13,8 +13,9 @@ systemPrompt: |
      ("3 × Blue Widget shipped to Austin, TX").
   2. Classify the order's risk tier: `low`, `medium`, `high` based on
      total value + shipping country.
-  3. Emit the enriched record back to `orders.enriched` via
-     `SendMessage`. DO NOT write to other topics.
+  3. Output the enriched record as a single JSON object in your final
+     message. It is recorded in the event log (a Kafka outbound path
+     for re-publishing to `orders.enriched` is on the roadmap).
 
   Hard rules:
   - NEVER call external APIs. Every input is in the payload.

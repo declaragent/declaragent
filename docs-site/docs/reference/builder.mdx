@@ -7,7 +7,7 @@ sidebar_position: 8
 
 # Agent-builder toolkit
 
-The REPL's agent-builder surface — **15 tools, 10 slash commands**, and
+The REPL's agent-builder surface — **15 tools, 9 slash commands**, and
 the safety floors that keep it honest. Introduced in
 [@declaragent/cli@0.2.0](https://www.npmjs.com/package/@declaragent/cli);
 fleet + monitoring tools rounded it out through 0.6.0.
@@ -58,7 +58,7 @@ in default permission mode and can run concurrently.
 | `DeclaraEventsTail({ last?, kind?, correlationId?, sinceMs? })` | Read the last N entries from the session event store. Payloads are truncated to 140 chars with a `…` suffix to keep responses bounded. |
 | `DeclaraFleetStatus({ history?, historyLimit?, fleetRoot? })` | Return the full `FleetStatusReport` for the current fleet — agents, envs, capabilities, peers, optional deploy history. |
 | `DeclaraAuditVerify({ tenant? })` | Verify the audit-chain's hash continuity. Returns `{ ok, totalEntries, verifiedEntries, violations }` — inspect `ok` before reporting. |
-| `DeclaraDlqShow({ sourceId?, limit? })` | List rejected events in the session store — the client-side analog of the daemon-side broker DLQ. For broker-level DLQ entries, run `declaragent dlq show <sourceId> <entryId>` outside the REPL. |
+| `DeclaraDlqShow({ sourceId?, limit? })` | List rejected events in the session store — the client-side analog of the daemon-side broker DLQ. For broker-level DLQ entries, run `declaragent dlq show --source <sourceId> <entryId>` outside the REPL. |
 
 ## Slash commands
 

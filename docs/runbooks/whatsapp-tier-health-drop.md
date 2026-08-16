@@ -16,7 +16,9 @@ demotion.
 Pause all outbound on the channel:
 
 ```bash
-declaragent channels pause <id>
+# There is no channel-pause verb — comment the channel out of
+# channels.yaml and restart:
+declaragent down && declaragent up -d
 ```
 
 Notify the business-relationship owner — prolonged yellow triggers

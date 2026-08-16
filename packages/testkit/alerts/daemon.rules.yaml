@@ -27,7 +27,7 @@ groups:
 
       - alert: DaemonHeartbeatTimeout
         expr: |
-          time() - max(daemon_last_heartbeat_seconds) > 60
+          time() - max(declaragent_daemon_heartbeat_timestamp_seconds) > 60
         for: 2m
         labels:
           severity: critical

@@ -8,7 +8,7 @@ sidebar_position: 10
 
 # Observability
 
-Declaragent emits three signal families out of the box: **Prometheus metrics** (`/metrics` on `127.0.0.1:9464`), **OpenTelemetry traces + metrics** (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set), and a **hash-chained audit log** (SQLite, exportable to Splunk / Elastic / Datadog).
+Declaragent emits three signal families: **Prometheus metrics** (`/metrics` on `127.0.0.1:9464`, on by default in detached mode), **OpenTelemetry spans** (opt-in: set `OTEL_EXPORTER_OTLP_ENDPOINT` *and* install the `@opentelemetry/*` packages), and a **hash-chained audit log** (SQLite, exportable to Splunk / Elastic / Datadog).
 
 This page is the counter-to-dashboard index. For the HTTP surface, see [`/reference/control-plane`](/reference/control-plane). For the trace story, see the [Grafana tracing recipe](/cookbook/grafana-tracing).
 
@@ -62,9 +62,16 @@ Every metric below is available on the `/metrics` endpoint at `127.0.0.1:9464` w
 | `source_inflight` | gauge | `id` | same |
 | `source_process_duration_ms` | histogram | `id` | same |
 | `channel_outbound_sent` | counter | `type`, `id` | `packages/core/src/channels/base-channel.ts` |
+| `channel_outbound_edited` | counter | `type`, `id` | same |
+| `channel_outbound_deleted` | counter | `type`, `id` | same |
 | `channel_outbound_failed` | counter | `type`, `id`, `reason` | same |
+| `channel_outbound_idempotency_hits` | counter | `type`, `id` | same |
+| `channel_outbound_rate_limit_retries` | counter | `type`, `id` | same |
 | `channel_outbound_latency_ms` | histogram | `type`, `id` | same |
+| `channel_typing_sent` | counter | `type`, `id` | same |
+| `channel_reactions_sent` | counter | `type`, `id` | same |
 | `channel_inbound_received` | counter | `type`, `id` | same |
+| `channel_inbound_failed` | counter | `type`, `id` | same |
 
 ### Naming note
 
@@ -109,12 +116,14 @@ Six rule files under `packages/testkit/alerts/` (channels, event-sources, daemon
 
 ## OpenTelemetry
 
-When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, Declaragent exports spans + metrics over OTLP/HTTP. Key spans:
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set and the `@opentelemetry/api`, `@opentelemetry/sdk-node`, and `@opentelemetry/exporter-trace-otlp-http` packages are installed, Declaragent exports **spans** over OTLP/HTTP (metrics are exposed via the Prometheus `/metrics` endpoint only, and the OTel service name is currently fixed to `declaragent`). Spans emitted today:
 
-- `channel.inbound.<platform>` — raw inbound decode.
-- `bus.dispatch` — envelope handed to the engine.
-- `engine.turn` — per-LLM-call turn (`turn_number`, `model`, `tokens_in`, `tokens_out`).
-- `tool.invoke` — per tool call.
-- `channel.outbound.<platform>` — outbound send + status code.
+- `source.message` — one span per inbound event-source message (`message.id`, `message.topic`, `event.id`, `event.kind`, `correlation.id`, `outcome`).
+- `channel.outbound.send` — one span per outbound channel send (`conversation.id`, `content.kind`, `latency.ms`, idempotency-cache hits included).
+- `channel.outbound.edit` — one span per outbound message edit.
+
+Each span is currently a **root span** — engine-turn, tool-call, and RPC spans, plus
+cross-span trace propagation, are on the roadmap and not yet emitted. Don't build
+dashboards that expect a single end-to-end trace waterfall yet.
 
 Full env-var surface in [`docs/OTEL_SETUP.md`](https://github.com/declaragent/declaragent/blob/main/docs/OTEL_SETUP.md). Docker-compose bundle with Prometheus + Tempo + Grafana pre-wired: `packages/testkit/observability/`.

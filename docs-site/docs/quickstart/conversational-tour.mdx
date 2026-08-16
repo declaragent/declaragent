@@ -57,6 +57,9 @@ This lays down:
 acme-fleet/
 ├── fleet.yaml              # fleet identity + deploy targets
 ├── rpc-peers.yaml          # empty peer table
+├── package.json            # workspace stub for the fleet
+├── README.md               # scaffold notes
+├── .gitignore
 ├── .env.example            # populated by the builder as it reserves secrets
 └── agents/                 # empty — the builder fills this
 ```
@@ -240,7 +243,7 @@ you> /undo
 system> reverted 14 path(s) to 7b0a1c9 (proposal 8e4c6e8b-…).
 ```
 
-`/undo` reads the last applied proposal's `gitHeadBefore` + `writes` list and runs `git checkout <HEAD> -- <paths>` restricted to those paths. Unrelated edits in your working tree are untouched. In 0.6 only the most-recent apply is undoable; stacked undo lands in 0.7.
+`/undo` reads the last applied proposal's `gitHeadBefore` + `writes` list and runs `git checkout <HEAD> -- <paths>` restricted to those paths. Unrelated edits in your working tree are untouched. Only the most-recent apply is undoable; stacked undo is on the roadmap.
 
 Common iteration patterns:
 
@@ -280,11 +283,14 @@ declaragent fleet run
 declaragent up -d           # inside agents/triager
 declaragent up -d           # inside agents/reviewer
 
-# 5. Watch events stream:
-declaragent events list --last 20 --follow
+# 5. Watch recent events (and tail logs live):
+declaragent events list --last 20
+declaragent logs -f
 
-# 6. When ready, promote to production:
-declaragent fleet deploy --target cloud-run --canary --canary-wait-ms 60000
+# 6. When ready, generate the Cloud Run deploy artifacts per agent:
+declaragent deploy gcp-cloud-run        # writes Dockerfile + service.yaml,
+                                        # then prints the docker build/push +
+                                        # gcloud commands you run yourself
 ```
 
 ## 11 · Commit the fleet
@@ -308,7 +314,7 @@ From here the fleet is a normal git-versioned project. Every declarative config 
 
 **`DECLARAGENT_BUILDER=on` but no builder tools load.** The variable is strictly `on` (lowercase). `ON` / `1` / `true` don't work. `echo $DECLARAGENT_BUILDER` to confirm; inside the REPL, `/scope` will print the scope root only when the builder is live.
 
-**`DeclaraFleetAdd` errors with "no fleet.yaml in scope."** Run `declaragent init --fleet <name>` first — fleet-level tools refuse to operate without a scaffold.
+**`DeclaraFleetAdd` errors with `no fleet.yaml at <fleetRoot>. Run 'declaragent init --fleet <name>' first, or point fleetRoot at an existing fleet.`** — fleet-level tools refuse to operate without a scaffold.
 
 **`/undo` fails with "no git HEAD captured."** Your directory wasn't a git repo when the apply ran. The builder asks to `git init` on first write; decline that and `/undo` can't work. Fix: `git init -b main` then re-apply.
 

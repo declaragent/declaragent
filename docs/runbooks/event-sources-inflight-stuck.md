@@ -17,7 +17,7 @@ Restart the adapter — it'll clear pending acks and rebuild its
 transport connection:
 
 ```bash
-declaragent sources restart <id>
+declaragent down && declaragent up -d
 ```
 
 If the issue persists after restart, the bug is in the handler, not
@@ -25,8 +25,9 @@ the adapter.
 
 ## Root-cause investigation
 ```bash
-# Inflight snapshot + pending-ack ids:
-declaragent sources status <id> --json | jq '.pendingAcks'
+# Inflight snapshot:
+curl -s http://127.0.0.1:9464/status | jq
+curl -s http://127.0.0.1:9464/metrics | grep source_inflight
 
 # Search daemon logs for `base-source.after-dispatch.no-hook-registry`
 # — that warn indicates miswire.

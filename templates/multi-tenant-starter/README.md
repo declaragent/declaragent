@@ -33,15 +33,18 @@ Copy `.env.example` to `.env` and fill in:
 
 ```sh
 cp .env.example .env
-declaragent run
+declaragent up
 ```
 
-The daemon loads `tenants.yaml`, builds one `TenantRuntime` per tenant,
-wires each tenant to its matching Slack channel, and starts listening.
+The daemon loads `tenants.yaml` and resolves a tenant context — quotas,
+audit records, and memory are tenant-scoped. (Fully parallel per-tenant
+runtimes — one isolated bus + channel set per tenant in a single
+process — are on the roadmap; today a single runtime enforces the
+tenant-scoped quotas and audit boundaries.)
 
 ## Smoke test
 
-After `declaragent run`, from another terminal:
+After `declaragent up`, from another terminal:
 
 ```sh
 # 1. Confirm both tenants loaded.
@@ -67,9 +70,9 @@ declaragent audit query --tenant beta-tenant --limit 10
 declaragent deploy gcp-cloud-run
 ```
 
-The generated `service.yaml` mounts one volume per tenant's data dir
-and stamps `tenant_id` as a Prometheus metric label via
-`createPrometheusRegistry`'s `constLabels` wiring.
+The generated `service.yaml` mounts one volume per tenant's data dir.
+(Per-tenant `tenant_id` metric labels are not wired yet — metrics are
+currently fleet-wide.)
 
 ## Estimated cost (lower bound)
 

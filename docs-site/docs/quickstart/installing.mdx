@@ -32,7 +32,7 @@ Environment knobs:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DECLARAGENT_VERSION` | `latest` | Pin to a tag. Example: `v1.0.2`. |
+| `DECLARAGENT_VERSION` | `latest` | Pin to a tag. Example: `v0.7.6`. |
 | `DECLARAGENT_PREFIX` | `$HOME/.local` | Install prefix. Binary lands at `$PREFIX/bin/declaragent`. |
 | `DECLARAGENT_BASE_URL` | GitHub releases | Release mirror. Used by CI smoke tests against staging. |
 | `DECLARAGENT_NO_CHECKSUM` | unset | Skip the SHA-256 verify. Never advised. |
@@ -76,11 +76,11 @@ Knobs are delegated to the curl installer — the formula's `install` block simp
 
 ```bash
 declaragent --version
-# declaragent 0.4.1
+# declaragent 0.7.6
 
 # The d9t alias works the same way:
 d9t --version
-# declaragent 0.4.1
+# declaragent 0.7.6
 ```
 
 If the binary is on your `$PATH` and prints a version, you're done. Next: [your first agent](/quickstart/first-agent).
@@ -95,6 +95,7 @@ If the binary is on your `$PATH` and prints a version, you're done. Next: [your 
 - If the curl installer bailed with a checksum mismatch, retry — transient CDN corruption is the usual culprit. Don't set `DECLARAGENT_NO_CHECKSUM`.
 - See [Troubleshooting → my install failed](/troubleshooting) for the flowchart.
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Windows-native binary is a post-v1.0 concern. For now, run under WSL2 + the npm-global path.
-</div>
+:::note Windows
+There is no Windows-native binary yet — run under WSL2, or use the npm-global
+install path.
+:::

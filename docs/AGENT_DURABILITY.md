@@ -12,7 +12,7 @@ half-right, and the nuance matters:
 
 | Concern | Reality |
 | --- | --- |
-| "Agents are single-prompt." | **False within a turn.** The engine runs perceive→reason→act→observe up to `DEFAULT_MAX_ITERATIONS = 50` tool-use iterations, breaking only when the model returns a non-`tool_use` stop reason (`packages/core/src/engine/engine.ts:32`, `:411`). |
+| "Agents are single-prompt." | **False within a turn.** The engine runs perceive→reason→act→observe up to `DEFAULT_MAX_ITERATIONS = 50` tool-use iterations, breaking only when the model returns a non-`tool_use` stop reason (`packages/core/src/engine/engine.ts:34`, applied at `:261`). |
 | "Agents have no memory." | **True by default across events**, fixable per-route via `sessionKey` (mode 2 below). |
 
 ---

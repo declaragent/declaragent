@@ -11,9 +11,10 @@ One directory, one `fleet.yaml`, N agents. A fleet is the declarative
 monorepo shape for teams that run more than one agent together — shared
 tenants, shared peer table, shared secrets, one dev loop, one deploy.
 
-:::info Since v1.2
-Introduced in v1.2. Single-agent layouts keep working unchanged;
-fleets are opt-in.
+:::info Versioning
+Fleets shipped across the `@declaragent/cli` 0.6.x–0.7.x line ("v1.2" in
+code comments is an internal plan-doc revision, not an npm release).
+Single-agent layouts keep working unchanged; fleets are opt-in.
 :::
 
 ## When to use a fleet
@@ -67,7 +68,7 @@ name: acme-fleet
 description: "Concierge + specialist agents for the Acme eng org."
 
 runtime:
-  declaragent: "^1.2.0"
+  declaragent: "^0.7.0"   # advisory today — validated, not enforced at boot
   bun: ">=1.1"
 
 agents:
@@ -104,7 +105,7 @@ rpc:
   # minFleetVersion: v1.2.0-cut
 
 deploy:
-  strategy: rolling            # rolling | all-or-nothing | per-agent
+  strategy: rolling            # rolling | all-or-nothing | per-agent | canary
   rollbackOnFailure: true
   healthGate:
     timeoutMs: 120000
@@ -124,12 +125,14 @@ deploy:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `version` | `1` | yes | Schema version. Frozen at v1 for v1.2. |
+| `version` | `1` | yes | Schema version. Frozen at `1`. |
 | `name` | string | yes | Fleet name. Also the default root `package.json` name. |
 | `description` | string | no | Free-form. |
-| `runtime` | object | no | Pins `declaragent` + `bun` versions. |
+| `runtime` | object | no | Pins `declaragent` + `bun` versions (advisory — validated, not enforced). |
 | `agents[]` | array | yes | Ordered list of fleet members. May be empty for a fresh scaffold. |
 | `environments{}` | map | no | Per-environment shared config. Default is an implicit `default` env. |
+| `hosts[]` | array | no | Cross-host control-plane targets for `fleet ps/events/dlq/logs`: `{ name, url, auth: { bearer: env:…\|file:… }, timeoutMs }`, unique names. |
+| `controlPlane` | object | no | Fleet-level control-plane defaults (auth etc.) shared by member agents. |
 | `rpc` | object | no | Opt-in RPC knobs (see [Version skew](#version-skew)). |
 | `deploy` | object | no | Strategy + targets for `declaragent fleet deploy`. |
 
@@ -194,6 +197,7 @@ environments:
 | `rolling` (default) | Sequential per-agent deploy. `healthGate.probe` GETs each agent after push; failure aborts + rolls back everything deployed so far. | You value blast-radius containment over latency. |
 | `all-or-nothing` | Parallel build + push. Failure of any agent rolls back all. | You have a small fleet + can't tolerate mixed versions. |
 | `per-agent` | Fire-and-forget; no coordination. | Back-compat with teams that still `gcloud run deploy` per-agent. |
+| `canary` | Deploy the first agent, soak for `--canary-wait-ms`, re-probe, then roll the rest. | You want a blast-radius test before the full roll. Flags: `fleet deploy --canary --canary-wait-ms <n>`. |
 
 Rolling deploy example timeline:
 
@@ -235,13 +239,18 @@ Every fleet-aware verb is under `declaragent fleet <subcommand>`:
 | `fleet demote [<id>]` | Inverse of promote. Refuses when the fleet has more than one agent. |
 | `fleet run [--agent <id>...]` | Single-process dev loop. Boots every agent over a shared in-memory RPC bus. |
 | `fleet deploy [--target <name>] [--agent <id>...] [--strategy <s>]` | Coordinated deploy. `--dry-run` / `--rollback` / `--target-config <path>`. |
-| `fleet render --target <k8s\|helm> [--out <dir>]` | GitOps-friendly render. Emits raw k8s manifests or a Helm chart from `fleet.yaml`. No cluster calls. |
+| `fleet render --target <k8s\|helm> [--format helm\|kustomize] [--out <dir>]` | GitOps-friendly render. Emits raw k8s manifests, a Helm chart, or (`--target k8s --format kustomize`) a Kustomize overlay from `fleet.yaml`. No cluster calls. |
 | `fleet list [--json]` | Agents + env + capability counts. |
 | `fleet validate [--json]` | Schema + peer-graph dry-run. Non-zero exit on any error-severity finding. |
 | `fleet capabilities [--json]` | Aggregated capability table across every agent. |
 | `fleet graph [--format mermaid\|dot\|json]` | Emit the inter-agent RPC edge graph. |
 | `fleet peers [--verify] [--json]` | Print + optionally probe the peer table. |
 | `fleet status [--history] [--limit <n>] [--json]` | Snapshot: per-agent config, peer reachability, recent deploys. |
+| `fleet audit-rpc [--suggest-enable] [--strict] [--json]` | Pre-flight inspector for the 0.8.0 `rpc.auth.enabled` default flip. |
+| `fleet ps [--host <name>] [--json]` | Cross-host process snapshot via `fleet.yaml#hosts[]`. |
+| `fleet events [--host <name>] [--json]` | Merged cross-host audit event stream. |
+| `fleet dlq list\|drop\|requeue [--kind dispatch] [--id <id>] [--host <name>\|--all-hosts --yes]` | Cross-host DLQ snapshot + mutations. |
+| `fleet logs [--host <name>] [--agent <id>] [-f]` | Cross-host log tail (50-watcher cap per host). |
 
 Outside a fleet directory, every `fleet` verb errors with a hint at
 `declaragent init --fleet <name>`.
@@ -336,7 +345,6 @@ Validation in CI:
 
 ### Scope out
 
-- Kustomize output. Helm covers the common case; revisit if customers ask.
 - Auto-pushing to a git remote. The operator commits the render output
   to their GitOps repo themselves — that's the whole point.
 
@@ -408,9 +416,9 @@ Every lean in §14 of `docs/FLEET_PLAN.md` is a concrete v1.2 commit:
 | --- | --- |
 | Agent enumeration | Explicit in `fleet.yaml → agents[]`. No auto-discovery in v1.2. |
 | Session + audit storage | Shared at fleet root; per-agent opt-out. |
-| Channel ownership | Explicit `owner:` per channel, per environment. |
+| Channel ownership | Via the shared `channelsRef` file per environment (no `owner:` key today). |
 | Agent id invariant | `fleet.yaml → agents[].id == agent.yaml.name`. Strict. |
-| Workspace manager | Bun only in v1.2. `fleet install` wraps `bun install`. |
+| Workspace manager | Bun only. Workspace installs are plain `bun install` at the fleet root (no `fleet install` verb). |
 | Versioning | Changesets at the fleet root; per-agent semver via `mode: independent`. |
 | Deploy targets | Fleet-level only. Ad-hoc via `--target-config <path>`. |
 | `x-fleet-version` | Opt-in via `rpc.stampFleetVersion`. |

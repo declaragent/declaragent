@@ -1,5 +1,12 @@
 # Building a Generic AI Agent
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 A practical guide to building your own agent CLI, patterned on Claude Code's architecture. Language-agnostic in principle; code samples are TypeScript because that's the reference implementation. Port to Python/Go/Rust mechanically.
 
 ---

@@ -20,7 +20,7 @@ Canonical starter: [`templates/pr-review/`](https://github.com/declaragent/decla
 
 1. Install the `@declaragent/plugin-github` plugin (see the note below).
 2. Create a GitHub App with `pull_request` + `contents:read` + `pull_requests:write` scopes.
-3. Point the app's webhook at `https://<your-host>/webhooks/github`.
+3. Point the app's webhook at `https://<your-host>/webhook/github` (local default port: 7777).
 4. Copy the webhook secret + app private key into `.env`.
 
 ## Key points
@@ -29,12 +29,12 @@ Canonical starter: [`templates/pr-review/`](https://github.com/declaragent/decla
 - The template's skill prompt constrains the agent: one pass, no style-only nits, no demands the contributor opt out of via label.
 - Rate limiting is the plugin's concern — inbound GitHub webhook storms are shed at the ingress.
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] The `@declaragent/plugin-github` package
-is referenced but not yet published (`pr-review` is the driver for its
-v1.0.1 release). `declaragent up` on this template will fail plugin
-load until the package lands.
-</div>
+:::caution Plugin not yet published
+The `@declaragent/plugin-github` package this template references is not on npm
+yet (`pr-review` is the driver for its first release) — `declaragent up` on this
+template fails plugin load until it ships. The webhook + skill wiring works; the
+GitHub review tools are stubbed.
+:::
 
 ## Related
 

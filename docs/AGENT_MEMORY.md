@@ -41,6 +41,11 @@ memory:
 - `namespace` (optional) — the per-agent isolation boundary. Two agents that
   share a namespace share memories; by default each agent uses its own id, so
   agents are isolated unless you deliberately point them at the same namespace.
+  Since 0.7.6 (WS8), the runtime additionally partitions per tenant and per
+  end-user: `scopedNamespace()` appends `::t::<tenantId>` / `::sub::<subject>`
+  segments when a tenant context or channel principal is present. Permission-key
+  globs match the **base** namespace only — the tenant/subject suffixes are
+  applied after the gate.
 
 The block is validated strictly: a non-boolean `enabled` or an unknown sub-key
 fails `declaragent up` with a path-anchored config error rather than silently
@@ -70,12 +75,14 @@ Permission keys are namespace-scoped so operators can glob:
 
 ```yaml
 permissions:
-  allow:
-    - memory_read:support/*        # read any key in the support namespace
-    - memory_write:support/note-*  # write only note-* keys
-  deny:
-    - memory_write:*               # block all writes by default
+  rules:
+    - { pattern: "memory_write:*", decision: deny }          # block writes by default
+    - { pattern: "memory_read:support/*", decision: allow }  # read any key in support
+    - { pattern: "memory_write:support/note-*", decision: allow }
 ```
+
+(The `permissions` block is a strict `rules: [{ pattern, decision }]` list —
+there are no `allow:`/`deny:` string-list keys.)
 
 - `memory_write` / `memory_read` → `<namespace>/<key>`
 - `memory_search` → `<namespace>`

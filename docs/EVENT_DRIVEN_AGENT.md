@@ -1,5 +1,12 @@
 # Event-Driven Agents
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 Companion to `BUILDING_A_GENERIC_AGENT.md` and `EXTENDING_YOUR_AGENT.md`. Those docs built a *request-driven* agent: the user types, the agent responds. This doc reframes the agent as an **event-driven system** where user input is just one of many possible triggers.
 
 ---

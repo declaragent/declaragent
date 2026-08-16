@@ -1,6 +1,6 @@
 # Requirements Spec & Implementation Plan
 
-**Working name:** Declaragent (placeholder — see Part 7).
+**Name:** Declaragent (official).
 **Status:** Canonical. Supersedes the 8 background design docs listed at the end.
 **Last updated:** 2026-04-15.
 
@@ -158,7 +158,7 @@ GCP Cloud Run, AWS Fargate, Fly.io, Cloudflare Workers (limited — no long-runn
 
 ### Phase 0 — Foundations (1–2 weeks)
 **Goal.** Development infrastructure.
-**Scope.** pnpm + Turborepo monorepo. Strict TypeScript. CI (lint, typecheck, test). Release pipeline via changesets → npm. Base container image. License + contributor docs.
+**Scope.** Bun-workspaces monorepo. Strict TypeScript. CI (lint, typecheck, test). Release pipeline via changesets → npm. Base container image. License + contributor docs.
 **Exit.** Empty package publishes cleanly to npm via CI.
 
 ### Phase 1 — Core Agent (4–6 weeks)  →  **v0.1 internal**
@@ -252,7 +252,6 @@ Each item is a previously flagged open question with an explicit decision.
 
 Decisions the team must make; not design gaps.
 
-- **Product name.** Prior search eliminated Agentfile, Agent Builder, Helm, Stencil, Manifest (all taken or colliding with OpenAI/Microsoft/Kubernetes). Next step: shortlist 3 coined names; verify domain, npm scope, and GitHub org availability before committing.
 - **License.** Apache 2.0 (maximum ecosystem) vs. Business Source License (prevents cloud competitors from hosting). Affects plugin ecosystem dynamics.
 - **Commercial model.** Open-core CLI + runtime; managed control plane (team RBAC, cost dashboards, audit retention, hosted secrets) in private beta Q3 2026.
 - **Governance.** Single-company stewardship vs. CNCF-style foundation. Defer until post-v1.0; single-company for speed during v0.x.

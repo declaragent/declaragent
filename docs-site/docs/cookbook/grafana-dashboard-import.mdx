@@ -108,8 +108,10 @@ groups:
         for: 2m
         labels: { severity: critical }
 
-      - alert: DeclaragentDispatchDlqGrowing
-        expr: rate(source_messages_dlq_total{kind="dispatch"}[10m]) > 0
+      - alert: DeclaragentSourceDlqGrowing
+        # note: this is the per-source DLQ counter; dispatch-DLQ depth has
+        # no Prometheus series today — inspect it via `declaragent dlq list`
+        expr: rate(source_messages_dlq[10m]) > 0
         for: 10m
         labels: { severity: warning }
 
@@ -123,7 +125,10 @@ groups:
 
 ## Distributed tracing
 
-The same counters flow through OTel when `OTEL_EXPORTER_OTLP_ENDPOINT` is set — see [Trace a request in Grafana](/cookbook/grafana-tracing) for the end-to-end span recipe that pairs with this dashboard.
+Metrics stay Prometheus-pull-only — the OTLP endpoint exports **spans**, not
+metrics (and needs the optional `@opentelemetry/*` peer deps installed). See
+[Trace a request in Grafana](/cookbook/grafana-tracing) for the span recipe that
+pairs with this dashboard.
 
 ## Related
 

@@ -10,7 +10,40 @@ sidebar_label: webhook-auth-failure-spike
 
 **Canonical markdown:** [`docs/runbooks/webhook-auth-failure-spike.md`](https://github.com/declaragent/declaragent/blob/main/docs/runbooks/webhook-auth-failure-spike.md)
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Content mirrored from the canonical
-runbook under `docs/runbooks/`.
-</div>
+**Severity:** warning.
+
+## Symptom
+Webhook trigger `{{ triggerId }}` is rejecting > 0.5 auth failures/s
+for 5 minutes. HMAC or bearer signatures don't match the configured
+secret.
+
+## Likely cause
+1. Upstream partner rotated the shared secret out-of-band.
+2. The partner is misconfigured (wrong secret in their webhook form).
+3. Someone is probing the webhook endpoint — reconnaissance.
+
+## Immediate mitigation
+If the secret genuinely rotated, roll the stored value:
+
+```bash
+declaragent secrets rotate <triggerId-webhook-secret>
+# restart so the source picks up the new value:
+declaragent down && declaragent up -d
+```
+
+If reconnaissance is suspected, block the source IP at the ingress
+layer. Do NOT weaken the HMAC check.
+
+## Root-cause investigation
+```bash
+# Auth failures log with reason (missing/malformed/stale/bad signature):
+declaragent logs -f          # webhook verify rejections log per request
+```
+
+Correlate `remoteAddr` — a single IP hammering with varying payloads
+is a probe; many IPs with the same payload is a partner config issue.
+
+## Post-incident
+- Capture: peak failure rate, source IP distribution, mitigation.
+- Close when: auth failures < 0.01/s for 30 minutes.
+- If reconnaissance was confirmed, escalate to security.

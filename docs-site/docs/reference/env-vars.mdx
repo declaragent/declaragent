@@ -13,10 +13,23 @@ The CLI and runtime read a small set of environment variables. All of them have 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DECLARAGENT_CONFIG_DIR` | `$HOME/.declaragent` | Overrides the per-user config directory. Used by the Cloud Run Dockerfile to mount `/etc/declaragent`. |
-| `DECLARAGENT_TELEMETRY` | `1` | Set to `0` to opt out of the three first-run telemetry events (`installed`, `wizard_completed`, `deploy_invoked`). |
-| `DECLARAGENT_LOG_LEVEL` | `info` | One of `trace`, `debug`, `info`, `warn`, `error`. Runbooks frequently set `debug` to trace connection errors. |
-| `DECLARAGENT_OFFLINE` | unset | If set, skips any network calls outside the configured provider. Affects the wizard's verify step + `declaragent upgrade` (post-v1.0). |
+| `DECLARAGENT_CONFIG_DIR` | `$HOME/.declaragent` | Overrides the per-user config directory. The deploy-generated Dockerfile sets it to `/etc/declaragent`. |
+| `DECLARAGENT_BUILDER` | unset | `on` enables the conversational builder toolkit (the 15 `Declara*` tools) in the REPL. |
+| `BUILDER_RECORD` | unset | `1` wraps the live provider so builder conversations are recorded as regression fixtures. |
+| `DECLARAGENT_METRICS_PORT` | `9464` (detached) | Prometheus `/metrics` + control-plane port for `declaragent up`. On by default in detached mode (`-d`); foreground runs bind only when this is set. `0` disables. |
+| `DECLARAGENT_BIND_ADDRESS` | `127.0.0.1` | Control-plane listener bind address. Non-loopback binds require auth on all but the safe route subset. |
+| `DECLARAGENT_DRAIN_DEADLINE_MS` | `15000` | Graceful-drain budget on shutdown. `0` disables draining (immediate teardown). |
+| `DECLARAGENT_PROVIDER_RATE_LIMIT_RPS` | per-provider preset | Overrides the provider token-bucket rate in `up`. |
+| `DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE` | unset | `1` skips the provider rate-limit wrap in `up` entirely. |
+| `DECLARAGENT_RPC_AUTH_DEFAULT` | unset | `on` previews the 0.8.0 zero-trust default (`rpc.auth.enabled` assumed `true` when `rpc-peers.yaml` is present). |
+| `DECLARAGENT_BASH_ENV_ALLOW` / `DECLARAGENT_BASH_ENV_DENY` | unset | Comma-separated allow/deny lists for env vars passed through to the bash tool. |
+| `DECLARAGENT_CLI_VERSION` | build version | Overrides the CLI version stamped into `up` state (ops/test override). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Enables OpenTelemetry span export when set (requires the `@opentelemetry/*` packages to be installed — see [Observability](/reference/observability)). |
+
+Telemetry: there is no telemetry env var. The init wizard asks once and records an
+opt-out as the sentinel file `~/.declaragent/.telemetry-opt-out`.
+Offline installs: there is no offline env var either — use `declaragent init --skip-verify`
+to skip the wizard's provider verification call.
 
 ## Installer
 
@@ -27,19 +40,20 @@ The CLI and runtime read a small set of environment variables. All of them have 
 | `DECLARAGENT_BASE_URL` | GitHub releases | Release origin override. Used by CI smoke tests to stage a local mirror. |
 | `DECLARAGENT_NO_CHECKSUM` | unset | Skips the SHA-256 verify. Never set this in production. |
 | `DECLARAGENT_NO_POSTINSTALL` | unset | npm path only. Skips the binary download; the launcher prints a hint. |
+| `DECLARAGENT_USE_BINARY` | unset | npm launcher only. `1` forces the compiled binary even when Bun + the dist JS are available (debugging / safety valve). |
 | `DECLARAGENT_SIZE_BUDGET_MB` | `120` | Build-only. Used by `scripts/build-binary.sh` to fail the release if the compiled binary exceeds the budget. |
 
-## Chaos / integration harnesses
+## Integration / soak test gates
 
-Flags for the Phase 6 chaos + integration suites. Not used in normal operation.
+Per-suite gates for the Docker-Compose-backed integration and soak suites. Not used in
+normal operation — each suite is skipped unless its gate is set to `1`.
 
 | Variable | Purpose |
 | --- | --- |
-| `DECLARAGENT_CHAOS=1` | Enables the chaos harness when running the daemon under test. |
-| `DECLARAGENT_CHANNEL_IT=1` | Enables nightly real-platform channel integration tests. |
-| `DECLARAGENT_SECRETS_IT=1` | Enables real Vault / AWS SM / GCP SM integration tests. |
-| `DECLARAGENT_E2E=1` | Runs the Phase-1 live-Anthropic smoke test. |
-| `DECLARAGENT_INTEGRATION=1` | Gates adapter Docker Compose suites (Kafka, SQS, AMQP, MQTT, NATS). |
+| `KAFKA_INTEGRATION` / `NATS_INTEGRATION` / `MQTT_INTEGRATION` / `AMQP_INTEGRATION` / `SQS_INTEGRATION` | Broker transport integration suites. |
+| `ELASTIC_INTEGRATION` / `SPLUNK_INTEGRATION` / `DATADOG_INTEGRATION` | SIEM audit-export integration suites. |
+| `FLEET_INTEGRATION` / `LOAD_INTEGRATION` / `RPC_AUTH_INTEGRATION` | Fleet-runtime, load, and RPC-auth (OIDC/OAuth2) suites. |
+| `KAFKA_SOAK` | The long-running Kafka soak harness (Pillar 3 soak evidence). |
 
 ## Provider API keys
 
@@ -71,11 +85,8 @@ Inherit from each provider SDK. Listed for completeness:
 | `KUBERNETES_SERVICE_HOST` / `KUBERNETES_SERVICE_PORT_HTTPS` | Kubernetes secret resolver (auto-detected when pod-mounted). |
 | `WEBHOOK_SECRET` / `TEST_WEBHOOK_SECRET` / `TEST_WEBHOOK_TOKEN` | Webhook source HMAC verification. |
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Slice 7.5 polish: every remaining
-adapter-specific env var (Slack bot tokens, Telegram tokens, etc.) will be
-auto-extracted from each adapter's README.md so this table stays in sync.
-</div>
+Adapter-specific credentials (Slack bot tokens, Telegram tokens, etc.) are documented
+in each channel adapter's README and referenced from `channels.yaml` via `${env:...}`.
 
 ## Related
 

@@ -3,6 +3,12 @@
 # before those emitters ship: Prometheus treats a non-existent metric as
 # an empty vector — no rule will fire until the producer is live.
 
+# ⚠ Metric-emission gap (docs-truth 2026-08-16, backlog #65): the runtime does
+# not yet register `secret_access_denied_total`, `secret_rotation_age_seconds`,
+# `tenant_boundary_violation_total`, or `webhook_auth_failures_total` — these
+# rules are the alerting CONTRACT for that work and will not fire until the
+# counters are emitted. The failures they describe are visible today via
+# `declaragent audit query --kind secret_access|tenant_boundary_violation`.
 groups:
   - name: declaragent.security
     interval: 30s

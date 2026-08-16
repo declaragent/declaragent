@@ -32,7 +32,13 @@ Produces:
 
 ## Verify locally (dry-run)
 
+The generated Dockerfile `COPY`s a prebuilt linux binary and a config dir —
+stage both first (the generated `.declaragent/deploy/README.md` lists the exact
+steps):
+
 ```bash
+mkdir -p .declaragent/deploy/bin .declaragent/deploy/config
+# place bin/declaragent-linux-x64 + your config files per the generated README
 docker build -t declaragent-agent .declaragent/deploy/
 docker run --rm -p 8787:8787 declaragent-agent
 ```
@@ -53,16 +59,13 @@ Cloud Run at the baseline preset (`cpu=1, memory=512MiB, minInstances=1`) costs 
 
 ## Troubleshooting
 
-- **403 at deploy.** See [Troubleshooting → my deploy got 403](/troubleshooting/deploy-403). The preflight hint from `declaragent deploy --verify` names the missing IAM role.
+- **403 at deploy.** See [Troubleshooting → my deploy got 403](/troubleshooting/deploy-403) — it includes the `gcloud projects get-iam-policy` check for the three required roles (there is no built-in IAM preflight; `--verify` is a post-deploy health check).
 - **Secret Manager binding failed.** Each `${secret:...}` reference maps to a Secret Manager binding in `service.yaml`. If the service account lacks `roles/secretmanager.secretAccessor`, the revision fails to start.
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] End-to-end walkthrough with a synthetic
-Slack workspace ping. The nightly Cloud Run soak test (slice-6
-`.github/workflows/cloud-run-soak.yml`) exercises this path.
-</div>
+The nightly Cloud Run soak workflow
+([`.github/workflows/cloud-run-soak.yml`](https://github.com/declaragent/declaragent/blob/main/.github/workflows/cloud-run-soak.yml))
+exercises this deploy path in CI.
 
 ## Related
 
 - [Troubleshooting → my deploy got 403](/troubleshooting/deploy-403).
-- [Phase 7 plan §9 — Cloud Run deployment](https://github.com/declaragent/declaragent/blob/main/docs/PHASE_7_PLAN.md).

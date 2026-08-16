@@ -1,15 +1,18 @@
 # kafka-pipeline
 
-Kafka source → Claude enriches each record → re-emits to a downstream
-topic. Demonstrates Phase-4's Kafka adapter (JSON-path routing + DLQ)
-and Phase-6's daily token budget enforcement.
+Kafka source → Claude enriches each record. Demonstrates the Kafka
+adapter (JSON-path routing + DLQ) and daily token budget enforcement.
 
 ## What this agent does
 
-Consumes `orders.created` (expected JSON), produces one enriched record
-per input to `orders.enriched`. Malformed or repeatedly-failing
-records land in `orders.dlq` so ops can inspect them without blocking
-the pipeline.
+Consumes `orders.created` (expected JSON) and runs the enrichment skill
+on each record. **The enriched result is logged (visible via
+`declaragent logs` / `events list`) — there is no Kafka outbound path
+yet**, so nothing is re-published to `orders.enriched` today; producing
+the enriched record back to a topic is on the roadmap (the Kafka
+producer is currently used for DLQ routing only). Malformed or
+repeatedly-failing records land in `orders.dlq` so ops can inspect them
+without blocking the pipeline.
 
 Cost enforcement: the agent declares `dailyTokenUSD: 5` in its quota
 block, so a runaway enrichment loop is cut off before it burns the
@@ -40,7 +43,7 @@ cp .env.example .env
 # For local dev, also remove the `security.sasl` block from
 # event-sources.yaml — Redpanda's default compose config runs
 # unauthenticated.
-declaragent run
+declaragent up
 ```
 
 Publish a test record:
@@ -50,8 +53,9 @@ echo '{"id":"ord_1","total":75,"items":[{"sku":"BW","name":"Blue Widget","quanti
   | docker compose exec -T redpanda rpk topic produce orders.created
 ```
 
-Open the Redpanda console at <http://localhost:8080> to watch the
-enriched record land on `orders.enriched` within a couple seconds.
+Open the Redpanda console at <http://localhost:8080> to watch
+`orders.created` consumption (and `orders.dlq` for failures), and
+`declaragent logs -f` to see the enrichment output.
 
 ## Deploy to Cloud Run
 

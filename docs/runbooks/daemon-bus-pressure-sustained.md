@@ -16,13 +16,15 @@ sources may be blocking `bus.publish` on every call.
 Raise the bus's high-watermark temporarily or scale handler capacity:
 
 ```bash
-declaragent config set events.bus.highWatermark 500
-declaragent daemon reload
+# Raise the source's concurrency/inflight limits in event-sources.yaml
+# (limits.concurrency / limits.maxInflight), then restart to apply:
+declaragent down && declaragent up -d
 ```
 
 ## Root-cause investigation
 ```bash
-declaragent daemon status --json | jq '.bus'
+curl -s http://127.0.0.1:9464/status | jq
+curl -s http://127.0.0.1:9464/metrics | grep -E 'source_inflight|source_messages'
 ```
 
 Grafana: `Daemon` dashboard → `Bus inflight` + `Publish rate` panels.

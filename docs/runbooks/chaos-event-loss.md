@@ -16,7 +16,9 @@ dropped on the floor.
 Stop the chaos run:
 
 ```bash
-declaragent chaos stop
+# The chaos harness is the testkit chaos driver (packages/testkit/src/chaos)
+# — stop the run by interrupting the harness process (Ctrl-C / SIGINT);
+# the driver's stop() emits the run report on the way out.
 ```
 
 Chaos runs are explicitly bounded — don't try to "mitigate" the
@@ -24,10 +26,9 @@ symptom during the run; the run itself is the experiment.
 
 ## Root-cause investigation
 ```bash
-# Chaos report for the current run:
-declaragent chaos report --run <runId> --out chaos-report.json
-
-# Diff against the prior clean run:
+# The chaos driver's stop() emits the run report (renderReport in
+# @declaragent/testkit); write it to chaos-report.json, then
+# diff against the prior clean run:
 diff <(jq -S '.assertions' chaos-report.prior.json) \
      <(jq -S '.assertions' chaos-report.json)
 ```

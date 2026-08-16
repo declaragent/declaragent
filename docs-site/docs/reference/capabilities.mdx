@@ -58,7 +58,7 @@ this is the v1.1-compatible "loose JSON" path.
 ## Supported JSON Schema keywords
 
 The runtime ships a draft-07 subset tuned for capability payloads.
-Anything outside this list is rejected at load time so the agent never
+Unknown `format` values are accepted and treated as advisory no-ops (only unsupported *keywords* are rejected at load time), so the agent never
 starts with a schema it can't enforce:
 
 - `type`: `object | array | string | integer | number | boolean | null`

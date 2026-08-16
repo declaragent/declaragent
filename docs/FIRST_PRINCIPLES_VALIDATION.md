@@ -24,13 +24,13 @@ That statement decomposes into **five** capabilities, not four. The builder-as-a
 | --- | --- | --- |
 | 1 · **Define** agents declaratively | ✅ | ✅ (v0.7.4) |
 | 2 · **Deploy + monitor** fleet | ✅ | ✅ (v0.7.4 — Slice 3 cross-host fan-out #50) |
-| 3 · **Independent agents** + delegation | ✅ | ✅ (v0.7.4 — JetStream / SQS / AMQP / MQTT all shipped; soak accumulating) |
-| 4 · **Tools + MCP** access | ✅ | 🟡 (#27 per-MCP aggregate rate-limit cap — last gap, shipping 0.7.5) |
+| 3 · **Independent agents** + delegation | ✅ | 🟡 (`fleet run` wires kafka + nats; JetStream via `kind: nats`; SQS/AMQP/MQTT are library factories only — declared kinds warn-skip; soak accumulating) |
+| 4 · **Tools + MCP** access | ✅ | ✅ (#27 aggregate rate-limit cap + #13 graceful drain shipped — `mcp/supervisor.ts`) |
 | 5 · **Conversational builder** → deployable fleet | ✅ | ✅ (v0.7.1) |
 
 **Headline:** All 12 items on [`ENTERPRISE_PRODUCTION_PLAN.md`](./ENTERPRISE_PRODUCTION_PLAN.md) shipped in `cli@0.7.1` (2026-04-23). The 52-item `POST_ENTERPRISE_BACKLOG.md` follow-up tracker has closed **34 items** across 0.7.1 → 0.7.5: SIEM back-pressure + adaptive batch, per-agent `AuthVerifyRegistry`, JetStream + SQS + AMQP + MQTT transports, Slice 3 cross-host fleet-fan-out, per-route scope overrides, allowLoopback XFF semantics, MCP graceful draining + per-server aggregate rate-limit, fleet-level `controlPlane:` block, live multi-host `fleet logs -f`, GitOps config-split + Kustomize target, and more.
 
-**All five pillars are ✅ at enterprise scale as of `@declaragent/cli@0.7.5`.** Pillar 4's final 🟡 — backlog row #27 per-MCP-server aggregate rate-limit cap (`mcp.rateLimit` block) — shipped Sprint 5 alongside #13 MCP graceful draining. Pillar 3 previously retained a 🟡 for the Kafka soak; with transports fully shipped (Kafka + NATS + JetStream + SQS + AMQP + MQTT) and the soak-harness literal-subprocess boot shipped (#26), the enterprise column was promoted to ✅ at 0.7.4 ahead of the Sunday-soak accumulation — the soak is a receipt, not a capability gate. See pillar 3 §"Remaining polish" for the honest caveat.
+**Enterprise readiness is partial — not all five pillars hold at enterprise scale** (reconciled 2026-08-16 with CLAUDE.md's accuracy note; the AGENTS.md evidence ledger is authoritative). Pillar 4's earlier gaps (#27 aggregate rate-limit cap, #13 MCP graceful draining) have shipped (`packages/core/src/mcp/supervisor.ts`). Pillar 3 stays 🟡: `fleet run` auto-constructs only kafka + nats transports from `rpc-peers.yaml` (SQS/AMQP/MQTT ship as library factories and warn-skip when declared), the Kafka soak proof is still accumulating, and known cross-cutting gaps remain — `fleet run`'s provider is un-rate-limited (`fleet-run.ts:1035`), and no published package declares the OTel dependencies, so the documented span-export setup no-ops on npm installs.
 
 ---
 
@@ -44,7 +44,7 @@ What an agent **is**, what it **can do**, who **talks to it**, who **it calls**.
 - **Markdown skills** — tiered discovery + frontmatter inputs/outputs + `{{var}}` interpolation in `packages/core/src/skills/{loader,frontmatter,runner}.ts`.
 - **Tool allowlist** — `agent.yaml#tools.defaults` is now ENFORCED in every headless runtime (`up`, `fleet run`): the engine is handed only the declared tools, an unknown tool name fails boot, and a real `default`-mode permission gate denies anything undeclared (`packages/cli/src/resolve-tools.ts`; verified by `resolve-tools.test.ts`). Capability tools (SendMessage/RequestAgent/memory_*) and plugin tools are auto-exempt. `agent.yaml#permissions.rules` adds per-key allow/deny scoping. Per-channel / per-tenant override composition (`resolveForChannel`) is built but not yet threaded per-turn — tracked under WS1.
 - **Inbound event sources** — webhook, cron, file-watch in-process + `@declaragent/source-{kafka,nats,sqs,amqp,mqtt}` auto-discovered by `packages/cli/src/run-agent-sources.ts`.
-- **Outbound channels** — Slack, Telegram, Discord, WhatsApp via `createSendMessageTool` wired in `packages/core/src/channels/channels-runtime.ts`.
+- **Outbound channels** — Slack, Telegram, Discord, WhatsApp via `createSendMessageTool` (`packages/core/src/tools/send-message.ts`) wired in `packages/cli/src/channels-runtime.ts`.
 - **Inbound channels → skills** — route table in `channels.json#inbound.routes` via `createChannelInboundBridge` (0.6.0 Slice 6).
 - **Per-channel permissions** — `packages/core/src/channels/permissions.ts` (allow/deny, per-user overrides).
 - **Peers + capabilities** — `rpc-peers.yaml` + `capabilities.yaml` loaded by `packages/core/src/rpc/{peers-loader,capabilities-loader}.ts`. Dispatch attaches `RequestAgent` only when peers exist.
@@ -72,10 +72,10 @@ What an agent **is**, what it **can do**, who **talks to it**, who **it calls**.
 ### Works today ✅ (single-machine)
 
 - **Lifecycle verbs** — `up [-d]`, `ps`, `logs`, `down`, `events list`, `dlq list/show/drop`, `audit verify` all implemented as standalone files in `packages/cli/src/`.
-- **Prometheus `/metrics`** — real OpenMetrics exporter in `packages/core/src/observability/prometheus.ts:25-95`; bound on `127.0.0.1:9464` in detached mode (`up-cli.ts:944-961`). Threaded into every source + channel via shared `PrometheusRegistry`.
-- **OpenTelemetry** — `createOtelBridge()` in `packages/core/src/events/observability.ts:253` dynamically loads `@opentelemetry/api` as an optional peer dep; activates only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (`up-cli.ts:1051-1058`).
+- **Prometheus `/metrics`** — real OpenMetrics exporter in `packages/core/src/observability/prometheus.ts`; bound on `127.0.0.1:9464` in detached mode (`resolveMetricsPort`, `up-cli.ts:1952-1962`). Threaded into every source + channel via shared `PrometheusRegistry`.
+- **OpenTelemetry** — `createOtelBridge()` in `packages/core/src/events/observability.ts:253` dynamically imports `@opentelemetry/api` when the operator has installed it (currently **undeclared** — not a peer dependency of any published package, so npm installs silently no-op); activates only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (`maybeCreateOtelTracer`, `up-cli.ts:2109-2141`).
 - **Circuit breakers** — per-skill, 10 failures → 30s cooldown → half-open probe (`packages/core/src/events/circuit-breaker.ts`).
-- **Provider rate limits** — token-bucket wrapper `ProviderTokenBucket` in `packages/core/src/providers/rate-limit.ts:49-126` (Anthropic 50rps / OpenRouter 20rps / 10rps default).
+- **Provider rate limits** — token-bucket wrapper `ProviderTokenBucket` in `packages/core/src/providers/rate-limit.ts` (Anthropic 50rps / OpenRouter 20rps / 10rps default). Applied in `declaragent up` only — `fleet run` builds its provider without the wrapper (`fleet-run.ts:1035`), an open gap.
 - **Dispatch DLQ** — rejected events tracked in SQLite `rejected_events`; `dlq list/show/drop --kind dispatch` CLI (active requeue is a 0.6.x follow-up).
 - **Canary deploys** — real sequential-agent canary with soak window + post-soak re-probe (`fleet-deploy-cli.ts:326-346`, `canaryWaitMs` lines 215-220).
 - **Deploy target** — `deploy gcp-cloud-run` generates Dockerfile + service.yaml (user invokes `gcloud` themselves).
@@ -166,10 +166,10 @@ Each agent runs in its own process. Calls between agents go through a transport 
   - **Supervised-recipe doc (#30, v0.7.1)** in `docs-site/docs/reference/agent-yaml.mdx`.
 - **`TenantAuditSink` threaded into `up` engine (#16, v0.7.2).** `up-cli` now threads `DEFAULT_TENANT_CONTEXT` into `createEngine` so single-process deployments key `rate_limited` audit records on the same `tenantId` fleet-run uses.
 
-### Remaining 🟡 — enterprise column held by one item
+### Previously-remaining 🟡 — both shipped
 
-- **Per-MCP-server aggregate rate-limit cap (POST_ENTERPRISE_BACKLOG.md #27).** Today `mcp.rateLimit` applies per-tool; enterprise operators want a per-server cap (`mcp.rateLimit` block at the server definition level) so a single flaky MCP can't starve the gate. **Shipping in Sprint 5 toward `@declaragent/cli@0.7.5`** (Agent C on the post-enterprise backlog push). This is the only item holding Pillar 4's enterprise column at 🟡.
-- **MCP graceful draining across respawn (#13).** Not started. In-flight tool calls when a supervised server respawns are dropped today — robustness polish, not an enterprise gate.
+- **Per-MCP-server aggregate rate-limit cap (#27).** Shipped — aggregate cap enforced in `packages/core/src/mcp/supervisor.ts:1031-1045` (`@since 0.7.5`).
+- **MCP graceful draining across respawn (#13).** Shipped — `drainTimeoutMs` / `resubmitOnRespawn` knobs at `supervisor.ts:411-413`, with `mcp_server_drain_duration_ms` observability.
 
 ### Remaining polish (non-blocking)
 
@@ -186,7 +186,7 @@ Each agent runs in its own process. Calls between agents go through a transport 
 
 ### How it works today ✅ (single-machine)
 
-- **Entry point.** Running `declaragent` with no subcommand launches the Ink REPL (`packages/cli/src/index.tsx:259-263`). Builder tools unlock when `DECLARAGENT_BUILDER=on` is set (strict — `"ON"` / `"1"` do **not** enable; see `register.ts:62-64` and `register.test.ts:6-9`).
+- **Entry point.** Running `declaragent` with no subcommand launches the Ink REPL (`launchRepl`, `packages/cli/src/index.tsx:296-301`, invoked from the no-subcommand path at `:1624`). Builder tools unlock when `DECLARAGENT_BUILDER=on` is set (strict — `"ON"` / `"1"` do **not** enable; see `register.ts:62-64` and `register.test.ts:6-9`).
 - **14 builder tools registered** into the LLM's tool array (`register.ts:71-96`) alongside the 8 built-ins:
   - Authoring — `DeclaraAddSkill`, `DeclaraAddSecret`, `DeclaraAddSource`, `DeclaraAddChannel`, `DeclaraAddMCP`, `DeclaraAddPlugin`, `DeclaraAuthPlaybook`
   - Fleet — `DeclaraFleetAdd`, `DeclaraAddPeer`, `DeclaraFleetStatus`

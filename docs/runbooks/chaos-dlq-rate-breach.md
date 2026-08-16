@@ -12,13 +12,15 @@ During the current chaos run, DLQ volume exceeded 1% of ingress.
 
 ## Immediate mitigation
 ```bash
-declaragent chaos stop
+# The chaos harness is the testkit chaos driver (packages/testkit/src/chaos)
+# — stop the run by interrupting the harness process (Ctrl-C / SIGINT);
+# the driver's stop() emits the run report on the way out.
 ```
 
 ## Root-cause investigation
 ```bash
-declaragent chaos report --run <runId>
-declaragent dlq list --source <id> --limit 50 --json
+# The chaos report is emitted by the driver's stop(); inspect the DLQ:
+declaragent dlq list --kind source --source <id> --json
 ```
 
 ## Post-incident

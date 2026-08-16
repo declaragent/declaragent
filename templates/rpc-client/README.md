@@ -35,10 +35,20 @@ Copy `.env.example` → `.env` and fill in:
 
 ## Run locally (single process)
 
-Leave `KAFKA_BROKERS` unset. Start both agents in one daemon:
+Leave `KAFKA_BROKERS` unset. `fleet run` boots both agents in one daemon
+from a `fleet.yaml` — create a minimal one in the parent directory:
+
+```yaml
+# ../fleet.yaml
+version: 1
+name: rpc-demo
+agents:
+  - { id: rpc-client, path: ./rpc-client }
+  - { id: rpc-server, path: ./rpc-server }
+```
 
 ```sh
-declaragent run --agent ./agent.yaml --agent ../rpc-server/agent.yaml
+cd .. && declaragent fleet run
 ```
 
 Both share an in-memory broker. Useful for local dev and CI.
@@ -49,20 +59,20 @@ Set `KAFKA_BROKERS` and swap the `kind: memory` block in `rpc-peers.yaml`
 for the commented-out `kind: kafka` block. Start the server daemon first:
 
 ```sh
-cd ../rpc-server && declaragent run
+cd ../rpc-server && declaragent up
 ```
 
 Then in another terminal:
 
 ```sh
-declaragent run
+declaragent up
 ```
 
 ## Verify the peer table
 
 ```sh
-declaragent rpc peers                # print the effective peer table
-declaragent rpc peers --verify       # live-ping every peer's inbox
+declaragent fleet peers              # print the effective peer table
+declaragent fleet peers --verify     # live-ping every peer's inbox
 ```
 
 ## Cost estimate (lower bound)

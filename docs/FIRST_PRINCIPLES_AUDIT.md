@@ -2,7 +2,9 @@
 
 **Theme:** *an agent for enterprises to build and manage fleets of agents.*
 
-**Authored:** 2026-04-22, end of Slice 9 / staged 0.6.0. **Last refreshed:** 2026-04-23 post-0.7.4 Sprint 5 docs pass. **Verified against:** `@declaragent/cli@0.7.4` on npm.
+**Authored:** 2026-04-22, end of Slice 9 / staged 0.6.0. **Last refreshed:** 2026-04-23 post-0.7.4 Sprint 5 docs pass; spot-corrected 2026-08-16 during the docs-truth pass. **Verified against:** `@declaragent/cli@0.7.4` on npm — the repo is now at 0.7.6, so per-row evidence may lag HEAD.
+
+> ⚠️ **Accuracy note (2026-06/2026-08).** The enterprise-✅ marks below predate CLAUDE.md's 2026-06 accuracy note; where this doc and the [AGENTS.md](../AGENTS.md) evidence ledger disagree, AGENTS.md wins. Known reconciliations: OTel is opt-in span export (not "auto-enable by default"), and pillar 3's SQS/AMQP/MQTT transports are library factories not yet constructible from `fleet.yaml`.
 
 Pairs with [AGENTS.md](../AGENTS.md) — this doc maps the **intent** (first principles) onto the current code. AGENTS.md is the per-feature evidence ledger. See also [`POST_ENTERPRISE_BACKLOG.md`](./POST_ENTERPRISE_BACKLOG.md) for the 52-item follow-up backlog (31 shipped across 0.7.1 → 0.7.4).
 
@@ -33,7 +35,7 @@ The declarative core — what an agent **is**, what it **can do**, and how calle
 | `agent.yaml` identity (name, model, systemPrompt, skills, tools) | ✅ | ✅ | `packages/core/src/agents/load-agent.ts` — Zod schema, typed error, 30+ tests |
 | Markdown skills (frontmatter inputs/outputs, `{{var}}` interpolation) | ✅ | ✅ | `packages/core/src/skills/` — tiered discovery, full test coverage |
 | Per-skill tool allowlist (`tools.defaults`) | ✅ | ✅ | Permission gate composes allowlist + channel/tenant overrides |
-| `capabilities.yaml` (what this agent exposes over RPC) | ✅ | ✅ | `packages/core/src/fleet/capabilities-loader.ts` |
+| `capabilities.yaml` (what this agent exposes over RPC) | ✅ | ✅ | `packages/core/src/rpc/capabilities-loader.ts` |
 | `rpc-peers.yaml` (who this agent can call) | ✅ | ✅ | Loaded at `fleet-run.ts:641-649`. Dispatch attaches `RequestAgent` only when peers are present. |
 | Event sources (webhook/cron/file-watch in-process + Kafka/NATS/SQS/AMQP/MQTT via external packages) | ✅ | ✅ | `packages/source-*/` + auto-discovery in `packages/cli/src/run-agent-sources.ts` (0.5.x) |
 | Outbound channels (Slack/Telegram/Discord/WhatsApp via `SendMessage`) | ✅ | ✅ | `packages/channel-*/` + `createSendMessageTool` wired by `channels-runtime.ts` (0.5.x) |
@@ -58,9 +60,9 @@ The runtime — bring agents online, watch them, intervene when something breaks
 | `declaragent up [-d]` lifecycle (foreground + detached) | ✅ | ✅ | `up-cli.ts` + signal-driven shutdown + reload semantics |
 | `declaragent ps / logs / down / events list` | ✅ | ✅ | 0.4.x shipped; `events list --state circuit-open` added 0.6.0 |
 | **Prometheus `/metrics` endpoint** on `127.0.0.1:9464` (detached) | ✅ | ✅ | 0.6.0 Slice 1 — shared `PrometheusRegistry` threaded through source + channel deps |
-| **OpenTelemetry auto-enable** via `OTEL_EXPORTER_OTLP_ENDPOINT` | ✅ | ✅ | 0.6.0 Slice 2 — `createOtelBridge` + peer-dep dynamic import |
+| **OpenTelemetry span export** (opt-in: env var + installed optional peers) | ✅ | 🟡 | 0.6.0 Slice 2 — `createOtelBridge`; optional peerDependencies declared on core since 0.7.6. Enterprise 🟡: hardcoded service name, three root-only edge spans, no trace propagation (backlog #57). |
 | **Per-skill circuit breakers** (10-fail → 30s cooldown) | ✅ | ✅ | 0.6.0 Slice 3 — state + transition counters scrapable |
-| **Default provider rate limits** | ✅ | ✅ | 0.6.0 Slice 4 — token bucket at `complete()` callsite, per-provider defaults |
+| **Default provider rate limits** | ✅ | ✅ | 0.6.0 Slice 4 — token bucket per-provider defaults; shared wrap applied to both `up` and `fleet run` since 0.7.6 (`provider-rate-limit.ts`) |
 | **Per-tool rate limits** + `TenantAuditSink` integration | ✅ | ✅ | [PR #18](https://github.com/declaragent/declaragent/pull/18); #28 `burst=2×rps` + #29 `>=` comparator fix (0.7.1); #16 tenant-sink threaded into `up-cli` (0.7.2) |
 | **Dispatch DLQ** — tracking + active requeue via control socket | ✅ | ✅ | 0.6.0 Slice 5 + [PR #11](https://github.com/declaragent/declaragent/pull/11) (control socket) + [PR #14](https://github.com/declaragent/declaragent/pull/14) (requeue). |
 | Hash-chained SQLite audit (`audit verify`) + SIEM export | ✅ | ✅ | `packages/core/src/audit/sqlite-sink.ts` + [PR #22](https://github.com/declaragent/declaragent/pull/22) SIEM export + **#11 back-pressure + #12 adaptive batch (v0.7.4)** + #40 unified ref-counted sink + #52 SIEM / `/audit` route shared singleton. |
@@ -86,7 +88,7 @@ Each agent owns its session, sources, skills, secrets. Inter-agent calls are dec
 | Capability | Single-machine | Enterprise | Evidence / gap |
 | --- | --- | --- | --- |
 | Process isolation (each `up` is its own process) | ✅ | ✅ | Detached launcher + separate SQLite + separate bus per `up` |
-| RPC envelope (typed version, kind, correlation id, traceId) | ✅ | ✅ | `packages/core/src/rpc/envelope.ts` + Zod schema |
+| RPC envelope (typed version, kind, correlation id) | ✅ | ✅ | `packages/core/src/rpc/envelope.ts` + Zod schema. No trace-context field yet — spans are root-only (backlog #57). |
 | `RequestAgent` tool (producer side) | ✅ | ✅ | `packages/plugin-agent-rpc/src/request-agent.ts` + wired via `buildRuntimeTools({ extra })` (0.5.x) |
 | `agent-inbox` source (consumer side) | ✅ | ✅ | `packages/plugin-agent-rpc/src/agent-inbox.ts` |
 | Loop detection on `causedBy` chain | ✅ | ✅ | Dispatcher `detectLoop()` walks up to 5 ancestors |
@@ -116,7 +118,7 @@ The capability surface — what an agent can *do* when the LLM decides to act.
 | Capability | Single-machine | Enterprise | Evidence / gap |
 | --- | --- | --- | --- |
 | 8 built-in tools (Read, Write, Edit, Glob, Grep, Bash, Agent, SendMessage) | ✅ | ✅ | `packages/cli/src/builtin-tools.ts` — same list every runtime uses |
-| Permission gate (bypass / prompt / deny + per-rule globs) | ✅ | ✅ | `packages/core/src/permission/` — prompt mode wired into REPL; bypass is the default for `up` |
+| Permission gate (bypass / prompt / deny + per-rule globs) | ✅ | ✅ | `packages/core/src/permission/` — prompt mode wired into REPL; `up` enforces `tools.defaults` + `permissions.rules` through a real default-mode gate (`resolve-tools.ts`, 0.7.6 WS1) |
 | MCP server activation at runtime (stdio) | ✅ | ✅ | 0.5.x slices 2a–2e — `loadScopedMCPServers` + `startMCPServers` in `bringUp` |
 | MCP transports: HTTP + SSE + streamable HTTP | ✅ | ✅ | 0.5.x slices 2b–2c |
 | MCP OAuth PKCE | ✅ | ✅ | 0.5.x slice 2d — remote MCP servers with full PKCE flow |
@@ -125,8 +127,8 @@ The capability surface — what an agent can *do* when the LLM decides to act.
 | `SendMessage` tool for channel emit | ✅ | ✅ | 0.5.x slice 3; `ChannelMessageContent` rename (#41, v0.7.1) resolved name collision. |
 | Per-call tool audit (who ran what, when, outcome) + SIEM export | ✅ | ✅ | SIEM export with back-pressure + adaptive batch shipped in [PR #22](https://github.com/declaragent/declaragent/pull/22) + #11 + #12 (v0.7.4). |
 | **Per-tool rate limiting** (token-bucket gate at `runCallTool`) | ✅ | ✅ | [PR #18](https://github.com/declaragent/declaragent/pull/18) + #28 + #29 (burst + comparator, v0.7.1) + #16 `TenantAuditSink` in `up` (v0.7.2). `packages/core/src/tools/rate-limit-gate.ts`. |
-| **Per-MCP-server aggregate rate-limit cap** | ❌ | 🟡 | POST_ENTERPRISE_BACKLOG.md #27 — shipping Sprint 5 toward 0.7.5. The only item holding Pillar 4's enterprise column at 🟡. |
-| **MCP server crash recovery** (auto-restart + circuit breaker + counter) | ✅ | ✅ | [PR #21](https://github.com/declaragent/declaragent/pull/21) + #14 `mcp_server_circuit_open_total` (v0.7.1) + #30 supervised-recipe doc. **#13 graceful draining of in-flight tool calls across respawn** remains open (robustness polish). |
+| **Per-MCP-server aggregate rate-limit cap** | ✅ | ✅ | Shipped 0.7.5 (#27) — aggregate cap enforced in `packages/core/src/mcp/supervisor.ts:1031-1045`. |
+| **MCP server crash recovery** (auto-restart + circuit breaker + counter) | ✅ | ✅ | [PR #21](https://github.com/declaragent/declaragent/pull/21) + #14 `mcp_server_circuit_open_total` (v0.7.1) + #30 supervised-recipe doc. #13 graceful draining shipped 0.7.5 (`drainTimeoutMs`/`resubmitOnRespawn`, `supervisor.ts:411-413`); kill-on-close with SIGKILL grace added 0.7.6 (`stdio-client.ts`). |
 | Enterprise tool gating (approval workflows, break-glass) | ❌ | ❌ | Permission gate has prompt/deny modes; no approval-workflow / ticket-integration. Not tracked in the shipped enterprise plan. |
 
 **Single-machine status:** ✅. The tool + MCP + plugin stack is the strongest pillar — four 0.5.x slices + prior Phase-3 work mean every extension mechanism is wired from boot.
@@ -137,7 +139,7 @@ The capability surface — what an agent can *do* when the LLM decides to act.
 
 ## Cross-pillar: what's honestly missing for "enterprise production"
 
-The original 12-item `ENTERPRISE_PRODUCTION_PLAN.md` program shipped in full (0.7.0 → 0.7.1). The follow-up `POST_ENTERPRISE_BACKLOG.md` tracked 52 items surfaced during that push; **31 shipped across 0.7.1 → 0.7.4**, leaving **21 open**. Ranked by leverage:
+The original 12-item `ENTERPRISE_PRODUCTION_PLAN.md` program shipped in full (0.7.0 → 0.7.1). The follow-up `POST_ENTERPRISE_BACKLOG.md` tracked 52 items; **as of 0.7.6, #13 / #17 / #27 / #33 / #36–#38 / #51 have also shipped** — recount against the backlog's own checkboxes (plus its 2026-08 §2b docs-truth additions #53–#64) rather than this snapshot. Ranked by leverage:
 
 ### Tier 1 — holds an enterprise pillar column
 

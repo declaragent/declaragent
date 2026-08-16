@@ -9,12 +9,12 @@ sidebar_position: 2
 
 Every declarative runtime lives or dies by its spec. `agent.yaml` is that spec.
 
-<div className="todo-block">
-**Auto-generated from the Zod schema in slice 8.** This page is currently a
-hand-curated subset of the frozen fields. The complete per-field table
-(with types, defaults, `since` markers, and examples) lands when slice 8
-wires the `scripts/docs-schema-extract.ts` generator into CI.
-</div>
+:::note Hand-curated subset
+This page is a hand-curated subset of the frozen fields. A complete per-field
+table auto-generated from the Zod schema (types, defaults, `since` markers,
+examples) is on the roadmap; until then the authoritative surface is the
+schema in `packages/core/src/agents/load-agent.ts`.
+:::
 
 ## Required fields (v1.0)
 
@@ -23,11 +23,11 @@ Pulled from `AgentSpec` in `packages/core/src/types/session.ts`:
 | Field | Type | Required? | Description |
 | --- | --- | --- | --- |
 | `name` | `string` | yes | Agent identity. Must be unique per tenant. Appears in metrics + logs. |
-| `model` | `string` | yes | Model id as the provider understands it (`claude-sonnet-4-5`, `openai/gpt-4o-mini`, etc.). |
-| `systemPrompt` | `string` (multi-line) | yes | Baseline instructions. Loaded once per session. |
+| `model` | `string` | no | Model id as the provider understands it (`claude-sonnet-4-5`, `openai/gpt-4o-mini`, etc.). When omitted, the runtime falls back to the stored per-provider model → provider preset default → `claude-sonnet-4-5`. |
+| `systemPrompt` | `string` (multi-line) | no | Baseline instructions. Loaded once per session. When omitted, a minimal prompt is synthesized from the agent `name`. |
 | `temperature` | `number` | no | Provider sampling temperature. Defaults to the provider's own default (often `0.7`). |
-| `maxTokens` | `number` | no | Per-turn cap. Defaults to the provider's ceiling. |
-| `subagentDepthCap` | `number` | no | Max depth for sub-agent spawning. Defaults to `3`. |
+| `maxTokens` | `number` | no | Per-turn output cap. Defaults to a runtime constant of `4096` (not the provider's ceiling) — set explicitly for longer outputs. |
+| `subagentDepthCap` | `number` | no | Max depth for sub-agent spawning. Defaults to `2`. |
 
 ## Example
 
@@ -75,10 +75,12 @@ tools:
     - Grep
     - Bash
   rateLimit:
-    # Cap shell execution to 1 call/sec, no burst. A 10-call burst
-    # through this tool will take ~9 seconds end-to-end.
+    # Cap shell execution to 1 call/sec with no burst absorption.
+    # `burst` defaults to 2 × rps, so set it to 1 explicitly to get
+    # strict pacing — a 10-call burst then takes ~9 seconds end-to-end.
     Bash:
       rps: 1
+      burst: 1
     # MCP tool names are namespaced `mcp__<server>__<tool>`.
     mcp__github__list_issues:
       rps: 5
@@ -90,7 +92,7 @@ tools:
 | Field | Type | Required? | Description |
 | --- | --- | --- | --- |
 | `rps` | `number` (`> 0`) | yes | Steady-state rate in calls per second. Fractional values accepted (`0.5` = one call every two seconds). |
-| `burst` | `number` (`> 0`) | no | Max calls absorbed without throttling. Defaults to `rps`. Set to `2 * rps` for the classic token-bucket "1-second absorb" pattern. |
+| `burst` | `number` (`> 0`) | no | Max calls absorbed without throttling. Defaults to `2 × rps` (rounded up, minimum 1) — the classic token-bucket "absorb" pattern. Set `burst` equal to `rps` (or `1`) for strict pacing. |
 
 **Observability.**
 - Every stall increments `declaragent_tool_rate_limit_waits_total{agent,tool}` and adds its observed wait to `declaragent_tool_rate_limit_wait_ms{agent,tool}` on the `/metrics` endpoint.
@@ -119,8 +121,8 @@ rpc:
 from every peer with an `auth:` block, and pass it into
 `createAgentInboxAdapter({ authRegistry })` at boot. From that point on,
 envelopes from a registered peer must carry a matching OIDC / OAuth2
-bearer token; a bad / missing / expired token routes to the DLQ under
-`kind=rejected, reason=auth-rejected`.
+bearer token; a bad / missing / expired token routes to the dispatch
+DLQ under `reason=auth-rejected`.
 
 **Defaults.**
 - `rpc.auth.enabled` defaults to `false`. Flipping every fleet on day-one
@@ -173,8 +175,9 @@ work.
 - Every envelope emits an `auth_check` audit record with the decision
   (`accept` / `reject`), provider name (`oidc` / `oauth2-client`),
   resolved subject, and the rejection reason when applicable.
-- Rejected envelopes also land in `rejected_events` under
-  `kind=auth-rejected` so `declaragent dlq list --kind rejected` surfaces
+- Rejected envelopes also land in the dispatch DLQ under
+  `reason=auth-rejected`, so
+  `declaragent dlq list --kind dispatch --reason auth-rejected` surfaces
   the specific peer + reason.
 
 ## `controlPlane.auth` — OIDC / OAuth2 on the HTTP listener
@@ -231,9 +234,10 @@ controlPlane:
 **Rejection reasons.** Failed requests return `401` with a typed body
 `{ "error": "...", "reason": "..." }`. The `reason` vocabulary
 (`missing-token`, `malformed-token`, `bad-signature`, `expired`,
-`wrong-issuer`, `wrong-audience`, `insufficient-scope`,
-`idp-unreachable`, `provider-failed`) is stable so remote CLIs can
-branch without parsing free-form `error` text.
+`not-yet-valid`, `wrong-issuer`, `wrong-audience`, `insufficient-scope`,
+`idp-unreachable`, `provider-failed`, `config-error`, `untrusted-proxy`)
+is stable so remote CLIs can branch without parsing free-form `error`
+text.
 
 See [Authenticated control plane](/reference/control-plane#authenticated-control-plane)
 for the full request flow + rejection-reason table.
@@ -402,6 +406,8 @@ audit:
   - `declaragent_audit_export_acked_total{exporter,vendor}` — rows ack'd.
   - `declaragent_audit_export_failures_total{exporter,vendor,retryable}` — failed pushes.
   - `declaragent_audit_export_last_seq{exporter,vendor}` — highest acked seq.
+  - `declaragent_audit_backpressure_active{exporter,vendor}` / `declaragent_audit_backpressure_paused_total` / `declaragent_audit_backpressure_drops_total` / `declaragent_audit_backpressure_backlog_ms` — back-pressure state (#11).
+  - `declaragent_audit_batch_interval_ms{exporter,vendor}` / `declaragent_audit_batch_rows` — adaptive batch tuning (#12).
   - `declaragent_audit_export_paused{exporter,vendor}` — 1 when halted.
 - **Redaction.** Tokens and vendor-path suffixes (`/services/collector/event`,
   `/api/v2/logs`, `/<index>/_bulk`) are never written to logs or Prometheus
@@ -421,7 +427,8 @@ audit:
 The generated reference will additionally document:
 
 - `skills[]` — filesystem paths to per-skill markdown prompts.
-- `tools.defaults[]` / `tools.allow[]` / `tools.deny[]` — engine tool allowlists.
+- `tools.defaults[]` — engine tool defaults; plus the top-level `permissions.rules[]` block (`{ pattern, decision: allow | deny }`, glob-matched against `<ToolName>:<permissionKey>`).
+- `maxIterations` / `memory` — turn-loop cap and memory-file wiring.
 - `channels[]` — inbound/outbound platform adapters (Slack, Discord, Telegram, WhatsApp).
 - `event_sources[]` — Kafka, SQS, AMQP, MQTT, NATS, webhook.
 - `plugins[]` — extension ids referenced from the plugin manifest.

@@ -30,16 +30,17 @@ Copy `.env.example` → `.env` and fill in:
 
 ## Run locally
 
-Single process, paired with `rpc-client`:
+Single process, paired with `rpc-client` — see the fleet.yaml snippet in
+`../rpc-client/README.md`, then:
 
 ```sh
-declaragent run --agent ../rpc-client/agent.yaml --agent ./agent.yaml
+cd .. && declaragent fleet run
 ```
 
 Standalone (Kafka):
 
 ```sh
-declaragent run
+declaragent up
 ```
 
 and in another terminal, start `rpc-client` with `KAFKA_BROKERS` set.
@@ -47,7 +48,7 @@ and in another terminal, start `rpc-client` with `KAFKA_BROKERS` set.
 ## Verify capabilities
 
 ```sh
-declaragent rpc capabilities        # print this agent's capabilities
+declaragent fleet capabilities      # aggregate the fleet's capabilities.yaml files
 ```
 
 ## Cost estimate (lower bound)

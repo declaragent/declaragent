@@ -1,5 +1,12 @@
 # Pluggable Event Sources at Scale
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 Companion to `EVENT_DRIVEN_AGENT.md`. That doc treated event sources (user, cron, webhook, file-watch) as hand-wired modules. This doc makes them **pluggable**: Kafka, MQTT, AMQP, NATS, SQS, Redis Streams, Kinesis, WebSocket, gRPC, Pulsar, Google Pub/Sub, S3 notifications, database CDC — registered declaratively, managed uniformly, scaled horizontally.
 
 Read the earlier docs first. This one assumes the bus, dispatcher, and event model are in place.

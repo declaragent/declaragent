@@ -36,7 +36,7 @@
         "label": "Channel type",
         "type": "query",
         "datasource": "${DS_PROMETHEUS}",
-        "query": "label_values(channel_outbound_sent_total, type)",
+        "query": "label_values(channel_outbound_sent, type)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
@@ -54,7 +54,7 @@
       "options": { "colorMode": "value", "textMode": "value" },
       "targets": [
         {
-          "expr": "count(count by (id) (channel_outbound_sent_total{type=~\"$type\"}))",
+          "expr": "count(count by (id) (channel_outbound_sent{type=~\"$type\"}))",
           "legendFormat": "channels",
           "refId": "A"
         }
@@ -69,7 +69,7 @@
       "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
       "targets": [
         {
-          "expr": "sum(channel_outbound_sent_total{type=~\"$type\"})",
+          "expr": "sum(channel_outbound_sent{type=~\"$type\"})",
           "legendFormat": "sent",
           "refId": "A"
         }
@@ -96,7 +96,7 @@
       "options": { "colorMode": "value", "graphMode": "area" },
       "targets": [
         {
-          "expr": "sum(rate(channel_outbound_failed_total{type=~\"$type\"}[1m]))",
+          "expr": "sum(rate(channel_outbound_failed{type=~\"$type\"}[1m]))",
           "legendFormat": "failed/sec",
           "refId": "A"
         }
@@ -115,7 +115,7 @@
       "options": { "colorMode": "value", "graphMode": "area" },
       "targets": [
         {
-          "expr": "sum(rate(channel_outbound_idempotency_hits_total{type=~\"$type\"}[1m])) / clamp_min(sum(rate(channel_outbound_idempotency_hits_total{type=~\"$type\"}[1m])) + sum(rate(channel_outbound_sent_total{type=~\"$type\"}[1m])), 1)",
+          "expr": "sum(rate(channel_outbound_idempotency_hits{type=~\"$type\"}[1m])) / clamp_min(sum(rate(channel_outbound_idempotency_hits{type=~\"$type\"}[1m])) + sum(rate(channel_outbound_sent{type=~\"$type\"}[1m])), 1)",
           "legendFormat": "hit rate",
           "refId": "A"
         }
@@ -142,7 +142,7 @@
       "options": { "colorMode": "value", "graphMode": "area" },
       "targets": [
         {
-          "expr": "sum(rate(channel_outbound_rate_limit_retries_total{type=~\"$type\"}[1m]))",
+          "expr": "sum(rate(channel_outbound_rate_limit_retries{type=~\"$type\"}[1m]))",
           "legendFormat": "retries/sec",
           "refId": "A"
         }
@@ -157,7 +157,7 @@
       "options": { "colorMode": "value", "graphMode": "area" },
       "targets": [
         {
-          "expr": "sum(rate(channel_inbound_received_total{type=~\"$type\"}[1m]))",
+          "expr": "sum(rate(channel_inbound_received{type=~\"$type\"}[1m]))",
           "legendFormat": "inbound/sec",
           "refId": "A"
         }
@@ -175,12 +175,12 @@
       },
       "targets": [
         {
-          "expr": "rate(channel_outbound_sent_total{type=~\"$type\"}[1m])",
+          "expr": "rate(channel_outbound_sent{type=~\"$type\"}[1m])",
           "legendFormat": "sent {{id}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (id) (rate(channel_outbound_failed_total{type=~\"$type\"}[1m]))",
+          "expr": "sum by (id) (rate(channel_outbound_failed{type=~\"$type\"}[1m]))",
           "legendFormat": "failed {{id}}",
           "refId": "B"
         }
@@ -201,7 +201,7 @@
       },
       "targets": [
         {
-          "expr": "rate(channel_outbound_sent_total{type=~\"$type\"}[1m]) / clamp_min(rate(channel_outbound_sent_total{type=~\"$type\"}[1m]) + sum by (id, type) (rate(channel_outbound_failed_total{type=~\"$type\"}[1m])), 1)",
+          "expr": "rate(channel_outbound_sent{type=~\"$type\"}[1m]) / clamp_min(rate(channel_outbound_sent{type=~\"$type\"}[1m]) + sum by (id, type) (rate(channel_outbound_failed{type=~\"$type\"}[1m])), 1)",
           "legendFormat": "{{id}}",
           "refId": "A"
         }
@@ -222,7 +222,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (reason) (rate(channel_outbound_failed_total{type=~\"$type\"}[1m]))",
+          "expr": "sum by (reason) (rate(channel_outbound_failed{type=~\"$type\"}[1m]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -268,12 +268,12 @@
       },
       "targets": [
         {
-          "expr": "rate(channel_outbound_idempotency_hits_total{type=~\"$type\"}[1m])",
+          "expr": "rate(channel_outbound_idempotency_hits{type=~\"$type\"}[1m])",
           "legendFormat": "idem-hits {{id}}",
           "refId": "A"
         },
         {
-          "expr": "rate(channel_outbound_rate_limit_retries_total{type=~\"$type\"}[1m])",
+          "expr": "rate(channel_outbound_rate_limit_retries{type=~\"$type\"}[1m])",
           "legendFormat": "rate-retries {{id}}",
           "refId": "B"
         }
@@ -291,17 +291,17 @@
       },
       "targets": [
         {
-          "expr": "rate(channel_typing_sent_total{type=~\"$type\"}[1m])",
+          "expr": "rate(channel_typing_sent{type=~\"$type\"}[1m])",
           "legendFormat": "typing {{id}}",
           "refId": "A"
         },
         {
-          "expr": "rate(channel_reactions_sent_total{type=~\"$type\"}[1m])",
+          "expr": "rate(channel_reactions_sent{type=~\"$type\"}[1m])",
           "legendFormat": "reactions {{id}}",
           "refId": "B"
         },
         {
-          "expr": "rate(channel_outbound_edited_total{type=~\"$type\"}[1m])",
+          "expr": "rate(channel_outbound_edited{type=~\"$type\"}[1m])",
           "legendFormat": "edits {{id}}",
           "refId": "C"
         }
@@ -319,12 +319,12 @@
       },
       "targets": [
         {
-          "expr": "rate(channel_inbound_received_total{type=~\"$type\"}[1m])",
+          "expr": "rate(channel_inbound_received{type=~\"$type\"}[1m])",
           "legendFormat": "received {{id}}",
           "refId": "A"
         },
         {
-          "expr": "rate(channel_inbound_failed_total{type=~\"$type\"}[1m])",
+          "expr": "rate(channel_inbound_failed{type=~\"$type\"}[1m])",
           "legendFormat": "failed {{id}}",
           "refId": "B"
         }

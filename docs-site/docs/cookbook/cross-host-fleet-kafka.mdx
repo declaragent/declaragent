@@ -14,32 +14,50 @@ Under the hood this is Slice 3 cross-host fan-out (`packages/cli/src/fleet-cross
 
 - A Kafka cluster (MSK / Confluent Cloud / self-hosted; SASL_SSL supported).
 - Three daemon hosts that can each reach Kafka.
-- Network: each host exposes its control plane on `:9464`. Bearer tokens must not cross the internet in cleartext — terminate TLS at an ingress or use `DECLARAGENT_CONTROL_PLANE_BIND=127.0.0.1` + a sidecar.
+- Network: each host exposes its control plane on `:9464`. Bearer tokens must not cross the internet in cleartext — terminate TLS at an ingress or use `DECLARAGENT_BIND_ADDRESS=127.0.0.1` + a sidecar.
 - `@declaragent/cli ≥ 0.7.4` on each host.
 
 ## Step 1 — Pick the broker transport
 
-In each agent's `rpc-peers.yaml`, point the peer at Kafka:
+In each agent's `rpc-peers.yaml`, point the peer at Kafka (peer entries are
+`agent:` + `transports[]`; per-peer `auth:` declares how that peer authenticates):
 
 ```yaml
 # agents/pr-reviewer/rpc-peers.yaml
+version: 1
 peers:
-  - id: concierge
-    transport: kafka
-    topic: agents.concierge.inbound
-    bootstrap: kafka-prod.acme.internal:9093
-    sasl:
-      mechanism: SCRAM-SHA-512
-      username: env:KAFKA_USER
-      password: env:KAFKA_PASS
-    ssl: true
+  - agent: agent://concierge
+    transports:
+      - kind: kafka
+        brokers: ["kafka-prod.acme.internal:9093"]
+        topics:
+          requests: agents.concierge.requests
     auth:
-      enabled: true
-      provider: hs256
-      secret: env:AGENT_RPC_SHARED_SECRET
+      provider: hmac
+      keyId: acme-rpc-1
+      secretRef: "secret://platform/agent-rpc-shared-secret"
 ```
 
-NATS, JetStream, SQS, AMQP, and MQTT transports ship with the same shape — swap `transport:` and the broker-specific keys.
+Broker credentials (SASL/SCRAM + TLS) belong on the agent's **own** transport
+declaration in `capabilities.yaml`, not on the peer entry:
+
+```yaml
+# agents/pr-reviewer/capabilities.yaml (excerpt)
+transports:
+  - kind: kafka
+    brokers: ["kafka-prod.acme.internal:9093"]
+    ssl: true
+    sasl:
+      mechanism: scram-sha-512
+      username: "${env:KAFKA_USER}"
+      passwordRef: "secret://platform/kafka-password"
+    topics:
+      requests: agents.pr-reviewer.requests
+```
+
+`nats` peers follow the same shape (`servers` + `subjects`). The
+sqs/amqp/mqtt/jetstream transports exist as library factories but are not
+auto-constructed by `fleet run` yet — see [Reference → RPC](/reference/rpc#transports).
 
 ## Step 2 — Declare hosts in `fleet.yaml`
 
@@ -53,19 +71,18 @@ agents:
   - { id: triage,      path: ./agents/triage }
 
 hosts:
+  # host entries accept name / url / auth / timeoutMs only — encode the
+  # region in the host name (a `region:` key fails schema validation)
   - name: prod-us-east-1
     url: https://declaragent-use1.acme.internal:9464
     auth: { bearer: env:DECLARA_TOKEN_USE1 }
     timeoutMs: 5000
-    region: us-east-1
   - name: prod-us-west-2
     url: https://declaragent-usw2.acme.internal:9464
     auth: { bearer: env:DECLARA_TOKEN_USW2 }
-    region: us-west-2
   - name: prod-eu-west-1
     url: https://declaragent-euw1.acme.internal:9464
     auth: { bearer: env:DECLARA_TOKEN_EUW1 }
-    region: eu-west-1
 ```
 
 Schema constraints (`packages/core/src/fleet/manifest-schema.ts`):
@@ -86,8 +103,8 @@ From **any** operator workstation with a checkout of the fleet repo:
 # Every running agent across all three hosts
 declaragent fleet ps
 
-# Merged audit event stream
-declaragent fleet events --json | jq '. | select(.kind == "tool_call")'
+# Merged audit event stream (JSON envelope is { events, failures })
+declaragent fleet events --json | jq '.events[] | select(.kind == "tool_call")'
 
 # Cross-host DLQ snapshot (ingress + dispatch)
 declaragent fleet dlq list --kind dispatch
@@ -106,16 +123,20 @@ declaragent fleet logs   --host prod-us-east-1 -f
 Machine-readable output for dashboards and CI checks:
 
 ```bash
-declaragent fleet ps --json | jq '.hosts[] | {host: .name, up: .agents | length}'
+# each row is { host: <host object>, ok, status | error }
+declaragent fleet ps --json | jq '.hosts[] | {host: .host.name, ok: .ok}'
 ```
 
 ## Step 5 — Cross-host DLQ mutations (0.7.5+)
 
-Requeue a stuck dispatch-DLQ row on whichever host holds it — the command locates the host automatically:
+Requeue or drop a stuck dispatch-DLQ row — name the host that holds it (find it in
+the `fleet dlq list` output first), or sweep every host with `--all-hosts --yes`:
 
 ```bash
-declaragent fleet dlq requeue --kind dispatch <id>
-declaragent fleet dlq drop    --kind dispatch <id> --reason "poisoned payload"
+declaragent fleet dlq requeue --kind dispatch --id <id> --host prod-us-east-1
+declaragent fleet dlq drop    --kind dispatch --id <id> --host prod-us-east-1
+# or across the whole fleet:
+declaragent fleet dlq drop    --kind dispatch --id <id> --all-hosts --yes
 ```
 
 Both mutations are audited with `host = <name>` so your SIEM can attribute the operator action (`packages/core/src/audit/types.ts:184`).
@@ -139,8 +160,8 @@ Wire the [Grafana dashboard](/cookbook/grafana-dashboard-import) — row 3 ("Rat
 
 | Metric | Alert |
 | --- | --- |
-| `source_messages_dlq_total{transport="kafka"}` | Rate > 0 for 5 min |
-| `source_inflight{transport="kafka"}` | Stuck > N for 10 min = consumer stall |
+| `source_messages_dlq{id="<source-id>"}` | Rate > 0 for 5 min |
+| `source_inflight{id="<source-id>"}` | Stuck > N for 10 min = consumer stall |
 | Up probe on `:9464/health` | Down > 2m = host evacuated from `hosts[]` |
 
 ## Troubleshooting

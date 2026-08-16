@@ -34,8 +34,14 @@ One `correlationId` threads the chain. `declaragent events list
 
 ## Scaffold
 
+`fleet-starter` is a whole-fleet reference (two agents under `agents/`), so it's
+copied from the repo rather than unpacked by `declaragent init --template` (which
+handles single-agent templates only):
+
 ```bash
-declaragent init --template fleet-starter --out acme-fleet
+npx degit declaragent/declaragent/templates/fleet-starter acme-fleet
+# or: git clone --depth 1 https://github.com/declaragent/declaragent \
+#     && cp -r declaragent/templates/fleet-starter acme-fleet
 cd acme-fleet
 bun install
 ```

@@ -1,5 +1,12 @@
 # Agent-Builder — In-REPL Construction Plan
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 **Status:** Phases 1–7 shipped in `@declaragent/cli@0.2.0`. §11 decisions are binding for the v0.2 freeze; revisit only via changeset. Follow-ons tracked in §13 (multi-step undo, snapshot fallback for non-git, `/monitor` live-tail, core-side `builder.*` audit kinds).
 **Last updated:** 2026-04-20.
 **Phase status:**

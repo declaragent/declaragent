@@ -33,4 +33,4 @@ ownership so rotation lands on a schedule.
 
 ## Post-incident
 - Capture: ref, provider, last rotation timestamp, new rotation date.
-- Close when: `secret_rotation_age_seconds` < 90d.
+- Close when: the ref's `lastRotatedAt` (via `declaragent secrets describe <ref>`) is < 90d old. (The `secret_rotation_age_seconds` gauge this alert is contracted on is not emitted yet — backlog #65.)

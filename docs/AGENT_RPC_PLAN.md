@@ -1,5 +1,12 @@
 # Agent RPC — Implementation Plan
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 **Status:** Draft for review. Positioned as a post-GA v1.1 track (Phase 8 ergonomically, but slotted for "v1.1 Agent Graph" so the v1.0 config-freeze promise from `PHASE_7_PLAN.md` §10 isn't broken).
 **Last updated:** 2026-04-19.
 

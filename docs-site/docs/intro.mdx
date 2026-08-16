@@ -11,12 +11,13 @@ sidebar_position: 1
 
 One `agent.yaml` in git describes identity, capabilities, tools, skills, event sources, channels, secrets, and who can call whom. One CLI — `declaragent` — is itself an agent built on `@declaragent/core`, the same runtime you'd ship to production. No second implementation, no vendor dashboard locked out of your repo.
 
-## The four pillars
+## The five pillars
 
 1. **Define** agents declaratively — capabilities, skills, inbound + outbound channels, peers to call.
-2. **Deploy + monitor** fleets — one-command rollout, rolling + canary strategies, Prometheus + OpenTelemetry out of the box.
+2. **Deploy + monitor** fleets — one-command rollout, rolling + canary strategies, Prometheus metrics out of the box (OpenTelemetry span export opt-in).
 3. **Independent by default** — each agent owns its session, secrets, and sources. Delegation between agents is explicit via `rpc-peers.yaml`.
-4. **Tools + MCP** — seven built-in tools, full MCP server support (stdio / HTTP / SSE / OAuth PKCE), plugin-contributed extensions.
+4. **Tools + MCP** — seven built-in tools, MCP server support (stdio via `mcp add`; HTTP/SSE via config), plugin-contributed extensions.
+5. **Conversational builder** — converse a deployable fleet into existence (`DECLARAGENT_BUILDER=on`), with recorded-conversation regression fixtures replayed in CI.
 
 See [FIRST_PRINCIPLES_AUDIT.md](https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_AUDIT.md) for an evidence-backed map of intent → code.
 
@@ -33,12 +34,12 @@ See [FIRST_PRINCIPLES_AUDIT.md](https://github.com/declaragent/declaragent/blob/
 
 ## Status
 
-This site tracks **v0.5.21** (latest on npm) with **0.6.0 staged** (eight slices merged; tag + publish gated by operator sign-off — see [RELEASE_0_6_0_READINESS.md](https://github.com/declaragent/declaragent/blob/main/docs/RELEASE_0_6_0_READINESS.md)). See the [changelog](https://github.com/declaragent/declaragent/releases) for the per-release deltas.
+This site tracks the **0.7.x** line (`@declaragent/cli@0.7.6` latest on npm). See the [changelog](https://github.com/declaragent/declaragent/releases) for the per-release deltas.
 
-## What's new in 0.6.0 (staged)
+## Shipped in 0.6.0
 
 - **Prometheus `/metrics` endpoint** _(Slice 1)_ — scrape on `127.0.0.1:9464` when running `declaragent up -d`. Source + channel counters flow through the shared registry automatically.
-- **OpenTelemetry auto-enable** _(Slice 2)_ — set `OTEL_EXPORTER_OTLP_ENDPOINT`, install the peer deps, and `up` wires the bridged tracer into every source + channel. No code changes.
+- **OpenTelemetry span export (opt-in)** _(Slice 2)_ — set `OTEL_EXPORTER_OTLP_ENDPOINT` and install the optional `@opentelemetry/*` peer deps; `up` then wires the bridged tracer into every source + channel (spans today: `source.message`, `channel.outbound.send`, `channel.outbound.edit`).
 - **Per-skill circuit breakers** _(Slice 3)_ — 10 consecutive failures trip the breaker, 30-s cooldown, half-open probe re-closes. State + transitions exported as Prometheus counters. `declaragent events list --state circuit-open` filter.
 - **Default provider rate limits** _(Slice 4)_ — token bucket at the LLM call site. Anthropic 50 rps / OpenRouter 20 rps / unknown 10 rps. Env escape hatches for loud-dev workloads.
 - **Dispatch DLQ** _(Slice 5)_ — `rejected_events` table tracks every rejected dispatch; `declaragent dlq list/show/drop --kind dispatch` for audit + acknowledge.

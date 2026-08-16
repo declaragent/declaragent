@@ -35,18 +35,20 @@ Canonical starter: [`templates/oncall-escalator/`](https://github.com/declaragen
    ```
    ${secret:oncall/webhook-hmac}
    ```
-2. Point Alertmanager at `https://<your-host>/webhooks/alertmanager`.
+2. Point Alertmanager at `https://<your-host>/webhook/alertmanager`.
 3. Create a Slack app with `chat:write` + `im:write` and install it to the workspace.
 
 ## Run locally
 
 ```bash
 declaragent up -d
-# simulate an alert:
-curl -X POST http://localhost:8787/webhooks/alertmanager \
+# simulate an alert (webhook listener binds port 7777 by default):
+SIG=$(openssl dgst -sha256 -hmac "$ALERTMANAGER_WEBHOOK_SECRET" mock-alert.json | awk '{print $NF}')
+curl -X POST http://localhost:7777/webhook/alertmanager \
   -H "X-Alertmanager-Fingerprint: test-123" \
-  -H "X-Signature: $(cat fixtures/mock-alert.sig)" \
-  --data @fixtures/mock-alert.json
+  -H "X-Alertmanager-Signature: sha256=$SIG" \
+  -H "X-Alertmanager-Timestamp: $(date +%s)" \
+  --data-binary @mock-alert.json
 declaragent logs -f        # watch the triage + DM fire
 ```
 
@@ -54,14 +56,10 @@ The agent triages the alert (reads the runbook links, checks severity) and DMs t
 
 ## Key points
 
-- **Idempotency.** Alertmanager retries on 5xx. The `X-Alertmanager-Fingerprint` header doubles as the idempotency key — duplicate fingerprints within a 15-minute window are dropped at ingress.
-- **HMAC.** The `webhook` source verifies the `X-Signature` header against the configured secret. Missing or mismatched signature → `401 EUNAUTHORIZED`.
+- **Idempotency.** Alertmanager retries on 5xx. The `X-Alertmanager-Fingerprint` header doubles as the idempotency key — duplicate fingerprints inside the dedup window (10-minute in-memory cache, 24-hour store) are dropped at ingress.
+- **HMAC.** The `webhook` source verifies the `X-Alertmanager-Signature` header (`sha256=<hex>` over the raw body) against the configured secret, and rejects requests whose `X-Alertmanager-Timestamp` drifts outside the 5-minute replay window. Missing or mismatched signature → `401 EUNAUTHORIZED`.
 - **Outbound-only channel.** The Slack channel is configured with `direction: outbound` — inbound `@mentions` are ignored.
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Full Alertmanager `route:` snippet +
-screenshot of a triaged alert in Slack.
-</div>
 
 ## Related
 

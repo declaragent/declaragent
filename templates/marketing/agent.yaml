@@ -121,7 +121,7 @@ mcp:
       command: npx
       args: ["-y", "@modelcontextprotocol/server-github"]
       env:
-        GITHUB_TOKEN: ${keychain:github-token}
+        GITHUB_TOKEN: ${env:GITHUB_TOKEN}
 
     # ---- Web search + fetch: competitor monitoring, trend tracking ----
     # Pick ONE of brave-search / tavily / exa based on your account.
@@ -150,7 +150,7 @@ mcp:
       command: npx
       args: ["-y", "@posthog/mcp"]
       env:
-        POSTHOG_API_KEY: ${keychain:posthog-personal-api-key}
+        POSTHOG_API_KEY: ${env:POSTHOG_API_KEY}
         POSTHOG_HOST: ${env:POSTHOG_HOST}
 
     # ---- npm package stats (downloads over time) ----------
@@ -162,7 +162,7 @@ mcp:
       command: npx
       args: ["-y", "@notionhq/notion-mcp-server"]
       env:
-        NOTION_API_KEY: ${keychain:notion-integration-token}
+        NOTION_API_KEY: ${env:NOTION_API_KEY}
 
     # ---- Linear: marketing task + campaign tracking ----------
     # Swap for github-projects if you track campaigns as GH issues instead.
@@ -170,7 +170,7 @@ mcp:
       command: npx
       args: ["-y", "@tacticlaunch/mcp-linear"]
       env:
-        LINEAR_API_KEY: ${keychain:linear-api-key}
+        LINEAR_API_KEY: ${env:LINEAR_API_KEY}
 
     # ---- Optional: social scheduling via Buffer/Typefully -------
     # No stable first-party MCP yet. Declan drafts copy to

@@ -10,8 +10,8 @@ Every tool call, channel event, secret read, and policy decision Declaragent mak
 
 Three features the `agent.yaml#audit.export` loop ships by default:
 
-- **Back-pressure** — when the exporter falls behind, the daemon slows the ingress side instead of silently dropping events (`audit_backpressure_paused_total`).
-- **Adaptive batch interval** — the loop widens `intervalMs` under steady load and collapses it back when the queue drains (`audit_batch_interval_ms`).
+- **Back-pressure** — when the exporter falls behind, the daemon slows the ingress side instead of silently dropping events (`declaragent_audit_backpressure_paused_total`).
+- **Adaptive batch interval** — the loop widens `intervalMs` under steady load and collapses it back when the queue drains (`declaragent_audit_batch_interval_ms`).
 - **Cursor persistence** — restart the daemon and the exporter resumes from the last ack'd `seq` (stored in the `audit_export_cursor` SQLite table).
 
 ## Prerequisites
@@ -57,7 +57,7 @@ audit:
       apiKey: env:ELASTIC_API_KEY
 ```
 
-Supported auth modes: `apiKey`, `basic` (username + password), `bearer` (see `packages/core/src/agents/load-agent.ts:370`).
+Supported auth modes: `apiKey`, `basic` (username + password), `bearer` (the elastic auth union in `packages/core/src/agents/load-agent.ts`).
 
 ## Datadog Logs v2
 
@@ -94,7 +94,7 @@ All three shipped via the Prometheus registry (see the [Grafana dashboard](/cook
 | `declaragent_audit_backpressure_paused_total` | Rate > 0 sustained for 5 min — SIEM is slow, ingress is being throttled |
 | `declaragent_audit_export_failures_total{retryable="false"}` | Any increment — permanent SIEM failure (bad token, schema reject) |
 | `declaragent_audit_batch_interval_ms` | Stuck at max — loop is in emergency widen mode |
-| `declaragent_audit_export_last_seq` lag vs `declaragent_audit_last_seq` | Gap > 10k — exporter cursor drifting; check SIEM health |
+| `declaragent_audit_export_last_seq` flat while audit writes continue | Exporter cursor drifting; check SIEM health (there is no chain-head gauge to diff against yet) |
 
 ## Multi-tenant
 
@@ -106,11 +106,12 @@ audit:
     kind: splunk
     hecUrl: …
     token: env:SPLUNK_HEC_TOKEN
-    # index is set per-tenant at runtime via ${tenant:id}
-    index: "declaragent_${tenant:id}"
+    index: "declaragent_audit"   # a plain string — no per-tenant templating today
 ```
 
-Combine with the [Multi-tenant starter](/cookbook/multi-tenant-starter) for full isolation.
+Every exported record carries its `tenantId` field — route per-tenant at SIEM
+ingest (props/transforms in Splunk, ingest pipeline in Elastic). Combine with the
+[Multi-tenant starter](/cookbook/multi-tenant-starter) for full isolation.
 
 ## Failure modes
 

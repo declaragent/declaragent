@@ -15,16 +15,17 @@
 Reduce the outbound rate:
 
 ```bash
-declaragent channels config set <id> outbound.rateLimit.qps 1
-declaragent channels reload <id>
+# Lower the channel's outbound rate in channels.yaml, then restart:
+declaragent down && declaragent up -d
 ```
 
 If the surge is a campaign, pause the skill emitting it.
 
 ## Root-cause investigation
 ```bash
-# Recent retry samples:
-declaragent channels audit query --id <id> --kind outbound --outcome rate-limited --since -30m
+# Recent retry samples — the retry counter plus outbound audit records:
+curl -s http://127.0.0.1:9464/metrics | grep channel_outbound_rate_limit_retries
+declaragent audit query --kind channel_outbound --since -30m --json
 
 # Grafana: "Channels" dashboard → "Rate-limit retries" panel.
 ```

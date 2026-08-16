@@ -34,7 +34,7 @@ click-through guide.
 ```sh
 cp .env.example .env
 # edit .env, then:
-declaragent run
+declaragent up
 ```
 
 The agent opens a WebSocket to Slack within 5s. Send `@concierge What

@@ -16,14 +16,14 @@ choppy; typing indicators may stop reflecting reality.
 Raise the adapter's concurrency limit if headroom allows:
 
 ```bash
-declaragent channels config set <id> limits.concurrency 20
-declaragent channels reload <id>
+# Raise the adapter's concurrency in channels.yaml, then restart to apply:
+declaragent down && declaragent up -d
 ```
 
 ## Root-cause investigation
 ```bash
 # Latency histogram samples:
-declaragent metrics scrape --grep channel_outbound_latency_ms
+curl -s http://127.0.0.1:9464/metrics | grep channel_outbound_latency_ms
 
 # Grafana: Channels → Outbound latency heatmap.
 # Check the platform partner's own latency dashboard alongside.

@@ -18,9 +18,12 @@ the frozen surfaces.
 
 ## Scaffold
 
+The RPC starters are fleet templates — scaffold a fleet, then add them:
+
 ```bash
-declaragent init --template rpc-client --provider anthropic
-declaragent init --template rpc-server --provider anthropic
+declaragent init --fleet rpc-demo && cd rpc-demo
+declaragent fleet add --template rpc-server
+declaragent fleet add --template rpc-client
 ```
 
 Canonical starters:
@@ -161,11 +164,12 @@ ctx.respond({
 ## Key points
 
 - **Transport pluggability.** The envelope is broker-agnostic.
-  Replacing `kind: memory` with `kind: kafka` (or `nats` / `sqs` /
-  `amqp` / `mqtt`) is the only change needed to go cross-process.
+  Replacing `kind: memory` with `kind: kafka` or `kind: nats` is the
+  only change needed to go cross-process under `fleet run`; the
+  sqs/amqp/mqtt factories exist too but require programmatic wiring.
 - **`ctx.respond` default.** Skip it and the runtime publishes
-  `{ ok: true, data: assistant.final.content }`. Good for REPL-first
-  iteration; explicit calls let you return structured data.
+  `{ ok: true, data: { text, stopReason, usage? } }`. Good for
+  REPL-first iteration; explicit calls let you return structured data.
 - **Timeouts.** `timeoutMs` on the caller is authoritative. The
   receiver's work is discarded when the caller's deadline elapses.
 - **Correlation threading.** `ctx.correlationId` on the concierge's
@@ -175,8 +179,8 @@ ctx.respond({
 ## Inspect
 
 ```bash
-declaragent rpc peers                     # effective peer table
-declaragent rpc capabilities              # this agent's capabilities
+declaragent fleet peers --verify          # effective peer table + live inbox ping
+declaragent fleet capabilities            # aggregated capabilities.yaml view
 declaragent events list --correlation <cid>    # all hops for one request
 ```
 
@@ -184,8 +188,11 @@ declaragent events list --correlation <cid>    # all hops for one request
 
 - `@declaragent/plugin-github` (diff fetching) is not yet published.
   The `review-pr` skill ships a stub response until the plugin lands.
-- Per-transport plugins (`@declaragent/plugin-agent-rpc-kafka`, -nats,
-  -sqs, -amqp, -mqtt) follow the envelope in subsequent v1.1 slices.
+- All broker transports (kafka, nats, jetstream, sqs, amqp, mqtt,
+  memory) ship inside `@declaragent/plugin-agent-rpc` itself — there
+  are no separate per-transport packages. Note `fleet run`
+  auto-constructs `kafka` and `nats` from `rpc-peers.yaml`; the
+  sqs/amqp/mqtt/jetstream factories are wired programmatically today.
 
 ## Related
 

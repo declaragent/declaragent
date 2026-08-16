@@ -12,33 +12,35 @@ Every `E*` code emitted by the core runtime. When a CLI command exits non-zero o
 | Code | Meaning | Common cause | First action |
 | --- | --- | --- | --- |
 | `EINVAL` | Invalid input — config schema violation, malformed argument. | `agent.yaml` Zod validation failed, or a CLI flag was malformed. | Re-run with `--help`; compare against the [`agent.yaml` schema](/reference/agent-yaml). |
-| `EPERM` | Permission denied. | Permission gate blocked a tool call, or an external API returned 401/403. | Check the REPL's permission-mode dialog; see [Install](/quickstart/installing) for `--mode` flags. |
+| `EPERM` | Permission denied. | Permission gate blocked a tool call, or an external API returned 401/403. | Check the REPL's permission-mode dialog (`--mode <default\|plan\|bypass\|auto>` on REPL launch); see [CLI reference](/reference/cli). |
 | `EEXTCONFLICT` | Two extensions register the same id or the same channel name. | A plugin + a bundled adapter both claim, e.g., `Read`. | `declaragent extensions` — check the conflict report; remove one. |
 | `TENANT_BOUNDARY` | A message tried to cross tenant boundaries. | Per-tenant bus strategy detected a leak — usually a mis-wired channel. | See [runbook → tenant-boundary-violation](/troubleshooting/runbooks/tenant-boundary-violation). |
-| `EQUOTA` | Daily token budget or rate limit exceeded. | `dailyTokenUSD` or `requestsPerMinute` on the tenant/agent tripped. | Either bump the quota or wait for the UTC rollover. |
+| `EQUOTA` | Daily token budget or rate limit exceeded. | `dailyTokenUSD`, `maxActiveSessions`, `maxConcurrentToolCalls`, or `maxEventIngressPerSec` on the tenant/agent tripped. | Either bump the quota or wait for the UTC rollover. |
 | `ENOTOOL` | Tool id not registered. | Skill references a tool that isn't in `tools.defaults` / `tools.allow`. | Add the tool id to `agent.yaml` or remove the reference. |
 | `ENOSESSION` | Session id not found. | CLI command referenced a session that expired / was pruned. | `declaragent events list` to find an active session id. |
 | `EABORT` | Operation aborted. | User hit Ctrl-C, or the permission gate rejected a prompt. | None — expected on user abort. Inspect stderr if unexpected. |
-| `EAGENTRPC_TIMEOUT` | Sync-mode `RequestAgent` call deadline elapsed. | Peer didn't respond within `timeoutMs`. | Bump `timeoutMs`; check peer health with `declaragent rpc peers --verify`. |
+| `EAGENTRPC_TIMEOUT` | Sync-mode `RequestAgent` call deadline elapsed. | Peer didn't respond within `timeoutMs`. | Bump `timeoutMs`; check peer health with `declaragent fleet peers --verify`. |
 | `EAGENTRPC_ABANDONED` | Pending RPC lost (daemon shutdown / connection loss). | Producer daemon restarted while awaiting a response. | Retry — the caller owns retry policy. |
 | `EAGENTRPC_BUSY` | Pending-RPC registry at capacity. | Producer is issuing `RequestAgent` faster than responses return. | Back off, retry; if chronic, increase `pending` registry capacity or use `mode: 'async'`. |
-| `EAGENTRPC_NO_PEER` | Target `agent://<id>` not in `rpc-peers.yaml`. | Peer table missing or misspelled. | `declaragent rpc peers` — add the peer. |
-| `EAGENTRPC_NO_TRANSPORT` | Resolved transport kind has no plugin registered. | Peer table references, e.g., Kafka, but `@declaragent/plugin-agent-rpc-kafka` isn't installed. | Install the transport plugin or swap to an installed one. |
+| `EAGENTRPC_NO_PEER` | Target `agent://<id>` not in `rpc-peers.yaml`. | Peer table missing or misspelled. | `declaragent fleet peers` — add the peer. |
+| `EAGENTRPC_NO_TRANSPORT` | Resolved transport kind has no plugin registered. | Peer table's `kind:` is misspelled, or the kind isn't constructible by `fleet run` (kafka + nats today; the transports themselves ship inside `@declaragent/plugin-agent-rpc`, already a CLI dependency). | Check the `kind:` spelling in `rpc-peers.yaml`; install the broker's peer dep (e.g. `kafkajs`). |
+| `EAGENTRPC_NO_CAPABILITY` | Target capability not declared by the peer. | `capability:` name doesn't match the peer's `capabilities.yaml`. | `declaragent fleet capabilities` — check the declared names. |
+| `EAGENTRPC_INVALID_ENVELOPE` | Envelope failed schema validation on receive. | Version skew or a hand-built envelope with a typo'd field (strict mode fails closed). | Inspect the DLQ entry; align sender + receiver versions. |
+| `EAGENTRPC_AUTH_FAILED` | Producer-side auth attach failed. | Token mint / signing failed before publish. | Check the peer's `auth:` block config + secret refs. |
+| `EAGENTRPC_DEADLINE_EXCEEDED` | Envelope `deadline` passed before dispatch. | Consumer backlog exceeded the producer's deadline. | Raise the deadline or scale consumers. |
+| `EAGENTRPC_TENANT_MISMATCH` | Envelope `tenantId` doesn't match the local bus scope. | Cross-tenant call attempt. | Audit the caller; see the tenant-boundary runbook. |
+| `EVERSION_SKEW` | Peer fleet version outside `minFleetVersion`. | Mixed-version fleet during a rollout. | Finish the rollout or relax `rpc.minFleetVersion`. |
+| `AUTH_REJECTED` | Receiver rejected the envelope's auth (verify failed). | Missing/expired/wrong-audience token under `rpc.auth.enabled: true` — the code the 0.8.0 zero-trust flip surfaces. | `declaragent fleet audit-rpc --suggest-enable`; inspect `dlq list --kind dispatch --reason auth-rejected`. |
 
 ## How error codes surface
 
 - **CLI exit code.** Non-zero exit + stderr text naming the code.
 - **Audit log.** Each failure is written to the tenant's audit log with the code, timestamp, and a sanitized cause.
-- **Metrics.** Codes are grouped into counters (`engine.errors.total{code=...}`, `channel.outbound.errors.total{code=...}`).
-- **Alerts.** The `security.rules.yaml` and `daemon.rules.yaml` rule files fire on sustained spikes of `EPERM`, `TENANT_BOUNDARY`, `EQUOTA`.
+- **Metrics.** Failure classes surface on the real counters — `declaragent_provider_errors_total` (LLM call failures), `channel_outbound_failed{reason}`, `channel_inbound_failed`, `source_messages_failed` — there is no per-error-code label today.
+- **Alerts.** The `security.rules.yaml` and `daemon.rules.yaml` rule files fire on the metrics corresponding to these failure classes (`secret_access_denied_total`, `tenant_boundary_violation_total`, …), not on the error-code strings themselves.
 
 ## Related
 
 - [Runbook index](/troubleshooting/runbook-index) — runbook per alert.
 - [CLI → `declaragent audit query`](/reference/cli) — search audit records by code.
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] One dedicated MDX page per code with the
-full signal chain (emission path → audit kind → metric → alert →
-runbook).
-</div>
