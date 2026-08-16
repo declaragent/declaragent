@@ -1,5 +1,13 @@
 # @declaragent/source-nats
 
+## 5.0.0
+
+### Patch Changes
+
+- Updated dependencies [0a15577]
+- Updated dependencies [e67edc4]
+  - @declaragent/core@0.6.0
+
 ## 4.0.0
 
 ### Patch Changes
