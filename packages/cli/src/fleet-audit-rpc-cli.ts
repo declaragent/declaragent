@@ -69,10 +69,26 @@ export interface AgentAuditReport {
   readonly suggestedFromPeer?: PeerAuthConfig;
 }
 
+/**
+ * WS2 — sign-side finding (RELEASE_0_8_0_PLAN.md §B1). The verify side of
+ * the audit asks "will this agent REJECT unsigned callers?"; the sign side
+ * asks "can this fleet's OUTBOUND legs actually be signed?". A peer entry
+ * without an `auth:` block means every delegation to that peer goes out with
+ * the legacy `{kind:'internal'}` stamp — a strict counterpart rejects it.
+ */
+export interface SignSideFinding {
+  /** Peer address as declared (`agent://…`). */
+  readonly peer: string;
+  readonly kind: 'no-auth-block' | 'oidc-signer-external';
+  readonly message: string;
+}
+
 export interface FleetAuditRpcReport {
   readonly agents: readonly AgentAuditReport[];
   /** True when every agent's state is `'enabled'`. */
   readonly allEnabled: boolean;
+  /** WS2 sign-side findings from the fleet-root `rpc-peers.yaml`. */
+  readonly signFindings: readonly SignSideFinding[];
 }
 
 /**
@@ -156,7 +172,26 @@ export async function buildAuditRpcReport(
   }
 
   const allEnabled = agents.every((a) => a.state === 'enabled');
-  return { agents, allEnabled };
+
+  // WS2 sign-side pass over the peer table itself.
+  const signFindings: SignSideFinding[] = [];
+  for (const peer of fleet.peers?.config.peers ?? []) {
+    if (!peer.auth) {
+      signFindings.push({
+        peer: peer.agent,
+        kind: 'no-auth-block',
+        message: `peer ${peer.agent} has no auth: block — outbound delegations to it are sent unsigned (legacy internal) and a strict receiver rejects them at 0.8.0`,
+      });
+    } else if (peer.auth.provider === 'oidc') {
+      signFindings.push({
+        peer: peer.agent,
+        kind: 'oidc-signer-external',
+        message: `peer ${peer.agent} uses provider: oidc — the built-in signer cannot mint OIDC tokens; outbound signing needs an out-of-band token source (hmac or oauth2-client sign natively)`,
+      });
+    }
+  }
+
+  return { agents, allEnabled, signFindings };
 }
 
 /**
@@ -297,8 +332,21 @@ function renderText(
     lines.push('\n✓ every agent has rpc.auth.enabled: true.\n');
   }
 
+  if (report.signFindings.length > 0) {
+    lines.push('\nsign-side (outbound) findings:\n');
+    for (const f of report.signFindings) {
+      const mark = f.kind === 'no-auth-block' ? '✗' : '!';
+      lines.push(`  ${mark} ${f.message}\n`);
+    }
+  }
+
   if (args.strict && !report.allEnabled) {
     lines.push('\n--strict: exiting non-zero because at least one agent is not auth-enabled.\n');
+  }
+  if (args.strict && report.signFindings.some((f) => f.kind === 'no-auth-block')) {
+    lines.push(
+      '\n--strict: exiting non-zero because at least one peer entry cannot be signed (no auth: block).\n',
+    );
   }
   return lines.join('');
 }
@@ -308,10 +356,12 @@ function renderJson(
   args: { suggestEnable: boolean; strict: boolean; preview?: ZeroTrustPreviewResult },
 ): string {
   const previewFails = args.preview?.failingAgents.length ?? 0;
+  const signBlockers = report.signFindings.filter((f) => f.kind === 'no-auth-block').length;
   return `${JSON.stringify(
     {
-      ok: (!args.strict || report.allEnabled) && previewFails === 0,
+      ok: (!args.strict || (report.allEnabled && signBlockers === 0)) && previewFails === 0,
       allEnabled: report.allEnabled,
+      signFindings: report.signFindings,
       agents: report.agents.map((a) => ({
         agentId: a.agentId,
         agentYamlPath: a.agentYamlPath,
@@ -461,6 +511,9 @@ export async function fleetAuditRpc(
   }
 
   if (strict && !report.allEnabled) return 1;
+  // WS2 — a peer that can't be signed fails strict the same way an
+  // un-enabled agent does: at 0.8.0 either breaks delegation.
+  if (strict && report.signFindings.some((f) => f.kind === 'no-auth-block')) return 1;
   if (strict && preview && preview.failingAgents.length > 0) return 1;
   return 0;
 }

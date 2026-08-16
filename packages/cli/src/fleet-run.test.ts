@@ -25,6 +25,8 @@ import {
 import {
   type AuthVerifyRegistry,
   type CapabilitySchemaViolationEmitter,
+  buildAuthVerifyRegistry,
+  buildOutboundSigner,
   createMemoryBus,
   createMemoryTransport,
   createPendingRegistry,
@@ -1244,6 +1246,122 @@ describe('fleet-run #4 inline verify-auth', () => {
         const metrics = daemon.agents.get('pr-reviewer')?.metrics();
         expect(metrics?.responded).toBe(0);
         await attackerTransport.close();
+      } finally {
+        await daemon.shutdown();
+      }
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  // WS2 flagship (RELEASE_0_8_0_PLAN.md §B1) — the scenario the 0.8.0 flip
+  // depends on: strict verify ON, HMAC configured on both sides, and a
+  // built-in delegation succeeds end-to-end with BOTH legs signed. Before the
+  // signer wiring, this exact setup rejected every delegation (`wrong-kind`).
+  test('strictAuth + HMAC both sides: signed request accepted, response leg signed + verifiable', async () => {
+    const h = mkHarness();
+    try {
+      const fleet = await twoAgentFleet(h);
+      const bus = createMemoryBus();
+      const secrets = async () => 'pair-secret-concierge-reviewer';
+      const hmacAuth = { provider: 'hmac', keyId: 'pair-k1', secretRef: 'secret://pair' };
+
+      // Daemon side (pr-reviewer): verifies envelopes FROM concierge and
+      // signs envelopes TO concierge — one peer entry serves both.
+      const daemonPeers = parsePeersConfig({
+        version: 1,
+        peers: [
+          {
+            agent: 'agent://concierge',
+            transports: [{ kind: 'memory', topics: { requests: 'agents.concierge.requests' } }],
+            auth: hmacAuth,
+          },
+        ],
+      });
+      const daemonRegistry = await buildAuthVerifyRegistry({ peers: daemonPeers, secrets });
+      const daemonSigner = await buildOutboundSigner({ peers: daemonPeers, secrets });
+
+      // Caller side (concierge): signs requests TO pr-reviewer and verifies
+      // the response FROM pr-reviewer.
+      const callerPeers = parsePeersConfig({
+        version: 1,
+        peers: [
+          {
+            agent: 'agent://pr-reviewer',
+            transports: [{ kind: 'memory', topics: { requests: 'agents.pr-reviewer.requests' } }],
+            auth: hmacAuth,
+          },
+        ],
+      });
+      const callerSigner = await buildOutboundSigner({ peers: callerPeers, secrets });
+      const callerRegistry = await buildAuthVerifyRegistry({ peers: callerPeers, secrets });
+
+      const handler: FleetAgentHandler = async (ctx) => {
+        await ctx.respond({ ok: true, data: { reviewed: true } });
+      };
+      const daemon = await startFleetDaemon({
+        fleet,
+        bus,
+        authRegistry: daemonRegistry,
+        strictAuth: true,
+        signOutbound: daemonSigner.hook,
+        makeHandler: () => handler,
+      });
+      try {
+        const conciergeTransport = createMemoryTransport({ bus });
+        const pending = createPendingRegistry();
+        const responseEnvelopes: AgentRpcEnvelope[] = [];
+        const detach = conciergeTransport.subscribe(
+          'agents.concierge.responses',
+          async (envelope) => {
+            if (envelope.kind !== 'response') return;
+            responseEnvelopes.push(envelope);
+            const payload = envelope.payload as { ok: true; data: unknown };
+            pending.settle(envelope.correlationId, { status: 'ok', data: payload.data });
+          },
+        );
+        const tool = createRequestAgentTool({
+          selfAgent: 'agent://concierge',
+          peers: callerPeers,
+          transports: new Map([['memory', conciergeTransport]]),
+          pending,
+          replyTo: 'memory://agents.concierge.responses',
+          signOutbound: callerSigner.hook,
+        });
+        const events = await collectEvents(
+          tool.execute(
+            {
+              to: 'agent://pr-reviewer',
+              capability: 'review-pr',
+              payload: { prUrl: 'https://example.com/pr/1' },
+              timeoutMs: 2000,
+            },
+            makeToolContext(),
+          ),
+        );
+        // Strict verify accepted the signed request and the delegation
+        // round-tripped — the exact path that failed before the signer.
+        expect(events.result?.status).toBe('ok');
+        expect(events.result?.response).toEqual({ reviewed: true });
+
+        // Response leg carries a verifiable HMAC auth block.
+        expect(responseEnvelopes).toHaveLength(1);
+        const response = responseEnvelopes[0];
+        if (response === undefined) throw new Error('expected a response envelope');
+        expect(response.auth?.kind).toBe('hmac');
+        const entry = callerRegistry.resolve('agent://pr-reviewer');
+        if (entry === undefined) throw new Error('expected caller-side verify entry');
+        const verdict = await entry.provider.verify(
+          response,
+          entry.config as Parameters<typeof entry.provider.verify>[1],
+        );
+        expect(verdict.ok).toBe(true);
+
+        const metrics = daemon.agents.get('pr-reviewer')?.metrics();
+        expect(metrics?.received).toBe(1);
+        expect(metrics?.responded).toBe(1);
+        detach();
+        await conciergeTransport.close();
       } finally {
         await daemon.shutdown();
       }

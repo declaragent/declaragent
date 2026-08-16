@@ -343,3 +343,81 @@ environments:
     }
   });
 });
+
+// ── WS2 sign-side findings (RELEASE_0_8_0_PLAN.md §B1) ─────────────────
+
+function signGapFleet(): Harness {
+  const h = mkHarness();
+  h.write(
+    'fleet.yaml',
+    `version: 1
+name: sign-gap
+agents:
+  - id: alpha
+    path: ./agents/alpha
+    env: shared
+  - id: beta
+    path: ./agents/beta
+    env: shared
+environments:
+  shared:
+    peersRef: ./rpc-peers.yaml
+`,
+  );
+  const enabledYaml = (name: string) => `name: ${name}\nrpc:\n  auth:\n    enabled: true\n`;
+  h.write('agents/alpha/agent.yaml', enabledYaml('alpha'));
+  h.write('agents/beta/agent.yaml', enabledYaml('beta'));
+  h.write(
+    'rpc-peers.yaml',
+    `version: 1
+peers:
+  - agent: agent://alpha
+    transports:
+      - kind: memory
+        topics: { requests: agents.alpha.requests }
+    auth:
+      provider: hmac
+      keyId: k1
+      secretRef: secret://pair
+  - agent: agent://beta
+    transports:
+      - kind: memory
+        topics: { requests: agents.beta.requests }
+`,
+  );
+  return h;
+}
+
+describe('fleet-audit-rpc / WS2 sign-side findings', () => {
+  test('flags peers without an auth block and oidc verify-only peers', async () => {
+    const h = signGapFleet();
+    try {
+      const { loadFleet } = await import('@declaragent/core');
+      const fleet = await loadFleet({ root: h.root });
+      const report = await buildAuditRpcReport(fleet);
+      expect(report.allEnabled).toBe(true);
+      expect(report.signFindings).toHaveLength(1);
+      expect(report.signFindings[0]?.kind).toBe('no-auth-block');
+      expect(report.signFindings[0]?.peer).toBe('agent://beta');
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test('--strict exits 1 on a no-auth-block peer even when every agent is enabled', async () => {
+    const h = signGapFleet();
+    try {
+      const d = deps(h);
+      const lax = await fleetAuditRpc({}, d);
+      expect(lax).toBe(0);
+      expect(d.out.join('')).toContain('sign-side (outbound) findings');
+
+      const d2 = deps(h);
+      const strict = await fleetAuditRpc({ strict: true }, d2);
+      expect(strict).toBe(1);
+      expect(d2.out.join('')).toContain('cannot be signed');
+    } finally {
+      h.cleanup();
+    }
+  });
+});

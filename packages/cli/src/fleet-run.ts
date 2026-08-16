@@ -33,6 +33,7 @@ import type {
   LoadedCapabilities,
   LoadedFleet,
   LoadedPeers,
+  RpcAuth,
   RpcError,
   RpcRespondResult,
   RpcTransport,
@@ -63,6 +64,7 @@ import {
   type MemoryBus,
   brokerAddressKind,
   buildAuthVerifyRegistry,
+  buildOutboundSigner,
   createMemoryBus,
   createMemoryTransport,
   createRespondHook,
@@ -167,6 +169,15 @@ export type FleetTransportFactory = (
   deps: { logger?: FleetRunIO },
 ) => Promise<RpcTransport> | RpcTransport;
 
+/**
+ * WS2 — outbound envelope signer hook. Same shape as the `signOutbound`
+ * option on `createRequestAgentTool` / `createRespondHook`; typically the
+ * `hook` of a `buildOutboundSigner` result, which dispatches per destination.
+ *
+ * @since 0.7.8 — production-readiness WS2
+ */
+export type SignOutboundHook = (envelope: AgentRpcEnvelope) => Promise<RpcAuth>;
+
 export interface StartFleetDaemonOptions {
   fleet: LoadedFleet;
   /**
@@ -261,6 +272,25 @@ export interface StartFleetDaemonOptions {
    * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #18
    */
   authRegistryByAgent?: ReadonlyMap<string, AuthVerifyRegistry>;
+  /**
+   * WS2 — fleet-wide outbound envelope signer (the sign-side counterpart of
+   * {@link authRegistry}). Threaded into every handler's `RequestAgent` tool
+   * (request leg) and every worker's respond hook (response leg), so both
+   * directions of a delegation carry a verifiable `auth` block. Built by
+   * `fleetRun` via `buildOutboundSigner` from the same `rpc-peers.yaml` the
+   * verify registry reads. Absent → legacy `{kind:'internal'}` stamps.
+   *
+   * @since 0.7.8 — production-readiness WS2 (RELEASE_0_8_0_PLAN.md §B1)
+   */
+  signOutbound?: SignOutboundHook;
+  /**
+   * Per-agent outbound signers, keyed by `agent.id`. Same selection rule as
+   * {@link authRegistryByAgent}: a per-agent entry wins over the fleet-wide
+   * {@link signOutbound}; absent both → legacy stamps for that agent.
+   *
+   * @since 0.7.8 — production-readiness WS2
+   */
+  signOutboundByAgent?: ReadonlyMap<string, SignOutboundHook>;
   /**
    * WS2 — fail CLOSED on unregistered senders. When `true`, an envelope whose
    * `from` has no entry in the effective registry is rejected (`unknown-peer`)
@@ -369,6 +399,16 @@ export interface FleetAgentRpcContext {
    * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #18
    */
   authRegistry?: AuthVerifyRegistry;
+  /**
+   * WS2 — effective outbound signer for THIS agent. Resolved at daemon boot
+   * (per-agent entry wins over fleet-wide, mirroring {@link authRegistry}).
+   * Handlers thread it into `createRequestAgentTool` so every outbound
+   * request carries a verifiable `auth` block; the worker's respond hook uses
+   * the same signer for the response leg.
+   *
+   * @since 0.7.8 — production-readiness WS2
+   */
+  signOutbound?: SignOutboundHook;
 }
 
 /**
@@ -484,6 +524,9 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
       const perAgentRegistry = options.authRegistryByAgent?.get(agent.id);
       const effectiveAuthRegistry: AuthVerifyRegistry | undefined =
         perAgentRegistry ?? options.authRegistry;
+      // WS2 — same per-agent-wins selection for the outbound signer.
+      const effectiveSignOutbound: SignOutboundHook | undefined =
+        options.signOutboundByAgent?.get(agent.id) ?? options.signOutbound;
 
       const rpcContext: FleetAgentRpcContext = {
         selfAddress: `agent://${agent.id}`,
@@ -503,6 +546,8 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
         // Slice 3) can evaluate auth at the fan-out seam without
         // re-deriving the per-agent selection.
         ...(effectiveAuthRegistry !== undefined && { authRegistry: effectiveAuthRegistry }),
+        // WS2 — request-leg signer for this agent's RequestAgent tool.
+        ...(effectiveSignOutbound !== undefined && { signOutbound: effectiveSignOutbound }),
       };
       const worker = startAgentWorker({
         agent,
@@ -518,6 +563,9 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
         // play (strict has no meaning without one) and the operator opted in.
         ...(effectiveAuthRegistry !== undefined &&
           options.strictAuth === true && { strictAuth: true }),
+        // WS2 — response-leg signer: replies to a signed request are signed
+        // with the same per-agent signer the request leg uses.
+        ...(effectiveSignOutbound !== undefined && { signOutbound: effectiveSignOutbound }),
         ...(options.auditSink !== undefined && { auditSink: options.auditSink }),
         ...(options.authRejectSink !== undefined && {
           authRejectSink: options.authRejectSink,
@@ -591,6 +639,12 @@ interface StartAgentWorkerOptions {
    * by `fleetRun` when `rpc.auth.enabled: true`. Default false (legacy).
    */
   strictAuth?: boolean;
+  /**
+   * WS2 — response-leg signer. Threaded into `createRespondHook` so replies
+   * carry a verifiable `auth` block the original caller's strict verify
+   * accepts. Absent → legacy `{kind:'internal'}` responses.
+   */
+  signOutbound?: SignOutboundHook;
   auditSink?: TenantAuditSink;
   authRejectSink?: (entry: {
     envelope: AgentRpcEnvelope;
@@ -662,6 +716,8 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
       request: envelope,
       transport: selectRespondTransport(envelope),
       selfAgent: `agent://${agent.id}`,
+      // WS2 — sign the response leg with this agent's signer.
+      ...(opts.signOutbound !== undefined && { signOutbound: opts.signOutbound }),
     });
 
     // ── #4 Inline verify-auth (Enterprise Production Plan §3) ──────
@@ -1187,6 +1243,13 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
   // signers) without any cross-trust.
   let authRegistry: AuthVerifyRegistry | undefined;
   const authRegistryByAgent = new Map<string, AuthVerifyRegistry>();
+  // WS2 — sign-side counterparts. Unlike the verify registries (which warn +
+  // fall back so a broken registry degrades to legacy-accept), a signer that
+  // cannot be built under rpc.auth is a BOOT ERROR: outbound calls would go
+  // out unsigned and be rejected by every strict peer — a fleet that looks
+  // up but cannot delegate. Fail loud at boot instead (RELEASE_0_8_0_PLAN §B1).
+  let outboundSigner: SignOutboundHook | undefined;
+  const outboundSignerByAgent = new Map<string, SignOutboundHook>();
   let authEventStore: EventStore | undefined;
   let authEventStoreDb: Database | undefined;
   let authRejectSink:
@@ -1215,6 +1278,28 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
           }. Falling back to legacy envelope auth for agents without a per-agent override.\n`,
         );
       }
+      // WS2 — fleet-root outbound signer from the same peer table. Build
+      // failure (typically an unresolvable secretRef) aborts boot: an
+      // rpc.auth fleet that cannot sign would have every delegation
+      // rejected by its strict peers at runtime.
+      try {
+        const signer = await buildOutboundSigner({
+          peers,
+          secrets: (ref) => resolver.resolve(ref),
+        });
+        if (signer.signablePeers > 0) {
+          outboundSigner = signer.hook;
+          io.out(
+            `  rpc.auth signer: ${signer.signablePeers} peer(s) signable from fleet-root rpc-peers.yaml\n`,
+          );
+        }
+      } catch (err) {
+        throw new Error(
+          `rpc.auth.enabled=true but the fleet-root outbound signer could not be built — ${
+            err instanceof Error ? err.message : String(err)
+          }. Fix the auth block (e.g. the secretRef) in ${peersPath} or disable rpc.auth. Outbound delegations would be sent unsigned and rejected by strict peers.`,
+        );
+      }
     }
 
     // Per-agent registries: walk every agent and build a dedicated
@@ -1236,6 +1321,16 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
         io.out(
           `  rpc.auth per-agent: ${agent.id} → ${registered} peer(s) from ${agentPeersPath}\n`,
         );
+        // WS2 — per-agent signer from the same file. Registry built above,
+        // so secrets resolve; a sign-side failure here is a real config
+        // error and aborts boot (see the fleet-root rationale).
+        const signer = await buildOutboundSigner({
+          peers: agentPeers,
+          secrets: (ref) => resolver.resolve(ref),
+        });
+        if (signer.signablePeers > 0) {
+          outboundSignerByAgent.set(agent.id, signer.hook);
+        }
       } catch (err) {
         io.err(
           `warning: failed to load per-agent rpc-peers.yaml for ${agent.id} at ${agentPeersPath} — ${
@@ -1340,6 +1435,10 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     io,
     ...(authRegistry !== undefined && { authRegistry }),
     ...(authRegistryByAgent.size > 0 && { authRegistryByAgent }),
+    // WS2 — outbound signers (request + response legs), same per-agent-wins
+    // selection as the verify registries.
+    ...(outboundSigner !== undefined && { signOutbound: outboundSigner }),
+    ...(outboundSignerByAgent.size > 0 && { signOutboundByAgent: outboundSignerByAgent }),
     // WS2 — when the operator enabled rpc.auth, fail closed on unregistered
     // senders (an opted-in fleet should not silently accept unknown peers).
     ...(anyAgentHasRpcAuth && { strictAuth: true }),

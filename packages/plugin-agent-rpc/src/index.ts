@@ -53,9 +53,10 @@ export type {
   CreateOAuth2ClientAuthProviderOptions,
   OAuth2ClientPeerConfig,
 } from './auth/oauth2-client.js';
-export { buildAuthVerifyRegistry } from './auth/registry-factory.js';
+export { buildAuthVerifyRegistry, buildOutboundSigner } from './auth/registry-factory.js';
 export type {
   BuildAuthVerifyRegistryOptions,
+  OutboundSigner,
   ResolveSecret,
 } from './auth/registry-factory.js';
 export type {

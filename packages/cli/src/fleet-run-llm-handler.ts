@@ -193,6 +193,11 @@ export function createLLMHandlerFactory(
             ...(rpcContext.onSchemaViolation !== undefined && {
               onSchemaViolation: rpcContext.onSchemaViolation,
             }),
+            // WS2 — sign every outbound request with this agent's signer so
+            // strict-verify peers accept the delegation.
+            ...(rpcContext.signOutbound !== undefined && {
+              signOutbound: rpcContext.signOutbound,
+            }),
           }) as Tool,
         );
       }

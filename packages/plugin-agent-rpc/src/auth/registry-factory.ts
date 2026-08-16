@@ -19,7 +19,7 @@
  * @since 0.7.x — Enterprise Production Plan §3 Item #4
  */
 
-import type { LoadedPeers, PeerAuthConfig } from '@declaragent/core';
+import type { AgentRpcEnvelope, LoadedPeers, PeerAuthConfig, RpcAuth } from '@declaragent/core';
 import type { AuthVerifyRegistry } from '../agent-inbox.js';
 import { createHmacAuthProvider } from './hmac.js';
 import { createOAuth2ClientAuthProvider } from './oauth2-client.js';
@@ -85,6 +85,51 @@ export async function buildAuthVerifyRegistry(
   return {
     resolve(peerId: string) {
       return byPeer.get(peerId);
+    },
+  };
+}
+
+/**
+ * WS2 — the sign-side counterpart of {@link buildAuthVerifyRegistry}.
+ *
+ * Builds one provider per peer that declares an `auth:` block and returns a
+ * `signOutbound`-compatible hook that dispatches on the envelope's
+ * **destination** (`envelope.to`): the outbound leg to peer B is signed with
+ * the credentials this agent shares with B (for HMAC, the pair's shared
+ * secret + keyId — the same values B's `rpc-peers.yaml` entry for this agent
+ * verifies against). Destinations without an `auth:` block keep the legacy
+ * `{kind:'internal'}` stamp, so mixed fleets (some peers strict, some legacy)
+ * sign exactly where a verifier expects a signature and nowhere else.
+ *
+ * Both request and response legs use the same hook — a response to B is just
+ * an envelope whose `to` is B.
+ *
+ * Secrets are resolved eagerly (same policy as the verify factory): a broken
+ * `secretRef` fails the build here, at boot, not on the first delegation.
+ *
+ * @since 0.7.8 — production-readiness WS2 (RELEASE_0_8_0_PLAN.md §B1)
+ */
+export interface OutboundSigner {
+  /** `signOutbound` hook for `createRequestAgentTool` / `createRespondHook`. */
+  readonly hook: (envelope: AgentRpcEnvelope) => Promise<RpcAuth>;
+  /** How many peers have signable `auth:` blocks (0 → hook is pure legacy). */
+  readonly signablePeers: number;
+}
+
+export async function buildOutboundSigner(
+  opts: BuildAuthVerifyRegistryOptions,
+): Promise<OutboundSigner> {
+  const byDestination = new Map<string, RpcAuthProvider>();
+  for (const peer of opts.peers.config.peers) {
+    if (!peer.auth) continue;
+    byDestination.set(peer.agent, await buildProviderForPeer(peer.agent, peer.auth, opts));
+  }
+  return {
+    signablePeers: byDestination.size,
+    hook: async (envelope: AgentRpcEnvelope): Promise<RpcAuth> => {
+      const provider = byDestination.get(envelope.to);
+      if (provider === undefined) return { kind: 'internal' };
+      return provider.sign(envelope);
     },
   };
 }

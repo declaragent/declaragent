@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import type { LoadedPeers } from '@declaragent/core';
+import type { AgentRpcEnvelope, LoadedPeers } from '@declaragent/core';
 import { parsePeersConfig } from '@declaragent/core';
-import { buildAuthVerifyRegistry } from './registry-factory.js';
+import { buildAuthVerifyRegistry, buildOutboundSigner } from './registry-factory.js';
 
 function peerConfig(overrides: { auth?: unknown } = {}): LoadedPeers {
   return parsePeersConfig({
@@ -145,5 +145,93 @@ describe('buildAuthVerifyRegistry', () => {
     });
     expect(auth?.kind).toBe('oauth2-client');
     expect(called).toBeGreaterThan(0);
+  });
+});
+
+// ── WS2 sign-side factory (RELEASE_0_8_0_PLAN.md §B1) ──────────────────
+
+function envelopeTo(to: string): AgentRpcEnvelope {
+  return {
+    version: 1,
+    kind: 'request',
+    messageId: 'msg-signer-1',
+    correlationId: 'corr-signer-1',
+    from: 'agent://self',
+    to: to as AgentRpcEnvelope['to'],
+    capability: 'do-thing',
+    payload: { n: 1 },
+    auth: { kind: 'internal' },
+  };
+}
+
+describe('buildOutboundSigner', () => {
+  const hmacAuth = { provider: 'hmac', keyId: 'k1', secretRef: 'secret://pair-ab' };
+
+  test('signs to an hmac peer and the verify registry accepts the result', async () => {
+    const secrets = async () => 'shared-secret-ab';
+    const signer = await buildOutboundSigner({ peers: peerConfig({ auth: hmacAuth }), secrets });
+    expect(signer.signablePeers).toBe(1);
+
+    const envelope = envelopeTo('agent://peer-a');
+    envelope.auth = await signer.hook(envelope);
+    expect(envelope.auth.kind).toBe('hmac');
+
+    // Receiver side: same shared secret + keyId in ITS peer entry for us.
+    const registry = await buildAuthVerifyRegistry({
+      peers: peerConfig({ auth: hmacAuth }),
+      secrets,
+    });
+    const entry = registry.resolve('agent://peer-a');
+    if (entry === undefined) throw new Error('expected verify entry');
+    const result = await entry.provider.verify(
+      envelope,
+      entry.config as Parameters<typeof entry.provider.verify>[1],
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test('tampering a signed field fails verification', async () => {
+    const secrets = async () => 'shared-secret-ab';
+    const signer = await buildOutboundSigner({ peers: peerConfig({ auth: hmacAuth }), secrets });
+    const envelope = envelopeTo('agent://peer-a');
+    envelope.auth = await signer.hook(envelope);
+    const tampered = { ...envelope, payload: { n: 999 } };
+
+    const registry = await buildAuthVerifyRegistry({
+      peers: peerConfig({ auth: hmacAuth }),
+      secrets,
+    });
+    const entry = registry.resolve('agent://peer-a');
+    if (entry === undefined) throw new Error('expected verify entry');
+    const result = await entry.provider.verify(
+      tampered,
+      entry.config as Parameters<typeof entry.provider.verify>[1],
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  test('destination without an auth block gets the legacy internal stamp', async () => {
+    const signer = await buildOutboundSigner({
+      peers: peerConfig(),
+      secrets: async () => {
+        throw new Error('no auth blocks — resolver must not be called');
+      },
+    });
+    expect(signer.signablePeers).toBe(0);
+    const auth = await signer.hook(envelopeTo('agent://peer-a'));
+    expect(auth).toEqual({ kind: 'internal' });
+    const unknown = await signer.hook(envelopeTo('agent://not-a-peer'));
+    expect(unknown).toEqual({ kind: 'internal' });
+  });
+
+  test('an unresolvable secretRef fails the build (boot-abort seam)', async () => {
+    await expect(
+      buildOutboundSigner({
+        peers: peerConfig({ auth: hmacAuth }),
+        secrets: async (ref) => {
+          throw new Error(`no such secret: ${ref}`);
+        },
+      }),
+    ).rejects.toThrow('no such secret: secret://pair-ab');
   });
 });
