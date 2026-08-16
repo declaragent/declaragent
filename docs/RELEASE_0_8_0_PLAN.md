@@ -28,7 +28,9 @@ keeps the *claim* honest.
 ## 2 · Hard blockers (must land before the flip is even safe)
 
 ### B1 · WS2 signer wired into the CLI — *the* critical-path code item
-Verified 2026-08-16: `signOutbound` exists only inside
+> **✅ DONE 2026-08-16** (`87ae87a`): `buildOutboundSigner` + response-leg signing + fleet-run wiring (both legs, per-agent-wins) + boot-abort on unbuildable signer + `audit-rpc` sign-side findings. Flagship test green: strict + HMAC both sides → delegation succeeds. Remaining nuance: OIDC peers are verify-only for the built-in signer (flagged by the inspector).
+
+Original finding (2026-08-16): `signOutbound` exists only inside
 `packages/plugin-agent-rpc` (`request-agent.ts`); neither `up` nor `fleet run`
 builds a signer. **Flipping `rpc.auth.enabled` strict without this breaks every
 built-in delegation** — the exact failure the plan's WS2 tests call out.
@@ -48,7 +50,9 @@ Scope:
   tampering any signed field fails verification.
 
 ### B2 · CI evidence lanes must be green before a breaking release ships
-Verified 2026-08-16 — worse than the June ledger records:
+> **✅ RESOLVED 2026-08-16**: the failures predated the June-work landing — current main passes. Proven by workflow-dispatch on main: nightly integration (Kafka + NATS) **green**, bounded 10-min soak **green**; `prod-smoke-kafka` re-enabled. The streak clock starts with the next scheduled Sunday soak. Follow-up owed: a durable biome-format step in the release flow (the changesets Version PR keeps landing npm-formatted package.jsons that red CI lint — re-fixed at `49462c9`).
+
+Original finding (2026-08-16):
 - `weekly-soak.yml`: **0 green in all 17 runs ever** (worker exits 1 before
   ready in `testkit/src/fleet-integration/harness/multi-process.ts` on CI;
   the same path passed the June 10 local live-verify).
