@@ -4,7 +4,7 @@ Project memory for Declaragent. Read this first when starting work here.
 
 - **Name:** Declaragent (official).
 - **Domain:** [declaragent.dev](https://declaragent.dev)
-- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest published `@declaragent/cli@0.7.6` (`npm view @declaragent/cli dist-tags` → `latest: 0.7.6`, verified 2026-08-16).
+- **npm scope:** [`@declaragent/*`](https://www.npmjs.com/org/declaragent) — 13 packages on npm. CLI ships independently; latest published `@declaragent/cli@0.7.7` (`npm view @declaragent/cli dist-tags` → `latest: 0.7.7`, verified 2026-08-16; core@0.6.0, satellites@5.0.0 — peer-major on core 0.5→0.6).
 - **GitHub org:** `declaragent`.
 - **Theme:** *an agent for enterprises to build and manage fleets of agents.* Declaragent itself is an agent — same core, same tools, same audit — that helps operators author + run everyone else's agents.
 - **Honest capability status:** see **[AGENTS.md](./AGENTS.md)** for the feature-level ledger. For the intent→code audit ("does the first-principles vision actually work at production scale?") see **[docs/FIRST_PRINCIPLES_AUDIT.md](./docs/FIRST_PRINCIPLES_AUDIT.md)** (exhaustive capability matrix) and **[docs/FIRST_PRINCIPLES_VALIDATION.md](./docs/FIRST_PRINCIPLES_VALIDATION.md)** (pillar-by-pillar yes/no verdict with ranked enterprise gap list). This file is a project-orientation guide, not a status dashboard.
@@ -37,7 +37,7 @@ Current state (see `docs/FIRST_PRINCIPLES_VALIDATION.md` for evidence + ranked g
 | 4 · Tools + MCP (7 built-ins, + SendMessage when channels are configured; MCP stdio via `mcp add`, HTTP/SSE via hand-edited config + plugins) | ✅ | ✅ (v0.7.5) — per-tool + per-MCP-server aggregate rate limits shipped (#27), graceful drain across respawn (#13), auto-recovery + supervised mode live; approval workflows remain roadmap |
 | 5 · **Conversational builder → deployable fleet** (`DECLARAGENT_BUILDER=on`) | ✅ | ✅ (v0.7.1) — recorded-conversation regression fixtures shipped via PR #24; fixture polish #36/#37/#38 all landed at 0.7.6 |
 
-**Single-machine production: ✅** ready — `@declaragent/cli@0.7.6` on npm. A single host runs `declaragent up -d`, webhook/cron in, Claude + MCP tools + Slack/Telegram/Discord/WhatsApp in/out, `/metrics` + circuit breakers + per-tool + provider rate limits + dispatch DLQ on by default (OTel span export is opt-in: env var + installed `@opentelemetry/*` packages). Conversational builder (`DECLARAGENT_BUILDER=on`) produces deployable single-agent and multi-agent fleets end-to-end.
+**Single-machine production: ✅** ready — `@declaragent/cli@0.7.7` on npm. A single host runs `declaragent up -d`, webhook/cron in, Claude + MCP tools + Slack/Telegram/Discord/WhatsApp in/out, `/metrics` + circuit breakers + per-tool + provider rate limits + dispatch DLQ on by default (OTel span export is opt-in: env var + installed `@opentelemetry/*` packages). Conversational builder (`DECLARAGENT_BUILDER=on`) produces deployable single-agent and multi-agent fleets end-to-end.
 
 **Enterprise production: ⚠️ partial** (see the accuracy note above — the AGENTS.md evidence ledger is authoritative). All 12 items on `docs/ENTERPRISE_PRODUCTION_PLAN.md` shipped during the 0.7.0 → 0.7.1 push; the follow-up backlog has closed **34 of 52 items** across 0.7.1 → 0.7.5. See **[docs/POST_ENTERPRISE_BACKLOG.md](./docs/POST_ENTERPRISE_BACKLOG.md)** for the 18 remaining follow-ups. Top open work:
 1. **#5b `rpc.auth.enabled: true` default flip** — behavioural change deferred to **0.8.0**; see [`docs/ZERO_TRUST_DEFAULT_MIGRATION.md`](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md) for the migration plan.
@@ -53,7 +53,7 @@ See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" f
 
 ---
 
-## Current status (verified 2026-08-16, @declaragent/cli@0.7.6 live on npm)
+## Current status (verified 2026-08-16, @declaragent/cli@0.7.7 live on npm)
 
 **What works end-to-end** (production-usable single-machine + multi-host path):
 - `declaragent init` → scaffold with `agent.yaml` + skills + `event-sources.yaml`
