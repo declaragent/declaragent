@@ -1,37 +1,13 @@
 {
-  "$comment": "Docs-truth mechanism #2 — the env-var registry. Every DECLARAGENT_* variable the runtime/installer reads must have an entry here, and every DECLARAGENT_* variable mentioned on the docs site must exist here. `documented: true` entries must appear in docs-site/docs/reference/env-vars.mdx. Enforced by scripts/env-vars-lint.ts (CI).",
+  "$comment": "Docs-truth mechanism #2 \u2014 the env-var registry. Every DECLARAGENT_* variable the runtime/installer reads must have an entry here, and every DECLARAGENT_* variable mentioned on the docs site must exist here. `documented: true` entries must appear in docs-site/docs/reference/env-vars.mdx. Enforced by scripts/env-vars-lint.ts (CI).",
   "vars": {
-    "DECLARAGENT_CONFIG_DIR": {
-      "documented": true,
-      "note": "Overrides ~/.declaragent; deploy Dockerfile sets /etc/declaragent."
+    "DECLARAGENT_AGENT_ID": {
+      "documented": false,
+      "note": "Injected by fleet-run for child processes \u2014 not operator-set."
     },
-    "DECLARAGENT_BUILDER": {
+    "DECLARAGENT_BASE_URL": {
       "documented": true,
-      "note": "'on' enables the builder toolkit in the REPL."
-    },
-    "DECLARAGENT_METRICS_PORT": {
-      "documented": true,
-      "note": "Control-plane/metrics port for `up` (9464 detached default; 0 disables)."
-    },
-    "DECLARAGENT_BIND_ADDRESS": {
-      "documented": true,
-      "note": "Control-plane bind address (default 127.0.0.1; fail-closed non-loopback)."
-    },
-    "DECLARAGENT_DRAIN_DEADLINE_MS": {
-      "documented": true,
-      "note": "Graceful-drain budget on shutdown (default 15000; 0 disables)."
-    },
-    "DECLARAGENT_PROVIDER_RATE_LIMIT_RPS": {
-      "documented": true,
-      "note": "Overrides the provider token-bucket rate (up + fleet run)."
-    },
-    "DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE": {
-      "documented": true,
-      "note": "'1' skips the provider rate-limit wrap."
-    },
-    "DECLARAGENT_RPC_AUTH_DEFAULT": {
-      "documented": true,
-      "note": "'on' previews the 0.8.0 zero-trust default."
+      "note": "Installer: release origin override."
     },
     "DECLARAGENT_BASH_ENV_ALLOW": {
       "documented": true,
@@ -41,16 +17,42 @@
       "documented": true,
       "note": "Comma-separated extra denylist for bash-tool env passthrough."
     },
+    "DECLARAGENT_BIND_ADDRESS": {
+      "documented": true,
+      "note": "Control-plane bind address (default 127.0.0.1; fail-closed non-loopback)."
+    },
+    "DECLARAGENT_BUILDER": {
+      "documented": true,
+      "note": "'on' enables the builder toolkit in the REPL."
+    },
     "DECLARAGENT_CLI_VERSION": {
       "documented": true,
       "note": "Overrides the version stamped into up state (ops/test)."
     },
-    "DECLARAGENT_VERSION": { "documented": true, "note": "Installer: release tag to install." },
-    "DECLARAGENT_PREFIX": {
+    "DECLARAGENT_CONFIG_DIR": {
       "documented": true,
-      "note": "Installer: install prefix for the curl path."
+      "note": "Overrides ~/.declaragent; deploy Dockerfile sets /etc/declaragent."
     },
-    "DECLARAGENT_BASE_URL": { "documented": true, "note": "Installer: release origin override." },
+    "DECLARAGENT_CONTROL_PLANE_TOKEN": {
+      "documented": false,
+      "note": "Bearer token consumed via fleet.yaml hosts[].auth env: refs in examples/tests."
+    },
+    "DECLARAGENT_DRAIN_DEADLINE_MS": {
+      "documented": true,
+      "note": "Graceful-drain budget on shutdown (default 15000; 0 disables)."
+    },
+    "DECLARAGENT_FLEET_NAME": {
+      "documented": false,
+      "note": "Injected by fleet-run for child processes \u2014 not operator-set."
+    },
+    "DECLARAGENT_FLEET_VERSION": {
+      "documented": false,
+      "note": "Injected by fleet-run/renderers for version-skew stamping \u2014 not operator-set."
+    },
+    "DECLARAGENT_METRICS_PORT": {
+      "documented": true,
+      "note": "Control-plane/metrics port for `up` (9464 detached default; 0 disables)."
+    },
     "DECLARAGENT_NO_CHECKSUM": {
       "documented": true,
       "note": "Installer: skips SHA-256 verify. Never in production."
@@ -59,34 +61,53 @@
       "documented": true,
       "note": "npm installer: skips the binary download."
     },
-    "DECLARAGENT_USE_BINARY": {
+    "DECLARAGENT_PREFIX": {
       "documented": true,
-      "note": "npm launcher: '1' forces the compiled binary over the Bun + dist path."
+      "note": "Installer: install prefix for the curl path."
+    },
+    "DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE": {
+      "documented": true,
+      "note": "'1' skips the provider rate-limit wrap."
+    },
+    "DECLARAGENT_PROVIDER_RATE_LIMIT_RPS": {
+      "documented": true,
+      "note": "Overrides the provider token-bucket rate (up + fleet run)."
+    },
+    "DECLARAGENT_REHEARSAL_HMAC_SECRET": {
+      "documented": false,
+      "note": "Test-harness-only: shared HMAC secret for the rolling-upgrade rehearsal fleet. Defaulted by the test."
+    },
+    "DECLARAGENT_REHEARSAL_OLD_VERSION": {
+      "documented": false,
+      "note": "Test-harness-only: published @declaragent/cli version for the old side of the 0.8.0 rolling-upgrade rehearsal (rolling-upgrade.test.ts). Default latest."
+    },
+    "DECLARAGENT_RPC_AUTH_DEFAULT": {
+      "documented": true,
+      "note": "'on' previews the 0.8.0 zero-trust default."
     },
     "DECLARAGENT_SIZE_BUDGET_MB": {
       "documented": true,
       "note": "Build-only: binary size budget for the release script."
     },
+    "DECLARAGENT_SOAK_HMAC_SECRET": {
+      "documented": false,
+      "note": "Test-harness-only: shared HMAC secret for the Kafka soak fleet (multi-process harness peers + driver). Defaulted by the harness; CI may override. Not a runtime knob."
+    },
+    "DECLARAGENT_TEST_": {
+      "documented": false,
+      "note": "Reserved test-only prefix."
+    },
     "DECLARAGENT_TOOLS_LEGACY": {
       "documented": false,
       "note": "Rollout escape hatch: 'on' restores pre-WS1 tool-permission behavior. Deliberately undocumented; removed after the 0.8.0 cutover."
     },
-    "DECLARAGENT_FLEET_VERSION": {
-      "documented": false,
-      "note": "Injected by fleet-run/renderers for version-skew stamping — not operator-set."
+    "DECLARAGENT_USE_BINARY": {
+      "documented": true,
+      "note": "npm launcher: '1' forces the compiled binary over the Bun + dist path."
     },
-    "DECLARAGENT_FLEET_NAME": {
-      "documented": false,
-      "note": "Injected by fleet-run for child processes — not operator-set."
-    },
-    "DECLARAGENT_AGENT_ID": {
-      "documented": false,
-      "note": "Injected by fleet-run for child processes — not operator-set."
-    },
-    "DECLARAGENT_CONTROL_PLANE_TOKEN": {
-      "documented": false,
-      "note": "Bearer token consumed via fleet.yaml hosts[].auth env: refs in examples/tests."
-    },
-    "DECLARAGENT_TEST_": { "documented": false, "note": "Reserved test-only prefix." }
+    "DECLARAGENT_VERSION": {
+      "documented": true,
+      "note": "Installer: release tag to install."
+    }
   }
 }
