@@ -49,7 +49,7 @@ See `docs/FIRST_PRINCIPLES_AUDIT.md` §"Cross-pillar: what's honestly missing" f
 
 ## Upcoming breaking changes
 
-- **0.8.0 · zero-trust default flip.** `rpc.auth.enabled` will default to `true` when `rpc-peers.yaml` is present on a fleet. Fleets without an `auth:` block on every peer-using agent will fail boot with `AUTH_REJECTED`. Migration inspector shipped at 0.7.3 (`declaragent fleet audit-rpc --suggest-enable [--strict]`). Full plan: **[docs/ZERO_TRUST_DEFAULT_MIGRATION.md](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md)**. Recommended pre-flight: 2–3 weeks of `--strict` runs in CI before taking 0.8.0.
+- **0.8.0 · zero-trust default flip.** `rpc.auth.enabled` will default to `true` when `rpc-peers.yaml` is present on a fleet. Fleets without an `auth:` block on every peer-using agent will fail boot with `AUTH_REJECTED`. Migration inspector shipped at 0.7.3 (`declaragent fleet audit-rpc --suggest-enable [--strict]`). Full plan: **[docs/ZERO_TRUST_DEFAULT_MIGRATION.md](./docs/ZERO_TRUST_DEFAULT_MIGRATION.md)**. Recommended pre-flight: 2–3 weeks of `--strict` runs in CI before taking 0.8.0. **Release plan for the full four-flip cutover (rpc.auth + allowLoopback + strict schema + tools default): [docs/RELEASE_0_8_0_PLAN.md](./docs/RELEASE_0_8_0_PLAN.md)** — blockers, CI-window mechanics, rolling-upgrade rehearsal, and the go/no-go checklist.
 
 ---
 
