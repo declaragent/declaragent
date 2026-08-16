@@ -65,7 +65,9 @@ Debugging the worker-boot exit-1 fixes both red lanes (same harness). Until
 nightly is green, the flip-1 strict-mode CI window (§3) produces no signal.
 
 ### B3 · Branch protection on `main`
-Still absent (404 on the protection API, verified 2026-08-16). `gh` now has
+> **✅ DONE 2026-08-16**: protection active. Required checks (strict up-to-date): `Lint, typecheck, test, build` (CI), `OSV scan` (Dependency scan), `Release gate summary` (aggregates chaos/tenant/secret-leak/sentinel jobs), `bun pm audit`. All four run unfiltered on every PR targeting main, so no PR can deadlock on a skipped check. `enforce_admins` is OFF — the documented solo-maintainer break-glass (direct admin pushes still land; PRP risk 7). Enable it after the sentinel is verified on a throwaway release PR. Force pushes + deletions blocked; no required reviews (solo maintainer).
+
+Original finding: still absent (404 on the protection API, verified 2026-08-16). `gh` now has
 admin scope, so this is minutes of work: required checks = CI, Release gate,
 Dependency scan, plus the hermetic E2E once it's split into a named check.
 Heed PRP risk 7: bootstrap out-of-band, verify the sentinel on a throwaway
