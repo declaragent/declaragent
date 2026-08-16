@@ -30,8 +30,8 @@
   },
   "peerDependencies": {
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
-    "@opentelemetry/sdk-node": "^0.218.0"
+    "@opentelemetry/exporter-trace-otlp-http": ">=0.218.0 <1.0",
+    "@opentelemetry/sdk-node": ">=0.218.0 <1.0"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": { "optional": true },
