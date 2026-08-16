@@ -1,6 +1,6 @@
 ---
 "@declaragent/core": minor
-"@declaragent/cli": minor
+"@declaragent/cli": patch
 "@declaragent/plugin-agent-rpc": minor
 "@declaragent/testkit": patch
 ---
