@@ -75,4 +75,13 @@ if printf '%s\n' "$changed_files" | grep -qE '^docs-site/sidebars\.ts$'; then
   fi
 fi
 
+# Docs-truth lints (DOCS_TRUTH_PLAN Wave 3) — cheap, always run. Validates
+# every documented `declaragent` command, env var, and metric name against
+# the code, plus the single-scoreboard + no-placeholder policies.
+echo "pre-push: docs-truth lints"
+bun scripts/docs-command-lint.ts
+bun scripts/env-vars-lint.ts
+bun scripts/metrics-lint.ts
+bun scripts/docs-policy-lint.ts
+
 exit "$exit_code"

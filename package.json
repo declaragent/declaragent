@@ -12,6 +12,7 @@
     "demo:phase5": "bun test examples/phase5-demo/",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
+    "lint:docs": "bun scripts/docs-command-lint.ts && bun scripts/env-vars-lint.ts && bun scripts/metrics-lint.ts && bun scripts/docs-policy-lint.ts",
     "format": "biome format --write .",
     "changeset": "changeset",
     "version-packages": "changeset version",
