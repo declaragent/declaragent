@@ -41,6 +41,8 @@ Usage:
 
   declaragent extensions
 
+  declaragent agent validate [<dir>] [--json]       # validate an agent.yaml (schema + tools + key typos)
+
   declaragent up [-d|--detach] [-f <path>]         # bring agents online (compose-like)
   declaragent down                                  # stop agents brought up by \`up\`
   declaragent ps                                    # list bound agents + sources
@@ -110,6 +112,8 @@ Usage:
   declaragent audit verify [--tenant X] [--json]
   declaragent audit erase --user <platformUserId> [--reason R] [--json]
   declaragent audit prune --tenant <id> --retention-days <N> [--json]
+
+  declaragent erase --user <platformUserId> [--reason R] [--json]   # GDPR: erase a subject across audit + events
 
   declaragent secrets list [--provider <name>] [--json]
   declaragent secrets describe <ref> [--json]

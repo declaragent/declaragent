@@ -13,7 +13,7 @@ Multi-tenancy is a first-class primitive. One `declaragent up` process can host 
 - Extensions (`extensions.allow` / `extensions.deny` per tenant).
 - Quotas (cost + rate limits per tenant).
 - Audit log (separate Merkle chains per tenant).
-- Metrics (every Prometheus series gets a `tenant=` label).
+- Metrics (every Prometheus series gets a `tenant_id=` label).
 
 ## Minimal setup
 
@@ -33,14 +33,14 @@ tenants:
       allow: [slack, kafka]
     quotas:
       dailyTokenUSD: 100
-      requestsPerMinute: 1000
+      maxEventIngressPerSec: 20
   - id: beta-tenant
     residency: eu
     extensions:
       deny: [whatsapp]
     quotas:
       dailyTokenUSD: 5
-      requestsPerMinute: 60
+      maxEventIngressPerSec: 2
 ```
 
 ## Verify
@@ -64,13 +64,13 @@ declaragent audit verify --tenant beta-tenant
 Boundary violations are visible per-tenant:
 
 ```bash
-declaragent audit query --kind tenant_boundary_denied
+declaragent audit query --kind tenant_boundary_violation
 ```
 
 ## Key points
 
-- **Boundary enforcement.** Any attempt to route a message across tenants emits a `tenant_boundary_denied` audit record + a `TENANT_BOUNDARY` alert.
-- **Per-tenant metrics labels.** Slice 0 auto-stamps `tenant=` on every series emitted by the Prometheus exporter.
+- **Boundary enforcement.** Any attempt to route a message across tenants emits a `tenant_boundary_violation` audit record + a `TENANT_BOUNDARY` alert.
+- **Per-tenant metrics labels.** Slice 0 auto-stamps `tenant_id=` on every series emitted by the Prometheus exporter.
 - **Independent rotations.** `declaragent secrets rotate --tenant <id>` scopes the rotation. Other tenants are undisturbed.
 
 ## Related

@@ -27,5 +27,15 @@
     "chokidar": "^5.0.0",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
+    "@opentelemetry/sdk-node": "^0.218.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": { "optional": true },
+    "@opentelemetry/exporter-trace-otlp-http": { "optional": true },
+    "@opentelemetry/sdk-node": { "optional": true }
   }
 }

@@ -8,10 +8,11 @@ sidebar_position: 9
 
 # Control-plane HTTP endpoints
 
-`declaragent up [-d]` exposes a read-only HTTP listener on `127.0.0.1:9464`
-by default (override with `DECLARAGENT_METRICS_PORT`, set to `0` to
-disable). The listener multiplexes five endpoints used by
-`declaragent fleet <verb>` and external observability tooling.
+`declaragent up -d` exposes a read-only HTTP listener on `127.0.0.1:9464`
+by default in detached mode (foreground runs bind only when
+`DECLARAGENT_METRICS_PORT` is set; `0` disables it in detached mode too).
+The listener multiplexes eight endpoints used by
+`declaragent fleet <verb>`, k8s probes, and external observability tooling.
 
 | Path      | Shape              | Purpose                                                                 |
 | --------- | ------------------ | ----------------------------------------------------------------------- |
@@ -21,9 +22,14 @@ disable). The listener multiplexes five endpoints used by
 | `/dlq`    | JSON, paginated    | Read-only view of `EventStore.listRejections()` (dispatch DLQ).         |
 | `/audit`  | JSON, paginated    | Read-only view of the hash-chained audit sink; optional `?verify=1`.    |
 | `/logs`   | `text/event-stream`| Live SSE tail of per-agent `~/.declaragent/logs/<agent>.log` files.     |
+| `/healthz`| JSON               | Liveness probe. Auth-exempt.                                            |
+| `/readyz` | JSON               | Readiness probe (used by the rendered k8s manifests). Auth-exempt.      |
 
-Bind is localhost-only by default. Remote bind (Slice 2 of the control-plane
-plan) is gated on an explicit opt-in that isn't wired into the CLI yet.
+Bind is localhost-only by default. Set `DECLARAGENT_BIND_ADDRESS` to bind
+non-loopback (the k8s/helm renderers set `0.0.0.0`). The bind is fail-closed:
+a non-loopback bind **without** `controlPlane.auth` serves only the safe
+subset (`/metrics`, `/healthz`, `/readyz`); enabling auth unlocks the full
+route set for remote callers.
 
 ## Authenticated control plane
 
@@ -107,13 +113,28 @@ controlPlane:
 
 ### Loopback bypass
 
-`allowLoopback: true` (the default) means requests whose `Host` header
-parses to `127.0.0.1`, `localhost`, or the bracketed `[::1]` form
-bypass auth entirely. That keeps `curl http://localhost:9464/metrics`
-from the same box functional without a token. Zero-trust deployments
-flip this to `false` to require a token on every request — the listener
-is still bound to `127.0.0.1`, so only co-located processes can reach
-it at all.
+`allowLoopback: true` (the default) means requests whose **real
+connection peer IP** is loopback bypass auth entirely — the decision is
+based on the socket peer, never the spoofable `Host` header. That keeps
+`curl http://localhost:9464/metrics` from the same box functional
+without a token. Zero-trust deployments flip this to `false` to require
+a token on every request.
+
+Behind a reverse proxy, use the object form to attribute requests via
+`X-Forwarded-For`:
+
+```yaml
+controlPlane:
+  auth:
+    allowLoopback:
+      trustedProxies: ["10.0.0.5"]   # only XFF from these peers is honored
+```
+
+With `trustedProxies` set, a loopback/trusted-proxy connection presenting
+an `X-Forwarded-For` chain is attributed to the first untrusted hop; an
+XFF header arriving from an **untrusted** peer is rejected with the
+typed reason `untrusted-proxy` (see the rejection-reason table — the
+full vocabulary also includes `not-yet-valid` and `config-error`).
 
 ### Enabling implicitly relaxes the Host-header sniff
 
@@ -122,10 +143,12 @@ whose `Host` header isn't loopback normally gets `403 remote
 control-plane disabled` before auth ever runs. When
 `controlPlane.auth.enabled: true` is parsed, the `up` daemon
 automatically flips `allowRemote: true` for the listener, since
-otherwise the middleware is unreachable. The listener still binds to
-`127.0.0.1` — a reverse proxy (nginx / envoy / cloud LB) is expected to
-front the port for remote access and the proxy's `Host` header rewrite
-plumbs the original hostname through.
+otherwise the middleware is unreachable. Direct non-loopback binds are
+supported via `DECLARAGENT_BIND_ADDRESS` (auth required for the full
+route set — see the fail-closed rule above). Proxy deployments should
+configure `allowLoopback: { trustedProxies: [...] }` so requests are
+attributed via `X-Forwarded-For` rather than relying on Host-header
+rewrites.
 
 ### Reusing the issuer with RPC auth
 
@@ -146,8 +169,13 @@ Accept: text/event-stream
 
 | Param   | Type              | Default                            | Notes |
 | ------- | ----------------- | ---------------------------------- | ----- |
-| `agent` | string            | all running agents (multiplexed)   | Unknown agent id returns `400 {"error": "unknown agent \"X\""}`. |
+| `agent` | string            | all running agents (multiplexed)   | Unknown agent id returns `400 {"error": "unknown agent \"X\""}`. Mutually exclusive with `all`. |
+| `all`   | `1`               | —                                  | Explicit every-agent fan-out (scope-gated when auth is enabled). |
 | `since` | ISO-8601 \| ms    | tail-from-end                      | When set, the tailer replays from byte 0 and the caller filters on the wire. |
+
+Fan-out is capped at **50 watchers** (`logs.fanOutLimit`); an over-cap
+request returns `413`. Per-route scopes are configurable via
+`controlPlane.auth.routeScopes`.
 
 ### Framing
 
@@ -232,5 +260,6 @@ for evt in sseclient.SSEClient(r).events():
 
 - `declaragent logs [-f]` — file-path tail; no HTTP hop. Equivalent for a local
   operator; `/logs` is for remote fleet aggregation.
-- [`declaragent fleet logs`](/reference/fleet) _(planned)_ — multiplexes `/logs`
-  across every host in a fleet manifest.
+- [`declaragent fleet logs [--host <name>] [--agent <id>] [-f]`](/reference/fleet) —
+  multiplexes `/logs` across every host in a fleet manifest (shipped; one bad
+  host is tagged, survivors stream).

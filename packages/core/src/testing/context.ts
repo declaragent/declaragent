@@ -49,6 +49,11 @@ export function makeToolContext(overrides?: Partial<ToolContext>): ToolContext {
         usage: { inputTokens: 0, outputTokens: 0 },
       })),
     logger: overrides?.logger ?? NOOP_LOGGER,
+    ...(overrides?.tenant !== undefined && { tenant: overrides.tenant }),
+    ...(overrides?.subject !== undefined && { subject: overrides.subject }),
+    ...(overrides?.createChildSession !== undefined && {
+      createChildSession: overrides.createChildSession,
+    }),
   };
 }
 

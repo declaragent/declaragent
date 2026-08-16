@@ -32,8 +32,9 @@ Until steps 1–6 are done, leave every TBD / empty cell below exactly as-is.
 ## Engagement scope
 
 Agreed with the reviewer at engagement kickoff. Scope document is
-linked from the vendor portal + archived under
-`docs/security/pen-test-sow.pdf` (not in the public repo).
+to be linked from the vendor portal + archived under
+`docs/security/pen-test-sow.pdf` once an engagement exists (not in the
+public repo; no engagement yet — see the banner above).
 
 Scoped components:
 - Core runtime (engine, permission gate, event bus, dispatcher).

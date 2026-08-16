@@ -1,5 +1,12 @@
 # The Agent-Building Agent
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 The biggest architectural shift in the series. Everything before this doc treated **my-agent** as a single process the user runs. This doc makes my-agent into a **platform** with two distinct tiers:
 
 - **Builder tier** (local): a conversational agent that configures, builds, and deploys other agents

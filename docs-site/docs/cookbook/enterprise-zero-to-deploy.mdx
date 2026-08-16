@@ -57,8 +57,12 @@ declaragent auth status
 
 ```bash
 mkdir orders-workspace && cd orders-workspace
-declaragent
+DECLARAGENT_BUILDER=on declaragent
 ```
+
+The builder toolkit is gated behind `DECLARAGENT_BUILDER=on` (strictly lowercase
+`on`) — a bare `declaragent` opens the plain REPL with **no** `Declara*` tools.
+Every REPL launch in this walkthrough assumes the flag is set.
 
 The REPL boots with a 4-line banner (`banner.tsx:26`):
 
@@ -208,7 +212,7 @@ Five things to know about `DeclaraAddSecret`:
 
 ## Step 6 — Add an MCP server (~2 min)
 
-The **builder tool** `DeclaraAddMCP` supports **stdio transport only** today (`add-mcp.ts:59`). The CLI verb `declaragent mcp add` supports `stdio` + `http` + `sse` + `http-streamable` with OAuth PKCE (`mcp-cli.ts`) — use that directly when you need a remote server. All MCP servers live in **user-global** `~/.declaragent/mcp-servers.json` (`add-mcp.ts:1-20`), shared across every agent on the machine.
+Both the **builder tool** `DeclaraAddMCP` and the CLI verb `declaragent mcp add` support **stdio transport only** today (`mcp add <name> --command <cmd> [--args ...]` — there are no `--transport`/`--url` flags yet). All MCP servers live in **user-global** `~/.declaragent/mcp-servers.json`, shared across every agent on the machine.
 
 A concrete stdio example:
 
@@ -226,11 +230,15 @@ Builder:
 > /yes
 ```
 
-Tools from this server appear as `mcp__fs-orders__<tool>` after the REPL restarts. For an HTTP MCP server with OAuth (e.g. the GitHub MCP), drop to the shell:
+Tools from this server appear as `mcp__fs-orders__<tool>` after the REPL restarts. For a remote MCP server, hand-edit `~/.declaragent/mcp-servers.json` today — the runtime supports `http`, `sse`, and `http-streamable` transports, but the `mcp add` verb's remote-transport flags haven't shipped yet:
 
-```bash
-declaragent mcp add gh --transport http --url https://mcp.github.com
-declaragent mcp login gh          # browser PKCE flow
+```json
+{
+  "version": 1,
+  "servers": [
+    { "name": "gh", "transport": { "type": "http", "url": "https://mcp.github.com" } }
+  ]
+}
 ```
 
 ## Step 7 — Install a plugin (~1 min)
@@ -268,8 +276,8 @@ Builder:
   I'll run the Slack auth playbook first, then register the channel.
 
   Proposal pr_06 — Slack OAuth playbook + channel registration
-    1. [runCommand] declaragent auth playbook slack
-       preview:
+    1. [authPlaybook] slack       # the builder's DeclaraAuthPlaybook tool —
+       preview:                   # there is no `declaragent auth playbook` shell verb
          Opens a browser to create a Slack app, guides you through
          Socket Mode setup, and captures SLACK_BOT_TOKEN + SLACK_APP_TOKEN
          into ~/.declaragent/.env (never into the transcript).
@@ -292,11 +300,13 @@ Before running anything:
 > /fleet graph
 ```
 
-Emits Mermaid (`fleet-graph-cli.ts:177` — format is literally `graph LR\n  from-->|label| to`):
+Emits Mermaid (`renderMermaid` in `fleet-graph-cli.ts` — node declarations plus `-->|capability (transport)|` edges):
 
 ```mermaid
 graph LR
-  concierge-->|RequestAgent::review-pr::memory| pr-reviewer
+  n_concierge["agent://concierge (client)"]
+  n_pr_reviewer["agent://pr-reviewer (server)"]
+  n_concierge -->|review-pr (memory)| n_pr_reviewer
 ```
 
 Swap the format:
@@ -327,7 +337,8 @@ Builder:
     1. [runCommand] declaragent fleet run
        preview:
          binds webhook port (defaults configured per agent's event-sources.yaml)
-         binds :9464 (metrics) by default; override with DECLARAGENT_METRICS_PORT
+         # note: the :9464 /metrics listener is an `up -d` daemon feature —
+         # `fleet run` keeps in-memory worker counters only
 
 > /yes
 ```
@@ -338,7 +349,9 @@ From a second shell, drive it:
 
 ```bash
 declaragent fleet status
-curl -sX POST http://localhost:8787/webhook/concierge \
+# the webhook listener binds port 7777 by default — match the `port:` in
+# concierge's event-sources.yaml if you set one explicitly
+curl -sX POST http://localhost:7777/webhook/concierge \
   -H 'Content-Type: application/json' \
   -d '{"user":"demo","text":"review https://github.com/declaragent/declaragent/pull/61"}'
 declaragent events list --last 20
@@ -386,12 +399,12 @@ Builder:
 > /yes
 ```
 
-Step 5 exits non-zero if any peer lacks an `auth:` block (`fleet-audit-rpc-cli.ts`). If gaps exist, the builder follows up with `--suggest-enable` diffs (peer auth providers are `oidc` and `oauth2-client` — `peers-loader.ts:140`). Go deeper: [SIEM audit export](/cookbook/siem-audit-export), [zero-trust RPC migration](/cookbook/zero-trust-rpc-migration).
+Step 5 exits non-zero if any peer lacks an `auth:` block (`fleet-audit-rpc-cli.ts`). If gaps exist, the builder follows up with `--suggest-enable` diffs (peer auth providers are `oidc`, `oauth2-client`, and `hmac` — shared-secret via `keyId`/`secretRef`, the zero-infra default — `peers-loader.ts`). Go deeper: [SIEM audit export](/cookbook/siem-audit-export), [zero-trust RPC migration](/cookbook/zero-trust-rpc-migration).
 
 ## Step 13 — Record the conversation as a CI fixture (~1 min)
 
 ```bash
-BUILDER_RECORD=1 declaragent
+DECLARAGENT_BUILDER=on BUILDER_RECORD=1 declaragent
 ```
 
 Every user turn, every assistant turn, every tool call, and every tool result is appended as JSONL to `<fixturesDir>/recorded-<iso-timestamp>.jsonl` with `fsync` (`recording-provider.ts:397`). The default `fixturesDir` is caller-controlled; set `BUILDER_RECORD_OUT=./tests/fixtures/scaffold.jsonl` to pin it.
@@ -471,7 +484,7 @@ First host goes, 120-second soak, then the rest. Rollback on probe failure.
 Things that are **not** conversational today — you'll drop to the CLI or hand-edited YAML:
 
 - **Full `secrets.yaml` scaffold.** `DeclaraAddSecret` doesn't synthesise the providers block; the `editFile` step in Step 5 above does.
-- **HTTP MCP servers from the REPL.** `DeclaraAddMCP` is stdio-only; `declaragent mcp add --transport http` + `mcp login` run from the shell.
+- **Remote MCP servers.** Both `DeclaraAddMCP` and `declaragent mcp add` are stdio-only; hand-edit `~/.declaragent/mcp-servers.json` for `http`/`sse`/`http-streamable` servers (the runtime supports them — the add verb doesn't yet).
 - **npm-published plugins.** `DeclaraAddPlugin` takes local paths; `bun add` is yours to run.
 - **Deploy.** By design. `DEFAULT_DEPLOY_DENY_RULES` is a feature — the builder cannot ship code to prod.
 - **Canary traffic weighting.** `fleet deploy --canary` is first-host-then-rest, not 5% → 50% → 100%. Layer Argo Rollouts for traffic shifting.

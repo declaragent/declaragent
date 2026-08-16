@@ -374,16 +374,17 @@ function resolveEffectivePeer(
     };
   }
 
-  // Scalar policy (`true` / `false`): preserve today's Host-header
-  // behaviour exactly (POST_ENTERPRISE_BACKLOG.md #7 deliverable 2 —
-  // "Default `allowLoopback: true` preserves today's behavior, no
-  // breaking change"). Operators who want peer-IP-tight loopback
-  // evaluation opt into the object form with an explicit
-  // `trustedProxies: []` (matches only real loopback; rejects every XFF).
+  // Scalar policy (`true` / `false`). WS2/WS3 security fix: when the real
+  // connection peer IP is known, the loopback decision is based on IT — NOT on
+  // the `Host` header, which a remote attacker can forge (`Host: 127.0.0.1`) to
+  // bypass bearer auth. The Host-header sniff is only the fallback for a stub
+  // listener that doesn't plumb `peerIp`. A same-host caller (peerIp =
+  // 127.0.0.1) still bypasses as before; a remote caller no longer can.
   return {
     kind: 'ok',
     peerIp: normalizedPeer,
-    isLoopback: isLoopbackRequest(request),
+    isLoopback:
+      normalizedPeer !== undefined ? isLoopbackIp(normalizedPeer) : isLoopbackRequest(request),
   };
 }
 

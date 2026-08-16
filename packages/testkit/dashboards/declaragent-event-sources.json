@@ -44,7 +44,7 @@
       },
       "targets": [
         {
-          "expr": "count(count by (id) (source_messages_received_total))",
+          "expr": "count(count by (id) (source_messages_received))",
           "legendFormat": "sources",
           "refId": "A"
         }
@@ -59,7 +59,7 @@
       "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
       "targets": [
         {
-          "expr": "sum(source_messages_processed_total)",
+          "expr": "sum(source_messages_processed)",
           "legendFormat": "processed",
           "refId": "A"
         }
@@ -86,7 +86,7 @@
       "options": { "colorMode": "value", "graphMode": "area" },
       "targets": [
         {
-          "expr": "sum(rate(source_messages_dlq_total[1m]))",
+          "expr": "sum(rate(source_messages_dlq[1m]))",
           "legendFormat": "dlq/sec",
           "refId": "A"
         }
@@ -113,7 +113,7 @@
       "options": { "colorMode": "value", "graphMode": "area" },
       "targets": [
         {
-          "expr": "sum(rate(source_connection_errors_total[1m]))",
+          "expr": "sum(rate(source_connection_errors[1m]))",
           "legendFormat": "errors/sec",
           "refId": "A"
         }
@@ -137,7 +137,7 @@
       "options": { "colorMode": "value", "graphMode": "area" },
       "targets": [
         {
-          "expr": "sum(rate(source_messages_failed_total[1m]))",
+          "expr": "sum(rate(source_messages_failed[1m]))",
           "legendFormat": "failed/sec",
           "refId": "A"
         }
@@ -155,12 +155,12 @@
       },
       "targets": [
         {
-          "expr": "rate(source_messages_received_total[1m])",
+          "expr": "rate(source_messages_received[1m])",
           "legendFormat": "received {{id}}",
           "refId": "A"
         },
         {
-          "expr": "rate(source_messages_processed_total[1m])",
+          "expr": "rate(source_messages_processed[1m])",
           "legendFormat": "processed {{id}}",
           "refId": "B"
         }
@@ -209,7 +209,7 @@
       },
       "targets": [
         {
-          "expr": "rate(source_messages_dlq_total[1m])",
+          "expr": "rate(source_messages_dlq[1m])",
           "legendFormat": "dlq {{id}}",
           "refId": "A"
         }
@@ -227,7 +227,7 @@
       },
       "targets": [
         {
-          "expr": "rate(source_messages_failed_total[1m])",
+          "expr": "rate(source_messages_failed[1m])",
           "legendFormat": "failed {{id}}",
           "refId": "A"
         }
@@ -260,7 +260,7 @@
       },
       "targets": [
         {
-          "expr": "rate(source_connection_errors_total[1m])",
+          "expr": "rate(source_connection_errors[1m])",
           "legendFormat": "errors {{id}}",
           "refId": "A"
         }

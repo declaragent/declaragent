@@ -196,7 +196,15 @@ export type DispatchOutcome =
          * until the cool-down elapses and a probe succeeds.
          * @since 0.6.0-slice.3
          */
-        | 'circuit-open';
+        | 'circuit-open'
+        /**
+         * The event's dispatch was interrupted by a crash/SIGKILL (its row was
+         * left with no outcome). At the next boot, recovery marks the original
+         * with this reason and re-dispatches a fresh-id clone so the work isn't
+         * silently lost. Terminal, so a subsequent restart won't re-recover it.
+         * @since 0.7.6 — production-readiness WS5
+         */
+        | 'interrupted';
       details?: string;
     };
 
@@ -559,7 +567,43 @@ export type TargetSelector =
       initialPromptFrom?: JsonPath;
       agentSpec?: Partial<AgentSpec>;
     }
-  | { type: 'skill'; name: string; inputs?: Record<string, JsonPath | string> }
+  | {
+      type: 'skill';
+      name: string;
+      inputs?: Record<string, JsonPath | string>;
+      /**
+       * Optional session-pinning key for event-source (broker / webhook /
+       * cron / file-watch) routes — the normalizer-side analogue of an
+       * inbound channel route's `sessionKey`. Two forms:
+       *
+       * 1. **Static literal** — any string WITHOUT a `{{ ... }}` placeholder
+       *    is used verbatim (e.g. `"support-inbox"`). Every event on this
+       *    route pins the same durable session.
+       * 2. **Template** — a string containing `{{ ... }}` is resolved
+       *    per-event against the normalized event. Supported placeholders:
+       *    - `{{ source }}` — the source tag's stable id (triggerId / topic /
+       *      channelId, else the source `type`).
+       *    - `{{ kind }}` — the resolved event kind.
+       *    - `{{ header.<name> }}` — an inbound header value (case-insensitive).
+       *    - `{{ $.path }}` / `{{ body.path }}` — a body field via the same
+       *      body-rooted JSONPath grammar as `inputs`.
+       *
+       * The resolved key is stamped onto the `skill` {@link EventTarget}'s
+       * `sessionKey`, where the dispatcher pins-or-creates a durable session
+       * (see {@link EventTarget} skill case + `docs/AGENT_DURABILITY.md`).
+       *
+       * **Back-compat:** absent ⇒ no key is emitted and behavior is the
+       * unchanged fresh-per-event path.
+       *
+       * **Fallback (never throws):** a template that cannot be fully resolved
+       * against a given event (missing field/header, non-scalar value, or a
+       * malformed path) yields NO key for that event — it falls back to the
+       * fresh-per-event path rather than emitting a partial/garbage key.
+       *
+       * @since 0.7.6
+       */
+      sessionKey?: string;
+    }
   | { type: 'sub-agent'; parentSessionIdFrom: JsonPath };
 
 export interface RoutingConfig {

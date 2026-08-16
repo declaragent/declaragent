@@ -109,7 +109,7 @@ export DECLARAGENT_RPC_AUTH_DEFAULT=on
 #   - Agents with rpc.auth.enabled: true boot as before.
 #   - Agents with no peers declared are exempt (memory-only path).
 declaragent up -d
-declaragent fleet run --transport kafka
+declaragent fleet run   # transport comes from each agent's capabilities.yaml transports: block
 ```
 
 Accepted values: `on`, `true`, `1` (case-insensitive). Any other value — unset, `off`, `false`, `0` — preserves 0.7.x behaviour (opt-in auth).
@@ -227,9 +227,9 @@ When the default flips at 0.8.0, here is the exact surface that changes for an a
     message: '<reason from verifier>'
   }
   ```
-  Evidence in code: `packages/cli/src/fleet-run.ts:675` + `:716` already emits `RPC_ERROR_CODES.AUTH_REJECTED` on the reject path.
+  Evidence in code: the reject paths in `packages/cli/src/fleet-run.ts` (grep `RPC_ERROR_CODES.AUTH_REJECTED`) already emit the constant.
 - **Scope-mismatch detail is preserved.** The per-route scope override work (#6, shipped 0.7.3) means a token that is otherwise valid but scoped wrong emits the same `AUTH_REJECTED` code with a scope-mismatch `message` — the same shape operators already see on 0.7.x if they opt in early. See `packages/core/src/observability/control-plane-auth.test.ts:539` for the test that pins this surface.
-- **Audit log entries.** `auth-check` records land in the SIEM-exported audit stream with `result: 'reject'` and the reject reason — either `auth-rejected` (token invalid) or `idp-unreachable` (JWKS fetch failure). This is the shape already shipping at 0.7.4; the flip only changes *how often* you see it when you've mis-migrated.
+- **Audit log entries.** `auth_check` records land in the SIEM-exported audit stream with `decision: 'reject'` and a granular reason (`bad-signature`, `expired`, `wrong-issuer`, `wrong-audience`, `insufficient-scope`, `idp-unreachable`, `unknown-peer`, …). This is the shape already shipping at 0.7.x; the flip only changes *how often* you see it when you've mis-migrated.
 
 **What does NOT change:**
 
@@ -244,7 +244,7 @@ When the default flips at 0.8.0, here is the exact surface that changes for an a
 
 ### Why not a major-version bump?
 
-Declaragent is pre-1.0. The project follows an internal rule that any **semantics-changing** config default gets a minor (not a patch) so the SemVer signal reaches operators via lockfile audits. A major is reserved for API-shape changes (e.g. `packages/core` export surface renames). At 1.0 the same behaviour will move to major-version signalling — this is documented in `docs/VERSIONING.md`.
+Declaragent is pre-1.0. The project follows an internal rule that any **semantics-changing** config default gets a minor (not a patch) so the SemVer signal reaches operators via lockfile audits. A major is reserved for API-shape changes (e.g. `packages/core` export surface renames). At 1.0 the same behaviour will move to major-version signalling, per the project's pre-1.0 SemVer convention.
 
 ### Does this affect the memory transport?
 
@@ -265,8 +265,8 @@ Yes. The per-agent `AuthVerifyRegistry` (backlog #18, shipped 0.7.4) means each 
 ### How do I verify the flip happened correctly post-upgrade?
 
 1. `declaragent fleet audit-rpc --strict` — should exit 0.
-2. `declaragent audit export --to <your-siem>` — look for `auth-check` rows with `result: 'accept'` on the first real RPC flow.
-3. Scrape `/metrics` for the existing `rpc_auth_checks_total{result="accept"}` counter; it should tick on every peer call.
+2. `declaragent audit query --kind auth_check` — look for rows with `decision: 'accept'` on the first real RPC flow (your configured SIEM exporter streams the same rows).
+3. There is no Prometheus counter for RPC auth checks yet — the `auth_check` audit rows are the verification surface.
 
 ### What if I'm running `rpc.auth.enabled: true` on some agents today but rely on defaults for others?
 
@@ -274,7 +274,7 @@ Path C in §4 is your story. Per-agent posture is honoured; the flip at 0.8.0 on
 
 ### Does the 0.8.0 companion package cascade affect me?
 
-Yes — `core`, `plugin-agent-rpc`, and the six transport packages will each get a minor bump along with the CLI. The *only* capability change is the default; there are no new wire-format or schema changes planned for 0.8.0 beyond this one. If you pin the companion versions in `package.json`, update them together. If you take `@declaragent/cli@0.8.0`, the other packages are peer-dep-resolved — the installer will pull matching minors automatically.
+Yes — `core`, `plugin-agent-rpc`, and the six transport packages will each get a minor bump along with the CLI. The *only* capability change is the default; there are no new wire-format or schema changes planned for 0.8.0 beyond this one. If you pin the companion versions in `package.json`, update them together. If you take `@declaragent/cli@0.8.0`, the companion packages are regular dependencies pinned by the CLI's dependency ranges — the installer pulls matching versions automatically.
 
 ---
 

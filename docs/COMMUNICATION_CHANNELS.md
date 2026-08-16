@@ -1,5 +1,12 @@
 # Communication Channels: WhatsApp, Telegram, Discord, Slack
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 Companion to `EVENT_SOURCE_REGISTRY.md`. That doc treated event sources as one-way ingestion (Kafka, MQTT, AMQP — consume, dispatch, done). Chat platforms are different: they are **bidirectional I/O channels**. The agent doesn't just *react* to messages — it holds *conversations*.
 
 This doc adds WhatsApp, Telegram, Discord, and Slack as first-class channels that reuse the event-source machinery while extending it for bidirectional communication, rich media, threads, interactive components, and per-platform quirks.

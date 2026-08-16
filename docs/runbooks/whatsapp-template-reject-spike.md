@@ -15,15 +15,17 @@
 Pause the outbound template campaign until the rejection cause is clear:
 
 ```bash
-declaragent channels pause <id>
+# There is no channel-pause verb — comment the channel out of
+# channels.yaml (or set the campaign source aside) and restart:
+declaragent down && declaragent up -d
 ```
 
 Sustained rejections put the business account's tier health at risk.
 
 ## Root-cause investigation
 ```bash
-# Recent rejected outbound with error body:
-declaragent channels audit query --id <id> --kind outbound --outcome rejected --since -15m --json
+# Recent outbound channel audit records (filter by channel id + outcome in jq):
+declaragent audit query --kind channel_outbound --since -15m --json
 
 # Cross-reference in Meta Business Manager → Message Templates.
 ```

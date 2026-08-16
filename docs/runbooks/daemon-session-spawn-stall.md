@@ -18,17 +18,18 @@ have spawned in 10 minutes.
 Expand the idempotency cache TTL if saturation is the cause:
 
 ```bash
-declaragent config set events.idempotency.ttlMs 3600000
-declaragent daemon reload
+# Raise delivery.idempotency.ttlMs on the source in event-sources.yaml,
+# then restart to apply:
+declaragent down && declaragent up -d
 ```
 
 ## Root-cause investigation
 ```bash
 # Dispatcher counters:
-declaragent daemon status --json | jq '.dispatcher'
+curl -s http://127.0.0.1:9464/metrics | grep -E 'declaragent_dispatcher|source_messages'
 
 # Recent `rejected` outcomes + reasons:
-declaragent events recent --outcome rejected --limit 50 --json
+declaragent events list --outcome rejected --last 50 --json
 ```
 
 ## Post-incident

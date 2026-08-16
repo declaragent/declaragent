@@ -211,7 +211,7 @@ tenants:
     expect(df).toContain('ARG BINARY=declaragent-linux-x64');
     expect(df).toContain('USER agent');
     expect(df).toContain('EXPOSE 8787 9464');
-    expect(df).toContain('ENTRYPOINT ["/usr/local/bin/declaragent", "run"]');
+    expect(df).toContain('ENTRYPOINT ["/usr/local/bin/declaragent", "up"]');
   });
 });
 

@@ -38,21 +38,17 @@ declaragent down                          # when finished
 Cross-tenant boundary-violation test:
 
 ```bash
-declaragent audit query --tenant beta-tenant --kind tenant_boundary_denied
+declaragent audit query --tenant beta-tenant --kind tenant_boundary_violation
 ```
 
 Should emit zero rows on a healthy deployment.
 
 ## Key points
 
-- **Per-tenant bus strategy.** Each tenant has its own in-memory bus; no message can cross the boundary without a `tenant_boundary_denied` audit record.
+- **Per-tenant bus strategy.** Each tenant has its own in-memory bus; no message can cross the boundary without a `tenant_boundary_violation` audit record.
 - **Scoped extensions.** The `acme-prod` tenant has `extensions.allow: [slack, kafka]`; `beta-tenant` has `extensions.deny: [whatsapp]`.
 - **Audit.** `declaragent audit verify` walks the Merkle-chained audit log per tenant — a tamper drops a signed-row check failure.
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Cross-tenant quota enforcement demo
-(beta-tenant bursting into `EQUOTA` while acme-prod stays green).
-</div>
 
 ## Related
 

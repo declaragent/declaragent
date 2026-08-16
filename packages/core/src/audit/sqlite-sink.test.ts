@@ -451,10 +451,27 @@ describe('retention prune', () => {
     });
     expect(pruned).toBe(1);
 
+    // WS8 — prune TOMBSTONES (not deletes): the old row stays as an 'erased'
+    // tombstone (PII payload scrubbed), the recent row keeps its payload.
     const remaining = await sink.query({ tenantId: 'acme' });
-    expect(remaining.map((e) => (e.record as { sessionId: string }).sessionId)).toEqual(['recent']);
+    expect(remaining.map((e) => e.record.kind).sort()).toEqual(['erased', 'tool_call']);
+    const recent = remaining.find((e) => e.record.kind === 'tool_call');
+    expect((recent?.record as { sessionId?: string }).sessionId).toBe('recent');
+    // The scrubbed tombstone no longer carries the old session's PII.
+    const tombstone = remaining.find((e) => e.record.kind === 'erased');
+    expect((tombstone?.record as { sessionId?: string }).sessionId).toBeUndefined();
+
+    // The audit's "prune breaks verify" finding: the hash chain MUST still
+    // verify after retention pruning. Tombstones preserve the chain link.
+    const report = await sink.verify();
+    expect(report.ok).toBe(true);
+
+    // Re-running prune is idempotent (tombstones are skipped).
+    expect(await sink.prune({ tenantId: 'acme', retentionDays: 30, now: () => now })).toBe(0);
+
     // Other tenant untouched.
     const other = await sink.query({ tenantId: 'other' });
     expect(other).toHaveLength(1);
+    expect(other[0]?.record.kind).toBe('tool_call');
   });
 });

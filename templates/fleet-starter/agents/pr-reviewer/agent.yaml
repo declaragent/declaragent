@@ -38,6 +38,15 @@ systemPrompt: |
   - Timeout: the request envelope's `deadline` is enforced by the
     requestor. If you can't respond in time, the pending-RPC registry
     times out — your response will be discarded as stale.
+tools:
+  # Read-only review surface. The reviewer inspects the diff and returns a
+  # recommendation over RPC (via ctx.respond) — it never needs Bash/Write/Edit.
+  # Declaring the set explicitly keeps the runtime from exposing destructive
+  # tools to an agent that processes untrusted PR payloads (WS1 enforcement).
+  defaults:
+    - Read
+    - Glob
+    - Grep
 skills:
   - skills/review-pr.md
 event-sources:

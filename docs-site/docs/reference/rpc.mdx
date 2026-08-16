@@ -12,8 +12,10 @@ The runtime ships a versioned envelope, a producer tool, a consumer
 source, and a transport-agnostic `RpcTransport` interface every broker
 plugin implements.
 
-:::info Since v1.1
-Introduced in v1.1. Frozen surfaces are tagged `@since 1.1.0`.
+:::info Versioning
+The envelope wire format is frozen at `version: 1`. Code comments tag frozen surfaces
+with internal plan-version markers (`@since 1.1.0`) — these are design-doc revisions,
+not npm releases; the RPC surface shipped across the `@declaragent/cli` 0.5.x–0.7.x line.
 :::
 
 ## At a glance
@@ -56,7 +58,11 @@ interface AgentRpcEnvelope {
   tenantId?: string;
   headers?: Record<string, string>;
   payload: unknown;
-  auth?: { kind: 'internal' } | { kind: 'hmac'; keyId: string; signature: string };
+  auth?:
+    | { kind: 'internal' }
+    | { kind: 'hmac'; keyId: string; signature: string }
+    | { kind: 'oidc'; token: string; keyId?: string }
+    | { kind: 'oauth2-client'; token: string; scope?: string };
 }
 ```
 
@@ -96,7 +102,18 @@ etc.) are documented in each transport plugin's README.
 | --- | --- | --- | --- |
 | `memory` | `createMemoryTransport` | — | In-process only. Used by the rpc-agents template + unit tests. |
 | `kafka` | `createKafkaTransport` | `kafkajs@^2` | One consumer per topic; `groupId` narrowed per topic so parallel subscriptions don't share rebalance coordination. |
-| `nats` | `createNatsTransport` | `nats@^2` | Core-NATS pub/sub (not JetStream). `queueGroup` opts subscriptions into shared delivery (Kafka-`groupId` equivalent). |
+| `nats` | `createNatsTransport` | `nats@^2` | Core-NATS pub/sub (not JetStream). `queueGroups` opts subscriptions into shared delivery (Kafka-`groupId` equivalent). |
+| — | `createJetStreamTransport` | `nats@^2` | Durable NATS JetStream delivery. Registers under kind `nats`; programmatic wiring only today (not a declarable `rpc-peers.yaml` kind). |
+| `sqs` | `createSqsTransport` | `@aws-sdk/client-sqs@^3` | Programmatic factory. |
+| `amqp` | `createAmqpTransport` | `amqplib@^0.10` | Programmatic factory. |
+| `mqtt` | `createMqttTransport` | `mqtt@^5` | Programmatic factory. |
+
+:::note Which kinds `fleet run` auto-constructs
+`declaragent fleet run` builds transports from `rpc-peers.yaml` for **`kafka` and
+`nats` only** (plus in-process `memory`). Peers declared with `sqs`/`amqp`/`mqtt`
+kinds are warn-skipped by the fleet daemon today — those transports ship as
+`@declaragent/plugin-agent-rpc` library factories for programmatic wiring.
+:::
 
 ### NATS transport
 
@@ -106,7 +123,8 @@ import { createNatsTransport } from '@declaragent/plugin-agent-rpc';
 const transport = await createNatsTransport({
   servers: ['nats://nats.internal:4222'],
   clientName: 'declaragent-pr-reviewer',
-  // queueGroup: 'pr-reviewer-workers',   // opt-in load-balanced delivery across replicas
+  // queueGroups: { 'agents.pr-reviewer.requests': 'pr-reviewer-workers' },
+  //   // per-topic load-balanced delivery; a plain string applies one group to every topic
   // subjectPrefix: 'tenant1',            // namespace every publish/subscribe
 });
 ```
@@ -119,12 +137,16 @@ const transport = await createNatsTransport({
   are NATS-hierarchy separators; callers supplying Kafka-style topics
   with slashes or colons will get a subject NATS accepts but can't be
   matched with wildcards.
-- **Queue groups.** When `queueGroup` is set, every subscription joins
-  that queue — replicas load-balance the same way Kafka consumer
-  groups do. Omit it for full fan-out.
-- **No JetStream.** Durable streams + consumer state belong to
-  `@declaragent/source-nats` (the ingress adapter). The RPC transport
-  is deliberately core-NATS for low latency.
+- **Queue groups.** `queueGroups` maps each topic to its own queue group
+  (`Record<topic, group>`, or a plain string to apply one group to every
+  topic) — replicas load-balance the same way Kafka consumer groups do,
+  while unmapped topics keep full fan-out. The legacy scalar `queueGroup`
+  is deprecated since 0.7.1 and serves only as the fallback for unlisted
+  topics.
+- **JetStream.** The `nats` kind is deliberately core-NATS for low
+  latency. Durable RPC delivery ships as the separate
+  `createJetStreamTransport` factory (programmatic wiring only today);
+  durable *ingress* streams belong to `@declaragent/source-nats`.
 
 ## `RequestAgent` tool
 
@@ -149,7 +171,7 @@ const { status, response, correlationId, latencyMs, error } =
 
 | Mode | Behavior |
 | --- | --- |
-| `sync` (default) | Publishes the request, registers a pending entry, `await`s a matching response. Returns `{ status: 'ok' \| 'error' \| 'timeout' \| 'abandoned' \| 'busy', … }`. |
+| `sync` (default) | Publishes the request, registers a pending entry, `await`s a matching response. Returns `{ status: 'ok' \| 'error' \| 'timeout' \| 'abandoned' \| 'busy' \| 'schema-violation', … }` — a `schema-violation` result carries `violations[]` (`{path, message}`) and `schemaSide: 'request' \| 'response'`. |
 | `async` | Publishes and returns `{ status: 'ok', correlationId }` immediately. Response lands as an `agent.rpc.response` event on the local bus. |
 | `fire-and-forget` | Publishes an `event`-kind envelope. No `replyTo`, no correlation. |
 
@@ -216,8 +238,9 @@ await ctx.respond?.({
 ```
 
 - **Default hook.** Skip `ctx.respond` and the runtime publishes
-  `{ ok: true, data: assistant.final.content }` automatically on
-  turn-end. REPL-style skills "just work" over RPC.
+  `{ ok: true, data: { text, stopReason, usage? } }` automatically on
+  turn-end (`text` is the assistant's final text). REPL-style skills
+  "just work" over RPC.
 - **Streaming.** `ctx.respond` is idempotent per correlationId —
   multiple calls produce successive response-kind envelopes, useful for
   progress updates.
@@ -225,7 +248,8 @@ await ctx.respond?.({
 ## Discovery — `capabilities.yaml`
 
 Optional per-agent declaration of the RPC surface. Operators use it to
-document the API; future (v1.2) registry aggregation pulls from it.
+document the API; `declaragent fleet capabilities` aggregates every
+agent's `capabilities.yaml` into one fleet-wide view.
 
 ```yaml
 version: 1
@@ -280,9 +304,9 @@ peers:
 Inspect at runtime:
 
 ```bash
-declaragent rpc peers              # print the effective peer table
-declaragent rpc peers --verify     # live-ping every peer's inbox
-declaragent rpc capabilities       # print this agent's capabilities
+declaragent fleet peers              # print the effective peer table
+declaragent fleet peers --verify     # live-ping every peer's inbox
+declaragent fleet capabilities       # aggregate every agent's capabilities.yaml
 ```
 
 ## Security
@@ -294,19 +318,31 @@ declaragent rpc capabilities       # print this agent's capabilities
 | `auth: { kind: 'oidc', token, keyId? }` | Bearer JWT from an enterprise OIDC IdP (Okta / Azure AD / Auth0 / Dex). Verified against a cached JWKS. |
 | `auth: { kind: 'oauth2-client', token, scope? }` | OAuth2 Client-Credentials access token. For service-to-service calls where no user is present. |
 
-Agents that require signed envelopes declare it in `agent.yaml`:
+Agents that require verified envelopes turn the gate on in `agent.yaml`
+and declare *how* each peer authenticates in `rpc-peers.yaml`:
 
 ```yaml
+# agent.yaml — turn auth enforcement on for this agent
 rpc:
   auth:
-    required: hmac
-    keysRef: ${secret:vault:kv/acme/rpc-keys}
+    enabled: true
 ```
 
-mTLS / SPIFFE are transport-layer concerns — each transport plugin
-exposes a `validateAuth(envelope, raw, transportCtx)` hook.
+```yaml
+# rpc-peers.yaml — per-peer provider (hmac | oidc | oauth2-client)
+peers:
+  - agent: agent://pr-reviewer
+    transports: [...]
+    auth:
+      provider: hmac
+      keyId: acme-rpc-1
+      secretRef: "secret://platform/acme-rpc-key"
+```
 
-### Authenticated RPC (OIDC / OAuth2) — since 1.2.0
+mTLS / SPIFFE at the transport layer are a roadmap item — today's
+verification operates on the envelope's `auth` block only.
+
+### Authenticated RPC (OIDC / OAuth2)
 
 Enterprise deployments usually require every inter-agent RPC to carry a
 verifiable bearer token rather than relying on trusted-network
@@ -367,10 +403,16 @@ local DLQ under `kind=auth-rejected` with a typed reason code:
 - `idp-unreachable` — JWKS fetch failed AND cache is empty / expired.
   Fail-closed — we never admit a token we can't verify.
 - `bad-signature` — JWKS signature verify failed.
+- `unknown-peer` — strict-auth mode only: the envelope's `from` has no
+  entry in the peer registry.
+
+The peer `auth` block also accepts `provider: hmac` (shared-secret
+envelope signatures with `keyId` + `secretRef`) alongside the two
+bearer-token providers above.
 
 **Audit.** Every verify decision (accept or reject) emits an
 `auth_check` record on the hash-chained audit log. Inspect via
-`declaragent audit list --kind auth_check`; each row carries
+`declaragent audit query --kind auth_check`; each row carries
 `peerId`, `provider`, `decision`, `subject` (when accepted), and
 `reason` (when rejected).
 

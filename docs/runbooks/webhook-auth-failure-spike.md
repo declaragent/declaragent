@@ -17,7 +17,8 @@ If the secret genuinely rotated, roll the stored value:
 
 ```bash
 declaragent secrets rotate <triggerId-webhook-secret>
-declaragent sources reload <triggerId>
+# restart so the source picks up the new value:
+declaragent down && declaragent up -d
 ```
 
 If reconnaissance is suspected, block the source IP at the ingress
@@ -25,8 +26,8 @@ layer. Do NOT weaken the HMAC check.
 
 ## Root-cause investigation
 ```bash
-# Auth failure samples with request metadata:
-declaragent audit query --kind webhook --outcome auth_failure --since -15m --json
+# Auth failures log with reason (missing/malformed/stale/bad signature):
+declaragent logs -f          # webhook verify rejections log per request
 ```
 
 Correlate `remoteAddr` — a single IP hammering with varying payloads

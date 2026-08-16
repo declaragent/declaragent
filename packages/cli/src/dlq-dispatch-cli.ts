@@ -292,7 +292,7 @@ export async function dlqDispatchRequeue(
       const result = response.result;
       if (result.ok) {
         io.out(
-          `✓ requeued "${result.eventId}" on agent "${targetAgent}" (attempts before requeue: ${result.attemptsBeforeRequeue})\n`,
+          `✓ requeued "${result.eventId}" on agent "${targetAgent}" as new event "${result.newEventId}" (attempts before requeue: ${result.attemptsBeforeRequeue})\n`,
         );
         return 0 as DlqDispatchRequeueExitCode;
       }

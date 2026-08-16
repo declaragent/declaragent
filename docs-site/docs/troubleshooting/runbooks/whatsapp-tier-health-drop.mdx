@@ -10,7 +10,38 @@ sidebar_label: whatsapp-tier-health-drop
 
 **Canonical markdown:** [`docs/runbooks/whatsapp-tier-health-drop.md`](https://github.com/declaragent/declaragent/blob/main/docs/runbooks/whatsapp-tier-health-drop.md)
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Content mirrored from the canonical
-runbook under `docs/runbooks/`.
-</div>
+**Severity:** critical.
+
+## Symptom
+Meta-reported tier health for WhatsApp channel `{{ id }}` has dropped
+below 0.5 (yellow → red). Business account is at risk of quality
+demotion.
+
+## Likely cause
+1. Template rejections sustained (see `whatsapp-template-reject-spike`).
+2. High opt-out rate from outbound campaigns.
+3. Multiple user reports against the account.
+
+## Immediate mitigation
+Pause all outbound on the channel:
+
+```bash
+# There is no channel-pause verb — comment the channel out of
+# channels.yaml and restart:
+declaragent down && declaragent up -d
+```
+
+Notify the business-relationship owner — prolonged yellow triggers
+tier demotion, which reduces daily message caps.
+
+## Root-cause investigation
+Check Meta Business Manager → Insights → Quality rating for the phone
+number. Correlate with `channel.template.sent` rejections and customer
+opt-out events from the last 7 days.
+
+## Post-incident
+- Capture: quality score timeline, root cause category (templates /
+  opt-outs / reports), remediation steps.
+- Close when: quality score returns to green + stable for 24h.
+- Post-mortem: mandatory if demotion happened — document messaging
+  strategy changes needed before re-enabling outbound.

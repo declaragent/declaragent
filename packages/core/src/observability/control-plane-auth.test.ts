@@ -165,6 +165,43 @@ describe('applyControlPlaneAuth', () => {
     }
   });
 
+  // WS3 security fix — Host-header forgery must not bypass auth.
+  it('does NOT bypass on a forged Host:127.0.0.1 from a remote peer', async () => {
+    const stub = stubVerifier({ ok: true, principal: mkPrincipal() });
+    const auth: ControlPlaneAuth = { verifyToken: stub.verify }; // allowLoopback default true
+    // Attacker spoofs the Host header but the real connection peer is remote.
+    const req = new Request('http://127.0.0.1:9464/status', { headers: LOCAL_HEADERS });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '203.0.113.7' });
+
+    // No bypass: a token is required despite the loopback Host header.
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('missing-token');
+  });
+
+  it('still bypasses for a genuine loopback peer (peerIp = 127.0.0.1)', async () => {
+    const stub = stubVerifier({ ok: false, reason: 'bad-signature', message: 'unused' });
+    const auth: ControlPlaneAuth = { verifyToken: stub.verify };
+    const req = new Request('http://127.0.0.1:9464/status', { headers: LOCAL_HEADERS });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '127.0.0.1' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.bypassed).toBe(true);
+    expect(stub.callCount()).toBe(0);
+  });
+
+  it('normalises IPv4-mapped IPv6 loopback (::ffff:127.0.0.1) as loopback', async () => {
+    const stub = stubVerifier({ ok: false, reason: 'bad-signature', message: 'unused' });
+    const auth: ControlPlaneAuth = { verifyToken: stub.verify };
+    const req = new Request('http://127.0.0.1:9464/status', { headers: LOCAL_HEADERS });
+
+    const result = await applyControlPlaneAuth(auth, req, { peerIp: '::ffff:127.0.0.1' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.bypassed).toBe(true);
+  });
+
   it('returns 401 missing-token when no Authorization header is present', async () => {
     const stub = stubVerifier({ ok: true, principal: mkPrincipal() });
     const auth: ControlPlaneAuth = { verifyToken: stub.verify };

@@ -346,13 +346,97 @@ export function openAgentLog(agentId: string, dir = configDir()): AgentLogger {
   };
 }
 
+// ── Graceful drain (WS5) ──────────────────────────────────────────────────
+
+/** Default graceful-drain budget. Operators tune via DECLARAGENT_DRAIN_DEADLINE_MS. */
+export const DEFAULT_DRAIN_DEADLINE_MS = 15_000;
+
+/**
+ * Resolve the drain deadline from `DECLARAGENT_DRAIN_DEADLINE_MS`. `0` disables
+ * draining (immediate teardown — the pre-WS5 behavior). Invalid → the default.
+ */
+export function resolveDrainDeadlineMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.DECLARAGENT_DRAIN_DEADLINE_MS;
+  if (raw === undefined || raw === '') return DEFAULT_DRAIN_DEADLINE_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_DRAIN_DEADLINE_MS;
+  return parsed;
+}
+
+/**
+ * Await `drain()` but never longer than `deadlineMs`. Resolves `'drained'` when
+ * the drain completed in time, `'timeout'` when the budget elapsed first,
+ * `'skipped'` when draining is disabled (`deadlineMs === 0`). The pending drain
+ * is abandoned on timeout — callers proceed to teardown.
+ */
+export async function drainWithDeadline(
+  drain: () => Promise<void>,
+  deadlineMs: number,
+): Promise<'drained' | 'timeout' | 'skipped'> {
+  if (deadlineMs <= 0) return 'skipped';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), deadlineMs);
+  });
+  try {
+    return await Promise.race([drain().then(() => 'drained' as const), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 // ── Detach helper ───────────────────────────────────────────────────────
 
 export interface DetachOptions {
-  /** Absolute path to the CLI binary (argv[0] in production). */
+  /** Absolute path to the CLI binary or interpreter to spawn. */
   launcher: string;
   /** Args to forward (sans any `-d` / `--detach` flag). */
   args: readonly string[];
+  /**
+   * Interpreter script args to prepend before {@link args} (e.g. the CLI
+   * entry script when {@link launcher} is `bun`/`node`). Empty for a compiled
+   * binary launcher. Resolved by {@link resolveDetachInvocation}.
+   */
+  scriptArgs?: readonly string[];
+}
+
+export interface DetachInvocation {
+  /** Executable to spawn. */
+  launcher: string;
+  /** Script args the interpreter needs before the CLI subcommand. */
+  scriptArgs: string[];
+}
+
+/**
+ * Resolve how to re-spawn the CLI for the detach path.
+ *
+ * The bug this fixes: when the CLI runs via `bun dist/index.js up -d` (the npm
+ * launcher's preferred path whenever bun is on PATH), `process.execPath` is the
+ * `bun` interpreter — not the compiled `declaragent` binary. Spawning
+ * `bun up --__detached` makes bun treat `up` as a script path and fail with
+ * `Script not found "up"`. The interpreter must be handed the CLI entry script
+ * first (`bun /abs/dist/index.js up --__detached`).
+ *
+ * For a compiled (`bun build --compile`) binary, `process.execPath` is the
+ * binary itself and takes the subcommand directly — no script prefix.
+ */
+export function resolveDetachInvocation(opts?: {
+  execPath?: string;
+  argv?: readonly string[];
+  bunMain?: string | undefined;
+}): DetachInvocation {
+  const execPath = opts?.execPath ?? process.execPath ?? '';
+  const argv = opts?.argv ?? process.argv;
+  const launcher = execPath || argv[0] || 'declaragent';
+  const isInterpreter = /[\\/](bun|bunx|node|deno)(\.exe)?$/i.test(launcher);
+  if (!isInterpreter) return { launcher, scriptArgs: [] };
+  // For `bun file.js …` / `node file.js …`, argv[1] is the entry script — the
+  // value the interpreter must run before the CLI parses `up`. Fall back to
+  // `Bun.main` only when argv is unavailable.
+  const entry = opts?.bunMain ?? argv[1] ?? (typeof Bun !== 'undefined' ? Bun.main : undefined);
+  return { launcher, scriptArgs: entry ? [entry] : [] };
 }
 
 /**
@@ -372,12 +456,16 @@ export function detachSelf(options: DetachOptions): number {
   // Open the log once so stdout + stderr share the handle; append
   // mode keeps prior-run traces for debugging.
   const logFd = openSync(logPath, 'a');
-  const child: ChildProcess = spawn(options.launcher, [...options.args, DETACHED_SENTINEL], {
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-    // A fresh env is fine — the child reads the same config dir via
-    // HOME, and we don't rely on any parent-shell state.
-  });
+  const child: ChildProcess = spawn(
+    options.launcher,
+    [...(options.scriptArgs ?? []), ...options.args, DETACHED_SENTINEL],
+    {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      // A fresh env is fine — the child reads the same config dir via
+      // HOME, and we don't rely on any parent-shell state.
+    },
+  );
   child.unref();
   if (child.pid === undefined) {
     throw new Error('failed to spawn detached process');

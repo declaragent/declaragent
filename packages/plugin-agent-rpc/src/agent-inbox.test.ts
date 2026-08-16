@@ -338,4 +338,57 @@ describe('agent-inbox adapter', () => {
     expect(audits[0]).toEqual({ decision: 'accept', subject: 'peer-a' });
     await instance.stop();
   });
+
+  // WS2 — fail-closed strict mode.
+  test('strictAuth REJECTS an unregistered sender (closes the spoof)', async () => {
+    const transport = createMemoryTransport();
+    const deps = baseDeps();
+    const published: AgentEvent[] = [];
+    deps.bus.subscribe('*', (ev) => {
+      published.push(ev);
+    });
+    const rejects: { reason: string; from: string }[] = [];
+
+    const instance = await createAgentInboxAdapter({
+      transport,
+      strictAuth: true,
+      // Registry has NO entry for any peer.
+      authRegistry: { resolve: () => undefined },
+      authRejectSink: ({ envelope, reason }) => {
+        rejects.push({ reason, from: envelope.from });
+      },
+    }).create({ id: 'inbox', agentId: 'pr-reviewer' }, deps);
+    await instance.start();
+    await transport.publish('agents.pr-reviewer.requests', {
+      ...requestEnvelope({ from: 'agent://attacker-not-in-registry' }),
+    });
+    // The spoofed envelope is rejected, never dispatched.
+    expect(published).toHaveLength(0);
+    expect(rejects).toHaveLength(1);
+    expect(rejects[0]?.reason).toBe('unknown-peer');
+    expect(rejects[0]?.from).toBe('agent://attacker-not-in-registry');
+    await instance.stop();
+  });
+
+  test('without strictAuth an unregistered sender still falls through (legacy back-compat)', async () => {
+    const transport = createMemoryTransport();
+    const deps = baseDeps();
+    const published: AgentEvent[] = [];
+    deps.bus.subscribe('*', (ev) => {
+      published.push(ev);
+    });
+
+    const instance = await createAgentInboxAdapter({
+      transport,
+      // strictAuth omitted → false
+      authRegistry: { resolve: () => undefined },
+    }).create({ id: 'inbox', agentId: 'pr-reviewer' }, deps);
+    await instance.start();
+    await transport.publish('agents.pr-reviewer.requests', {
+      ...requestEnvelope({ from: 'agent://legacy-peer' }),
+    });
+    // Legacy fall-through: the envelope is accepted and dispatched.
+    expect(published).toHaveLength(1);
+    await instance.stop();
+  });
 });

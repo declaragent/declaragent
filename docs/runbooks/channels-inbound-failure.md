@@ -18,16 +18,19 @@ onto the bus.
 If bus pressure is the cause, pause non-critical sources so pressure drops:
 
 ```bash
-declaragent sources pause <noisy-source-id>
+# Comment the noisy source out of event-sources.yaml and restart —
+# there is no source-pause verb; brokers retain the backlog:
+declaragent down && declaragent up -d
 ```
 
 ## Root-cause investigation
 ```bash
-# Most recent inbound failures with their payload shape:
-declaragent channels audit query --id <id> --kind inbound --outcome failed --since -15m
+# Most recent inbound channel audit records (filter in jq):
+declaragent audit query --kind channel_event --since -15m --json
 
-# Bus stats (inflight + recent publish rate):
-declaragent status --json | jq '.bus'
+# Daemon snapshot + inbound-failure counter:
+curl -s http://127.0.0.1:9464/status | jq
+curl -s http://127.0.0.1:9464/metrics | grep channel_inbound_failed
 ```
 
 Grafana: `Channels` dashboard → `Inbound failure rate`.

@@ -32,6 +32,23 @@ export interface AgentSpec {
    * @since 0.7.6
    */
   maxIterations?: number;
+  /**
+   * Opt-in long-term memory layer (durable-with-memory "mode 3"). When
+   * `enabled`, the host (`declaragent up`) constructs a SQLite-backed
+   * `MemoryStore` and registers the `memory_write` / `memory_read` /
+   * `memory_search` tools, bound to `namespace` (defaulting to the agent
+   * id). Memories survive across sessions AND process restarts.
+   *
+   * Absent / `enabled: false` → no memory tools are registered and the
+   * runtime tool set is byte-for-byte unchanged. See `docs/AGENT_MEMORY.md`.
+   *
+   * @since 0.5.6
+   */
+  memory?: {
+    enabled: boolean;
+    /** Per-agent isolation boundary. Defaults to the agent id when omitted. */
+    namespace?: string;
+  };
 }
 
 /** @since 1.0.0 */

@@ -12,6 +12,7 @@
     "demo:phase5": "bun test examples/phase5-demo/",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
+    "lint:docs": "bun scripts/docs-command-lint.ts && bun scripts/env-vars-lint.ts && bun scripts/metrics-lint.ts && bun scripts/docs-policy-lint.ts",
     "format": "biome format --write .",
     "changeset": "changeset",
     "version-packages": "changeset version",
@@ -21,7 +22,12 @@
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
     "@changesets/cli": "^2.27.10",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
+    "@opentelemetry/sdk-node": "^0.218.0",
     "@types/bun": "latest",
+    "kafkajs": "^2.2.4",
+    "nats": "^2.29.3",
     "typescript": "^5.7.2",
     "yaml": "^2.8.3"
   },
@@ -31,6 +37,7 @@
   "overrides": {
     "fast-xml-builder": "1.2.0",
     "ip-address": "10.2.0",
+    "shell-quote": "1.8.4",
     "ws": "8.21.0"
   }
 }

@@ -6,7 +6,9 @@ members under `agents/*`. Designed as the first concrete example of the
 `declaragent fleet` workflow:
 
 ```
-declaragent init --template fleet-starter --out my-fleet
+# whole-fleet template — copy it from the repo (init --template handles
+# single-agent templates only):
+npx degit declaragent/declaragent/templates/fleet-starter my-fleet
 cd my-fleet
 bun install
 declaragent fleet validate    # ✓ fleet validates clean
@@ -68,12 +70,16 @@ declaragent fleet status           # health + last deploys
 ## Deploy
 
 ```sh
-declaragent fleet deploy --target cloud-run-reviewer
-declaragent fleet deploy --rollback   # revert to the previous fleet version
+declaragent fleet deploy --target cloud-run-reviewer --dry-run   # prints the plan
 ```
 
-The manifest's `deploy.strategy: rolling` gates each agent on a health
-probe; a failure at step N rolls back steps 0..N-1 in reverse order.
+Today `fleet deploy` executes only against in-memory/test adapters — the
+`gcp-cloud-run` target adapter hasn't shipped, so a non-dry-run deploy
+exits with `no adapter registered for target`. Use the per-agent path
+(`declaragent deploy gcp-cloud-run` inside each agent dir + the printed
+`gcloud` commands) to actually ship; `--dry-run` remains useful for
+reviewing the rolling plan (each agent gated on a health probe, failures
+rolled back in reverse order).
 
 ## Required secrets
 

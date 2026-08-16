@@ -23,7 +23,7 @@ const config: Config = {
 
   // Keep the site building even if a link target temporarily breaks during
   // slice merges. Flipped to `throw` once the site stabilizes post-slice 9.
-  onBrokenLinks: 'warn',
+  onBrokenLinks: 'throw',
 
   i18n: {
     defaultLocale: 'en',
@@ -33,7 +33,7 @@ const config: Config = {
   markdown: {
     mermaid: true,
     hooks: {
-      onBrokenMarkdownLinks: 'warn',
+      onBrokenMarkdownLinks: 'throw',
     },
   },
 

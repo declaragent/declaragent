@@ -196,7 +196,10 @@ function translateReason(reason: RpcAuthRejectReason): ControlPlaneAuthRejectRea
   switch (reason) {
     case 'missing-auth':
     case 'wrong-kind':
-      // Can only happen on malformed synthetic envelope construction.
+    case 'unknown-peer':
+      // missing-auth/wrong-kind can only happen on malformed synthetic
+      // envelope construction; unknown-peer is an RPC-registry concept that
+      // doesn't arise on the control-plane bearer path. Both → config-error.
       return 'config-error';
     case 'missing-claim':
     case 'alg-none':

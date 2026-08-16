@@ -23,6 +23,37 @@ Every row uses one of four marks:
 
 ---
 
+## 0 · Production-readiness pass (in-flight, 0.7.6 branch `agent-durability-followups`)
+
+> Added after a multi-agent audit (see [`docs/PRODUCTION_READINESS_PLAN.md`](docs/PRODUCTION_READINESS_PLAN.md)) found several primitives **designed but not wired at runtime** — the exact 🟡 trap this file warns about. The items below are **runtime-wired + tested** in the working tree (full suite green; not yet released). Each is honest about what remains.
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Tool permissions ENFORCED in `up`/`fleet run` (was `mode:'bypass'` + full builtin set) | ✅ | `packages/cli/src/resolve-tools.ts` + `resolve-tools.test.ts`; wired at `up-cli.ts`, `fleet-run-llm-handler.ts` |
+| Bash subprocess secret-env scrub | ✅ | `packages/core/src/tools/bash-env.ts` + `bash.test.ts` ("does not leak secret env") |
+| RPC verify fails CLOSED on unknown senders (`strictAuth`) | ✅ | `agent-inbox.ts` + `fleet-run.ts`; `agent-inbox.test.ts`, `fleet-run.test.ts` |
+| HMAC RPC auth provider (sign+verify) + `RequestAgent` signer hook | ✅ | `plugin-agent-rpc/src/auth/hmac.ts` + `hmac.test.ts`; e2e sign→verify in `request-agent.test.ts` |
+| Control-plane Host-header bypass fixed (uses real peer IP) | ✅ | `control-plane-auth.ts`; `control-plane-auth.test.ts` ("forged Host:127.0.0.1") |
+| `bindAddress` knob, fail-closed non-loopback-requires-auth | ✅ | `up-cli.ts` `resolveBindAddress` + `up-cli.test.ts` |
+| Cross-host respond on inbound transport + `fleet run` supplies kafka/nats `transportFactories` + **kafka SASL/TLS** (`ssl`/`sasl`, passwordRef resolved) | ✅ **live-verified** | `fleet-run.ts` `selectRespondTransport`; `transport-factories.ts`; `kafka-transport.ts` + tests. **Round-trip verified against live Redpanda + NATS + JetStream** (2/2 each); **SASL/SCRAM handshake round-tripped against a SASL-enabled Redpanda** (not just config). |
+| DLQ requeue actually re-executes (fresh id) | ✅ | `events/dlq.ts` + `dlq.test.ts` |
+| Boot-time crash recovery of interrupted events | ✅ | `events/recovery.ts` + `recovery.test.ts`; wired in `up-cli.ts` |
+| Graceful drain on shutdown (`DECLARAGENT_DRAIN_DEADLINE_MS`) | ✅ | `up-cli.ts` `drainWithDeadline`; `up-lifecycle.test.ts` |
+| Outbound channel send retry (was at-most-once drop) | ✅ | `channels/outbound-bridge.ts` + `outbound-bridge.test.ts` |
+| LLM golden signals (latency/errors/tokens/cost) + daemon heartbeat + **OTel NodeSDK actually starts** (spans export) | ✅ **live-verified** | `engine.ts` + tests; `heartbeat.ts`; `otel-sdk.ts` (`startOtelSdk` builds a real `OTLPTraceExporter` + `start()`) + `otel-sdk.test.ts`. **Span confirmed received by a live OTLP collector** (docker); exporter-shape bug found+fixed there. |
+| WS8 multi-tenancy: spend brake + `tenants.yaml` load + GDPR `erase --user` + per-tenant **and** per-end-user memory isolation + tamper-safe retention | ✅ | `engine.ts` (`quota_exceeded`); `findTenantsConfig`/`resolveTenantContext`; `eraseSubject`+`erase-cli.ts`; `scopedNamespace` (`ctx.tenant`+`ctx.subject`); `audit prune` tombstones so `verify` passes (+ tests). Only separate-chain-per-tenant remains as further hardening. |
+| `/healthz`+`/readyz` auth-exempt routes; renderers run foreground `up`; full agent-dir ConfigMap; `/readyz` readiness probe; control-plane **safe-subset bind**; `Dockerfile` | ✅ **live-verified** | `control-plane-server.ts`; `k8s-renderer.ts` (ConfigMap embed + readyProbe); `up-cli.ts` `resolveBindAddress` safe-subset; `Dockerfile`. **Rendered manifest deployed to minikube → pod Ready (1/1, 0 restarts) — for BOTH k8s `kubectl apply` AND `helm install`** (helm now embeds the full agent dir + `/readyz` probe, at parity with k8s/kustomize). Safe-subset bind found+fixed there. In-container monorepo tsc build = remaining follow-up (image ships pre-built dist). |
+| `declaragent agent validate` + unknown-key lint | ✅ | `cli/src/agent-cli.ts` + `agent-cli.test.ts` |
+| Slack Socket Mode reconnect-with-backoff + truthful `socketActive` | ✅ | `channel-slack/src/client.ts` + `client.test.ts`; `instance.ts` health |
+| Hermetic flagship E2E (event→dispatch→LLM→channel→outcome) | ✅ | `testkit/src/fleet-integration/hermetic-e2e.test.ts` |
+| Bounded multi-cycle soak over a live broker | ✅ **live-verified** | `kafka-soak.test.ts` ran 45s/~225 cycles green against Redpanda in a docker sandbox (harness capability-name bug found+fixed). 7-week calendar streak still outstanding. |
+
+**Live-verified in a local sandbox (2026-06-10, docker + minikube):** broker RPC round-trips (Redpanda/NATS/JetStream), OTLP span receipt at a live collector, a bounded soak, and a rendered pod reaching Ready in minikube — see §0. Three real bugs were found + fixed there (OTel exporter shape, soak capability names, control-plane safe-subset bind).
+
+**Still genuinely incomplete (calendar/release/infra-gated, NOT done):** the **7-week soak streak** + **branch protection** (calendar + GitHub admin); the coordinated **0.8.0** breaking-change cutover (strict-schema throw + the four default flips); a live **OIDC `rpc-auth`** run (needs Dex); the in-container monorepo build reconciliation + **helm** render parity; multi-host (not single-cluster) broker delegation soak.
+
+---
+
 ## 1 · Define agents with capabilities + skills
 
 | Capability | Status | Evidence |
@@ -42,9 +73,9 @@ Every row uses one of four marks:
 | 7 built-in tools registered by every runtime | ✅ | `builtin-tools.ts` imported by `up`, `run-agent-cli`, `fleet-run-llm-handler` |
 | Builder toolkit (13 tools for conversational authoring) | ✅ | `packages/cli/src/builder/` — gated by `DECLARAGENT_BUILDER=on` |
 | `declaragent mcp add` stores server spec | ✅ | `mcp-cli.ts` + `mcp-config.ts` |
-| **MCP servers spawn + expose tools to skills at runtime** | ✅ | `up-cli.ts:397-408 bringUp()` calls `loadScopedMCPServers()` + `startMCPServers()`; tools fed into engine via `buildRuntimeTools({ mcpTools })` at line 632. Shipped as 0.5.x slices 2a–2e (commits `63482b1`, `579362c`, `778f505`, `a4ba7a4`, `9a6c64f`). |
+| **MCP servers spawn + expose tools to skills at runtime** | ✅ | `bringUp()` (`up-cli.ts:979`) calls `loadScopedMCPServers()` + `startMCPServers()` (`up-cli.ts:1071-1072`); tools resolved into the engine via `resolveRuntimeTools` (`resolve-tools.ts`). Shipped as 0.5.x slices 2a–2e (commits `63482b1`, `579362c`, `778f505`, `a4ba7a4`, `9a6c64f`). |
 | `declaragent plugin install` stores entry + consent | ✅ | `plugin-cli.ts` + `PluginConsent` Ink UI |
-| **Plugins activated (tools registered in skill's tool list)** | ✅ | `up-cli.ts:598-613 attachDispatcherToAgent()` calls `startPluginRuntime()`; plugin-contributed tools appended via `extraTools` (line 627) into `buildRuntimeTools`. Shipped as 0.5.x slice 4 (commit `fad5977`). |
+| **Plugins activated (tools registered in skill's tool list)** | ✅ | `attachDispatcherToAgent()` calls `startPluginRuntime()` (`up-cli.ts:1152`); plugin-contributed tools appended via `extraTools` into `resolveRuntimeTools` (`resolve-tools.ts`). Shipped as 0.5.x slice 4 (commit `fad5977`). |
 
 ---
 
@@ -58,7 +89,7 @@ Every row uses one of four marks:
 | **`RequestAgent` in runtime tool list** | ✅ | `fleet-run-llm-handler.ts` uses `createRequestAgentTool` from `@declaragent/plugin-agent-rpc` and appends it via `buildRuntimeTools({ extra })` whenever `rpc-peers.yaml` is present. Shipped as 0.5.x slice 5 (commit `4d120b1`). |
 | **Memory transport** in `fleet run` | ✅ | `fleet-run.ts` hard-wires `createMemoryBus()` + `createMemoryTransport()` |
 | **Kafka + NATS RPC transports** for agent-to-agent RPC | ✅ | `createKafkaTransport` shipped 0.6.0 Slice 7; `createNatsTransport` shipped 0.7.0 ([PR #13](https://github.com/declaragent/declaragent/pull/13) · `e233ac6`, enhanced `8651c54` with per-topic queue groups). `fleet-run.ts` honors `options.transportFactories` per declared `RpcTransportKind`. |
-| SQS / AMQP / MQTT RPC transport factories | 🔵 | Deliberately deferred to v1.1+ per `AGENT_RPC_PLAN.md §5`. Kafka + NATS cover the observed customer demand; additional brokers land when specific requests arrive. |
+| SQS / AMQP / MQTT (+ JetStream) RPC transport factories | 🟡 | Library factories shipped + tested in `@declaragent/plugin-agent-rpc` (`{sqs,amqp,mqtt,jetstream}-transport.ts`), with optional peer deps declared. Not constructible from `fleet.yaml` — the CLI factory map is still kafka+nats only (`transport-factories.ts:116`). |
 | Cross-process agent RPC over a real broker | ✅ | `packages/testkit/src/fleet-integration/kafka-rpc.test.ts` proves Kafka round-trip; NATS analog shipped alongside [PR #13](https://github.com/declaragent/declaragent/pull/13). Nightly CI runs both. |
 | Multi-agent-over-real-broker integration test | ✅ | `packages/testkit/src/fleet-integration/` covers Kafka + NATS. Literal `fleet run` subprocess shipped in [PR #10](https://github.com/declaragent/declaragent/pull/10) (`20c6e35`, enhanced `8651c54`). **Sustained soak proof** (7 consecutive green weekly runs) is the remaining receipt for flipping the enterprise pillar badge. |
 
@@ -84,7 +115,7 @@ Every row uses one of four marks:
 | **GitOps `fleet render` — k8s + Helm** | ✅ | [PR #20](https://github.com/declaragent/declaragent/pull/20) · `98c120a`. `packages/cli/src/fleet-render-cli.ts`. |
 | **SIEM audit export (Splunk / Elastic / Datadog)** | ✅ | [PR #22](https://github.com/declaragent/declaragent/pull/22) · `b8f6f94`. Cursor held across restarts. |
 | **Prometheus `/metrics` HTTP endpoint exposed by `up`** | ✅ | Shipped 0.6.0 Slice 1 (`8bddcc1`). `127.0.0.1:9464` by default in `-d` mode; `DECLARAGENT_METRICS_PORT` override. |
-| **OpenTelemetry tracing** attached by default | ✅ | Shipped 0.6.0 Slice 2 (`8bddcc1`). `createOtelBridge()` auto-loads when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. |
+| **OpenTelemetry span export** (opt-in) | ✅ | Shipped 0.6.0 Slice 2 (`8bddcc1`). `createOtelBridge()` activates when `OTEL_EXPORTER_OTLP_ENDPOINT` is set **and** the `@opentelemetry/*` packages are installed (declared as optional peerDependencies of `@declaragent/core` since 0.7.6 — optional peers are not auto-installed by npm). |
 
 ---
 
@@ -128,7 +159,7 @@ Code trace for a `kafka` source in `event-sources.yaml` under `declaragent up`:
 | Source-level DLQ (Kafka) | ✅ | `source-kafka/instance.ts::sendToDLQ()` |
 | **Event dispatch DLQ (source → skill rejected → tracked + requeued)** | ✅ | Tracking shipped 0.6.0 Slice 5 (`rejected_events` table + `dlq list/show/drop --kind dispatch`). Active requeue shipped 0.7.0 [PR #14](https://github.com/declaragent/declaragent/pull/14) · `757b71d` via the new control socket. |
 | Idempotency cache + cross-restart dedup via store | ✅ | `dispatcher.ts::IdempotencyCache` + `store.findDuplicate()` — tested |
-| **Provider rate limits enforced by default** | ✅ | Shipped 0.6.0 Slice 4. Token bucket wraps every provider (Anthropic 50 rps / OpenRouter 20 rps / unknown 10 rps). `DECLARAGENT_PROVIDER_RATE_LIMIT_{DISABLE,RPS}` escape hatches. |
+| **Provider rate limits enforced by default** | ✅ | Shipped 0.6.0 Slice 4; extended to `fleet run` 0.7.6 (shared `provider-rate-limit.ts` wraps both runtimes). Token bucket: Anthropic 50 rps / OpenRouter 20 rps / unknown 10 rps. `DECLARAGENT_PROVIDER_RATE_LIMIT_{DISABLE,RPS}` escape hatches. |
 | **Per-tool rate limit** | ✅ | [PR #18](https://github.com/declaragent/declaragent/pull/18) · `10da017` · enhanced `b69d717` with comparator + burst defaults. Token-bucket gate in `packages/core/src/tools/rate-limit-gate.ts`. |
 | **Circuit breakers on flaky skills** | ✅ | Shipped 0.6.0 Slice 3. Per-skill breakers (10 failures → 30-s cooldown → half-open probe). `declaragent_dispatcher_breaker_{state,transitions_total}` counters + `events list --state circuit-open` filter. |
 | **Auto-recovery for crashed MCP servers** | ✅ | [PR #21](https://github.com/declaragent/declaragent/pull/21) · `1a120f8` · enhanced `b69d717` with supervised recipe + `circuit-open` counter. |
@@ -146,13 +177,13 @@ Exercising this was validated end-to-end in the fleet smoke test + nightly CI:
 1. `npm i -g @declaragent/cli@0.7.1` → binary on PATH (`declaragent` or `d9t`)
 2. `declaragent init <template>` or hand-scaffold → `agent.yaml`, `event-sources.yaml` (webhook/cron/file-watch), `skills/*.md`
 3. `declaragent auth login <provider>` → OpenRouter OAuth / Anthropic key / env var
-4. `declaragent up [-d]` → binds sources, attaches dispatcher, routes events to skills, boots Prometheus `/metrics` on :9464, auto-enables OTel if `OTEL_EXPORTER_OTLP_ENDPOINT` is set
+4. `declaragent up [-d]` → binds sources, attaches dispatcher, routes events to skills, boots Prometheus `/metrics` on :9464 (detached mode), enables OTel span export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and the optional `@opentelemetry/*` peers are installed
 5. Source fires (webhook POST / cron schedule / file drop) → dispatcher (with per-skill circuit breaker + per-tool rate limit) invokes skill → provider-rate-limited LLM turn completes → outcome `dispatched→<sessionId>` recorded to SQLite hash-chained audit
 6. `declaragent ps` / `logs [-f]` / `events list` / `events show <id>` / `audit verify` / `dlq list --kind dispatch` → observability
 7. `declaragent dlq requeue <id>` → active redrive via control socket
 8. `declaragent down` → clean shutdown
 9. `declaragent deploy gcp-cloud-run` → Dockerfile + service.yaml generated; user runs `gcloud` themselves
-10. `declaragent fleet render --format k8s` → portable k8s manifests (Helm supported); `GitOps` deploy is your CD system's call
+10. `declaragent fleet render --target k8s` → portable k8s manifests (Helm via `--target helm`); `GitOps` deploy is your CD system's call
 11. Multi-host: `declaragent fleet run` with `rpc-peers.yaml` over Kafka or NATS transport; OIDC-protected envelopes verify via `AuthVerifyRegistry`
 12. SIEM: point `audit.siemSink` at Splunk / Elastic / Datadog; cursor held across restarts
 
@@ -168,7 +199,7 @@ Exercising this was validated end-to-end in the fleet smoke test + nightly CI:
 
 **Intentional non-goals** (permanent 🔵):
 - Push-button `gcloud run deploy` — `PHASE_7_PLAN.md` §9
-- RPC transport factories for SQS / AMQP / MQTT (specific brokers beyond Kafka + NATS) — v1.1+ per `AGENT_RPC_PLAN.md §5`, waiting on customer signal
+- `fleet.yaml` wiring for the SQS / AMQP / MQTT / JetStream transports — the library factories shipped in `plugin-agent-rpc`; CLI construction lands on customer signal (backlog #56)
 - Per-request weighted traffic splitting in canary — reverse-proxy responsibility
 
 ---
@@ -239,7 +270,7 @@ Items the plans **intentionally put in later phases**. Not gaps — roadmap. Row
 | ~~v1.1 Agent Graph typed capabilities~~ | ~~v1.1~~ | Shipped 0.7.0 [PR #23](https://github.com/declaragent/declaragent/pull/23). |
 | ~~Recorded-conversation builder regression tests~~ | ~~post-0.6.0~~ | Shipped 0.7.0 [PR #24](https://github.com/declaragent/declaragent/pull/24). |
 | Push-button gcloud invoke | — (intentional non-goal) | `PHASE_7_PLAN.md` §9 |
-| RPC transport factories for SQS / AMQP / MQTT (beyond Kafka + NATS) | v1.1+ | `AGENT_RPC_PLAN.md §5`. Adds land when customer signal names the broker. |
+| `fleet.yaml` wiring for SQS / AMQP / MQTT / JetStream (library factories already shipped) | backlog #56 | CLI factory map is kafka+nats today (`transport-factories.ts:116`). |
 | Traffic-splitting canary (per-request weighted) | — (reverse-proxy territory) | Not tracked as a gap. |
 | Fleet (v1.2 capabilities) | v1.2 | `FLEET_PLAN.md` |
 

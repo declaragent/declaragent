@@ -59,8 +59,8 @@ environments:
     peersRef: ./rpc-peers.yaml
 `,
   );
-  h.write('agents/concierge/agent.yaml', 'name: concierge\n');
-  h.write('agents/pr-reviewer/agent.yaml', 'name: pr-reviewer\n');
+  h.write('agents/concierge/agent.yaml', 'name: concierge\ntools:\n  defaults: [Read]\n');
+  h.write('agents/pr-reviewer/agent.yaml', 'name: pr-reviewer\ntools:\n  defaults: [Read]\n');
   h.write(
     'agents/pr-reviewer/capabilities.yaml',
     `version: 1

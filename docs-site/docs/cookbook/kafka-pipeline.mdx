@@ -25,14 +25,14 @@ cd kafka-pipeline
 docker compose up -d                       # Redpanda single-broker
 declaragent up -d                          # bind kafka source + start the pipeline
 # produce a test event
-rpk topic produce orders.created --brokers localhost:19092 \
-  < fixtures/order.json
+echo '{"id":"ord_1","total":75,"items":[{"sku":"BW","name":"Blue Widget","quantity":3}],"shipTo":{"country":"US","city":"Austin","region":"TX"}}' \
+  | docker compose exec -T redpanda rpk topic produce orders.created
 ```
 
 Expected flow:
 
 1. Source adapter consumes `orders.created`.
-2. Engine runs the `enrich-order` skill.
+2. Engine runs the `enrich` skill.
 3. Engine emits the enriched JSON to `orders.enriched`.
 4. On error, the message goes to `orders.dlq` with the failure metadata.
 
@@ -40,11 +40,8 @@ Expected flow:
 
 - **DLQ.** Every source declares its DLQ topic. See [`declaragent dlq list / show / redrive`](/reference/cli).
 - **Cost budget.** `dailyTokenUSD: 5` trips `EQUOTA` when exceeded. The source pauses consumption until the next UTC rollover.
-- **Idempotency.** The message's Kafka `(topic, partition, offset)` is the idempotency key — re-processing is safe on restart.
+- **Idempotency.** The payload's `$.id` (via `routing.idempotencyKey.path`) is the idempotency key — re-processing the same order is safe on restart.
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Grafana screenshot: `source.messages.processed` climbing against the DLQ gauge.
-</div>
 
 ## Related
 

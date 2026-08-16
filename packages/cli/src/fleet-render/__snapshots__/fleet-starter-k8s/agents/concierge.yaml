@@ -47,6 +47,25 @@ data:
         - RequestAgent
     event-sources:
       - ./event-sources.yaml
+  event-sources.yaml: |
+    # Concierge's inbox. Subscribes to the responses topic so `RequestAgent`
+    # (sync mode) can match incoming responses against its pending-RPC registry.
+    - type: agent-inbox
+      config:
+        id: inbox
+        agentId: concierge
+        # Default topics are `agents.<agentId>.requests` + `.responses`.
+      delivery:
+        mode: at-least-once
+        ackStrategy: after-dispatch
+        maxRetries: 3
+        retryBackoff:
+          initialMs: 500
+          maxMs: 10000
+          jitter: true
+      limits:
+        concurrency: 8
+        maxInflight: 256
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -78,7 +97,6 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - up
-            - -d
             - -f
             - /etc/declaragent/agent.yaml
           ports:
@@ -90,13 +108,17 @@ spec:
               value: concierge
             - name: DECLARAGENT_FLEET_NAME
               value: fleet-starter
+            - name: DECLARAGENT_METRICS_PORT
+              value: "9464"
+            - name: DECLARAGENT_BIND_ADDRESS
+              value: 0.0.0.0
           volumeMounts:
             - name: agent-config
               mountPath: /etc/declaragent
               readOnly: true
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10

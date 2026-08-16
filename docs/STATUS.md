@@ -38,13 +38,14 @@ first-class pillar.
 | --- | --- | --- |
 | 1 · **Define** agents declaratively | ✅ | ✅ (v0.7.4) |
 | 2 · **Deploy + monitor** fleet | ✅ | ✅ (v0.7.4 — Slice 3 cross-host fan-out #50) |
-| 3 · **Independent agents** + delegation | ✅ | ✅ (v0.7.4 — JetStream / SQS / AMQP / MQTT all shipped; soak accumulating) |
+| 3 · **Independent agents** + delegation | ✅ | 🟡 (`fleet run` wires kafka + nats; JetStream/SQS/AMQP/MQTT are library factories only; soak accumulating) |
 | 4 · **Tools + MCP** access | ✅ | ✅ (v0.7.5 — #27 per-MCP aggregate rate-limit cap shipped) |
 | 5 · **Conversational builder** → deployable fleet | ✅ | ✅ (v0.7.1) |
 
-**Single-machine production: ✅.** **Enterprise production: ✅ (5 of 5 pillars).** The Kafka
-24h soak (pillar 3) is a *receipt accruing Sundays*, not a capability gate — see the live CI
-signal below for the real, machine-readable status rather than this snapshot.
+**Single-machine production: ✅.** **Enterprise production: ⚠️ partial** — see CLAUDE.md's
+accuracy note and the AGENTS.md evidence ledger; pillar 3's broker wiring and the Kafka
+24h soak receipt remain open. See the live CI signal below for the real, machine-readable
+status rather than this snapshot.
 
 ---
 
@@ -57,17 +58,17 @@ it is describing the npm-published-vs-in-flight nuance, not contradicting these.
 | Package | Version | Notes |
 | --- | --- | --- |
 | _root_ (`declaragent`) | `0.0.0` | `private: true`; never published. |
-| `@declaragent/cli` | `0.7.5` | In-flight at HEAD. `npm view @declaragent/cli dist-tags` shows the last *published* `latest` (0.7.4 at last refresh) — published and in-flight can differ by one. |
-| `@declaragent/core` | `0.5.4` | |
+| `@declaragent/cli` | `0.7.6` | At HEAD and published (`npm view @declaragent/cli dist-tags` → `latest: 0.7.6`, verified 2026-08-16). |
+| `@declaragent/core` | `0.5.5` | |
 | `@declaragent/plugin-agent-rpc` | `4.0.3` | |
-| `@declaragent/testkit` | `4.0.4` | |
+| `@declaragent/testkit` | `4.0.5` | |
 | `@declaragent/channel-{slack,telegram,discord,whatsapp}` | `4.0.0` | |
 | `@declaragent/source-{kafka,nats,mqtt,amqp,sqs}` | `4.0.0` | |
 
 **Known version-coherence gaps** (tracked, not yet resolved here): the package versions are
-not lockstep (cli `0.7.x`, core `0.5.x`, channels/sources `4.0.x`), and **no `v<cli-version>`
-git tag exists** — the newest `v*` tag is `v0.5.21`, so the binary-release pipeline keyed on
-`v*` tags has not fired for any 0.6.0→0.7.5 release. Both are owned by the release/versioning
+not lockstep (cli `0.7.x`, core `0.5.x`, channels/sources `4.0.x`), and the `v*` tag history
+has a gap — `v0.7.6` exists and matches HEAD, but no tags were cut for the 0.6.0→0.7.5
+releases, so the binary-release pipeline keyed on `v*` tags skipped that span. Both are owned by the release/versioning
 workstream (PROD_PARITY_ACTIONS.md P0-1 / P1-8). Version-*policy* questions (what 1.0 will
 freeze) resolve to [`COMPAT.md`](./COMPAT.md).
 

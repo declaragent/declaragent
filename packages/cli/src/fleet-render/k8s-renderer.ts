@@ -24,6 +24,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { LoadedAgentEntry, LoadedFleet } from '@declaragent/core';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import {
@@ -44,7 +45,42 @@ const DOC_SEPARATOR = '---\n';
 const SERVICE_MONITOR_LABEL = 'prometheus';
 const SERVICE_MONITOR_LABEL_VALUE = 'kube-prometheus';
 
-/** Public entry — reads each agent.yaml off disk, returns rendered files. */
+/**
+ * WS6 — top-level agent-dir config files embedded into the ConfigMap alongside
+ * `agent.yaml`, so a deployed pod gets its sources/peers/capabilities (without
+ * these, `event-sources.yaml` never reaches the container → no source binds →
+ * `/readyz` never goes 200 → the pod never becomes Ready). These are flat
+ * filenames, so the existing whole-ConfigMap volume mount exposes each as a
+ * file under `/etc/declaragent/` with no `subPath` gymnastics. (Skills live in
+ * a `skills/` subdir — ConfigMap keys can't contain `/` — and are a follow-up.)
+ */
+const EMBEDDED_CONFIG_FILES = [
+  'event-sources.yaml',
+  'event-sources.yml',
+  'event-sources.json',
+  'rpc-peers.yaml',
+  'rpc-peers.yml',
+  'capabilities.yaml',
+  'capabilities.yml',
+  '.mcp.json',
+] as const;
+
+export async function readAgentExtraFiles(agentYamlPath: string): Promise<Record<string, string>> {
+  const dir = dirname(agentYamlPath);
+  const out: Record<string, string> = {};
+  await Promise.all(
+    EMBEDDED_CONFIG_FILES.map(async (name) => {
+      try {
+        out[name] = await readFile(join(dir, name), 'utf-8');
+      } catch {
+        // absent — skip (most agents declare only a subset).
+      }
+    }),
+  );
+  return out;
+}
+
+/** Public entry — reads each agent.yaml + sibling config off disk. */
 export async function renderK8s(
   fleet: LoadedFleet,
   opts: RenderOptions = {},
@@ -54,6 +90,7 @@ export async function renderK8s(
     fleet.agents.map(async (a) => ({
       agent: a,
       agentYaml: await readFile(a.agentYamlPath, 'utf-8'),
+      extraFiles: await readAgentExtraFiles(a.agentYamlPath),
     })),
   );
   return renderK8sFromSources(fleet, agentSources, resolved);
@@ -62,6 +99,12 @@ export async function renderK8s(
 export interface AgentSource {
   readonly agent: LoadedAgentEntry;
   readonly agentYaml: string;
+  /**
+   * WS6 — additional agent-dir config files (event-sources.yaml, rpc-peers.yaml,
+   * capabilities.yaml, .mcp.json) embedded into the ConfigMap. Keyed by
+   * filename. Omitted/empty → only `agent.yaml` is embedded (legacy behavior).
+   */
+  readonly extraFiles?: Record<string, string>;
 }
 
 /** Pure renderer for tests — caller provides pre-read agent.yaml text. */
@@ -195,8 +238,13 @@ function renderConfigMap(
         namespace: resolved.namespace,
         labels: labelsFor(src.agent.id, fleetName),
       },
+      // WS6 — embed agent.yaml + every present sibling config file (sorted for
+      // deterministic output) so the deployed pod has its sources/peers/caps.
       data: {
         'agent.yaml': src.agentYaml,
+        ...Object.fromEntries(
+          Object.entries(src.extraFiles ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+        ),
       },
     },
     YAML_OPTS,
@@ -220,18 +268,31 @@ function renderDeployment(
   const env: Array<Record<string, unknown>> = [
     { name: 'DECLARAGENT_AGENT_ID', value: src.agent.id },
     { name: 'DECLARAGENT_FLEET_NAME', value: fleetName },
+    // WS6 — foreground `up` defaults the metrics/health listener OFF (port 0);
+    // set it explicitly so the container actually serves /metrics + /healthz +
+    // /readyz for the probes below.
+    { name: 'DECLARAGENT_METRICS_PORT', value: String(resolved.metricsPort) },
+    // WS6 — bind the listener to all interfaces. The kubelet reaches the probe
+    // endpoints via the pod IP, not loopback, so the default 127.0.0.1 bind
+    // would make /healthz + /readyz unreachable (→ CrashLoopBackOff). NOTE: per
+    // the WS3 fail-closed rule, a non-loopback bind REQUIRES a controlPlane.auth
+    // block on the agent — `/healthz` + `/readyz` are auth-exempt, but the read/
+    // mutate routes are not, so the pod refuses to boot without auth configured.
+    { name: 'DECLARAGENT_BIND_ADDRESS', value: '0.0.0.0' },
   ];
 
   const container: Record<string, unknown> = {
     name: 'declaragent',
     image: resolved.image,
     imagePullPolicy: 'IfNotPresent',
-    args: ['up', '-d', '-f', '/etc/declaragent/agent.yaml'],
+    // WS6 — run FOREGROUND (no `-d`): the detached child exits, leaving PID 1
+    // to exit 0 → CrashLoopBackOff. Foreground keeps PID 1 alive for the pod.
+    args: ['up', '-f', '/etc/declaragent/agent.yaml'],
     ports: [{ name: 'metrics', containerPort: resolved.metricsPort, protocol: 'TCP' }],
     env,
     volumeMounts: [{ name: 'agent-config', mountPath: '/etc/declaragent', readOnly: true }],
     readinessProbe: {
-      httpGet: { path: resolved.healthProbePath, port: 'metrics' },
+      httpGet: { path: resolved.readyProbePath, port: 'metrics' },
       initialDelaySeconds: 3,
       periodSeconds: 10,
     },

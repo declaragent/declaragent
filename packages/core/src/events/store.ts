@@ -103,6 +103,19 @@ export interface EventStore {
    * row was deleted, false when no record existed.
    */
   deleteRejection(eventId: string): Promise<boolean>;
+
+  /**
+   * WS8 — GDPR right-to-erasure for EVENT rows. Hard-deletes every event whose
+   * `meta.principal.platformUserId` matches `platformUserId` (plus any rejection
+   * rows for those events), returning the count erased. Complements the audit
+   * sink's `erasePlatformUser` (which tombstones audit records) and the session
+   * store's erase — a full subject erasure composes all three. Returns 0 when
+   * nothing matched. Hard delete (not tombstone): unlike the tamper-evident
+   * audit chain, the event ledger has no hash chain to preserve.
+   *
+   * @since 0.7.6 — production-readiness WS8
+   */
+  eraseByPlatformUser(platformUserId: string): Promise<number>;
 }
 
 export interface CreateEventStoreOptions {
@@ -421,6 +434,23 @@ export function createEventStore(options: CreateEventStoreOptions): EventStore {
     async deleteRejection(eventId: string): Promise<boolean> {
       const result = deleteRejectionStmt.run(eventId);
       return result.changes > 0;
+    },
+
+    async eraseByPlatformUser(platformUserId: string): Promise<number> {
+      // Match on meta.principal.platformUserId (stamped by channel adapters).
+      const ids = db
+        .prepare<{ id: string }, [string]>(
+          "SELECT id FROM events WHERE json_extract(meta_json, '$.principal.platformUserId') = ?",
+        )
+        .all(platformUserId)
+        .map((r) => r.id);
+      if (ids.length === 0) return 0;
+      const placeholders = ids.map(() => '?').join(',');
+      // Drop any DLQ rows for those events first (FK-less, so order is for
+      // tidiness), then hard-delete the events.
+      db.prepare(`DELETE FROM rejected_events WHERE event_id IN (${placeholders})`).run(...ids);
+      const result = db.prepare(`DELETE FROM events WHERE id IN (${placeholders})`).run(...ids);
+      return result.changes;
     },
   };
 }

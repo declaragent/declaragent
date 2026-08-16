@@ -92,7 +92,6 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - up
-            - -d
             - -f
             - /etc/declaragent/agent.yaml
           ports:
@@ -104,13 +103,17 @@ spec:
               value: concierge
             - name: DECLARAGENT_FLEET_NAME
               value: fleet-starter
+            - name: DECLARAGENT_METRICS_PORT
+              value: "9464"
+            - name: DECLARAGENT_BIND_ADDRESS
+              value: 0.0.0.0
           volumeMounts:
             - name: agent-config
               mountPath: /etc/declaragent
               readOnly: true
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10

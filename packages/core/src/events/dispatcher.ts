@@ -226,6 +226,9 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
             session,
             userMessage: frameEvent(event),
             ...(event.meta?.causedBy !== undefined && { causedBy: event.meta.causedBy }),
+            ...(event.meta?.principal?.platformUserId !== undefined && {
+              subject: event.meta.principal.platformUserId,
+            }),
           });
         });
         return dispatched(session.id, turnResult);
@@ -244,6 +247,9 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
             session,
             userMessage,
             ...(event.meta?.causedBy !== undefined && { causedBy: event.meta.causedBy }),
+            ...(event.meta?.principal?.platformUserId !== undefined && {
+              subject: event.meta.principal.platformUserId,
+            }),
           }),
         );
         return dispatched(session.id, turnResult);
@@ -297,6 +303,9 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
                 session: pinned,
                 userMessage: frameEvent(event),
                 ...(event.meta?.causedBy !== undefined && { causedBy: event.meta.causedBy }),
+                ...(event.meta?.principal?.platformUserId !== undefined && {
+                  subject: event.meta.principal.platformUserId,
+                }),
               }),
             );
             pinnedBreaker?.record(true);
@@ -361,6 +370,9 @@ export function createEventDispatcher(options: CreateEventDispatcherOptions): Ev
             userMessage: frameEvent(event),
             depth: 1,
             ...(event.meta?.causedBy !== undefined && { causedBy: event.meta.causedBy }),
+            ...(event.meta?.principal?.platformUserId !== undefined && {
+              subject: event.meta.principal.platformUserId,
+            }),
           }),
         );
         return dispatched(child.id, turnResult);

@@ -13,43 +13,38 @@ Every provider preset is defined in [`packages/cli/src/providers-registry.ts`](h
 
 | Provider | Preset id | Default model | Auth method | Streaming | Tools | Images | Audio |
 | --- | --- | --- | --- | :---: | :---: | :---: | :---: |
-| Anthropic | `anthropic` | `claude-opus-4-6` | API key | ✅ | ✅ | ✅ | ❌ |
-| OpenAI | `openai` | `gpt-4o-mini` | API key | ✅ | ✅ | ✅ | ✅ |
-| OpenRouter | `openrouter` | `openai/gpt-4o-mini` | Browser PKCE | ✅ | ✅ | per-model | per-model |
-| Groq | `groq` | `llama-3.3-70b-versatile` | API key | ✅ | ✅ | ❌ | ❌ |
-| DeepSeek | `deepseek` | `deepseek-chat` | API key | ✅ | ✅ | ❌ | ❌ |
-| Together | `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | API key | ✅ | ✅ | ❌ | ❌ |
-| Mistral | `mistral` | `mistral-large-latest` | API key | ✅ | ✅ | ❌ | ❌ |
-| xAI (Grok) | `xai` | `grok-2-latest` | API key | ✅ | ✅ | ❌ | ❌ |
+| Anthropic | `anthropic` | `claude-opus-4-6` | API key | ❌ planned | ✅ | ❌ planned | ❌ |
+| OpenAI | `openai` | `gpt-4o-mini` | API key | ❌ planned | ✅ | ❌ planned | ❌ |
+| OpenRouter | `openrouter` | `openai/gpt-4o-mini` | Browser PKCE | ❌ planned | ✅ | ❌ | ❌ |
+| Groq | `groq` | `llama-3.3-70b-versatile` | API key | ❌ planned | ✅ | ❌ | ❌ |
+| DeepSeek | `deepseek` | `deepseek-chat` | API key | ❌ planned | ✅ | ❌ | ❌ |
+| Together | `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | API key | ❌ planned | ✅ | ❌ | ❌ |
+| Mistral | `mistral` | `mistral-large-latest` | API key | ❌ planned | ✅ | ❌ | ❌ |
+| xAI (Grok) | `xai` | `grok-2-latest` | API key | ❌ planned | ✅ | ❌ | ❌ |
 
 ## Local providers
 
 | Provider | Preset id | Default model | Auth | Streaming | Tools |
 | --- | --- | --- | --- | :---: | :---: |
-| Ollama | `ollama` | `llama3.2` | env-only | ✅ | model-dependent |
-| LM Studio | `lm-studio` | `local-model` | env-only | ✅ | model-dependent |
-| llama.cpp | `llama-cpp` | `local-model` | env-only | ✅ | model-dependent |
+| Ollama | `ollama` | `llama3.2` | env-only | ❌ planned | model-dependent |
+| LM Studio | `lm-studio` | `local-model` | env-only | ❌ planned | model-dependent |
+| llama.cpp | `llama-cpp` | `local-model` | env-only | ❌ planned | model-dependent |
 
 ## Feature notes
 
-- **Streaming.** All OpenAI-compat providers support `stream: true`. Anthropic exposes its own streaming SSE format which the core runtime normalizes.
+- **Streaming.** Not implemented yet for any provider — every LLM call is a single
+  non-streaming completion today (the `LLMProvider.stream()` hook exists on the
+  interface but no provider implements it). Planned.
 - **Tools.** "Tools" here means the provider-native tool-use protocol (Anthropic `tool_use` / OpenAI `tools`). Groq, DeepSeek, xAI, and Mistral all speak the OpenAI tool-call shape. OpenRouter forwards tool calls if the underlying model supports them.
-- **Images.** Inline image support in the user message. OpenAI and Anthropic are the stable paths. OpenRouter is per-model.
-- **Audio.** OpenAI `gpt-4o-audio-preview` is the only cloud target for now. Post-v1.0 we'll add Google Gemini if/when the provider preset lands.
+- **Images.** Not implemented — message content is text + tool blocks only today
+  (no image content type in the pipeline). Planned.
+- **Audio.** Not implemented for any provider. Roadmap.
 
 ## Auth flows
 
 - **API key** — paste flow or `--api-key` non-interactive.
 - **Browser PKCE** — OpenRouter only. Spins a localhost callback port and opens a browser tab.
 - **env-only** — local providers. The CLI doesn't store anything; you either set the `*_API_KEY` env var (usually empty for local) or let the defaults take over.
-
-<div className="todo-block">
-[placeholder — landing 2026-Q2] **Nightly provider-matrix tests** are
-aspirational. The plan (`PHASE_7_PLAN.md §8.2`) calls for nightly jobs
-that exercise streaming / tools / images against each provider; these
-land alongside slice 8 once the Zod schema generator also catches every
-provider-preset change.
-</div>
 
 ## Related
 

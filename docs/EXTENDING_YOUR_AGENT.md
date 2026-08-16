@@ -1,5 +1,12 @@
 # Extending Your Agent: Plugins, MCP, Skills, Sub-Agents
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 Companion to `BUILDING_A_GENERIC_AGENT.md`. That doc built the core; this one adds the four extension surfaces that make the agent actually useful and extensible by others.
 
 ---

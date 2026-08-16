@@ -36,7 +36,7 @@
         "label": "Channel id",
         "type": "query",
         "datasource": "${DS_PROMETHEUS}",
-        "query": "label_values(channel_outbound_sent_total{type=\"whatsapp\"}, id)",
+        "query": "label_values(channel_outbound_sent{type=\"whatsapp\"}, id)",
         "refresh": 2,
         "includeAll": true,
         "multi": true,

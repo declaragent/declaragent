@@ -67,8 +67,14 @@ export interface RenderOptions {
    * port baked into the runtime). Exposed here for future overrides.
    */
   readonly metricsPort?: number;
-  /** HTTP probe path. Defaults to `/healthz`. */
+  /** Liveness HTTP probe path. Defaults to `/healthz` (is the process alive). */
   readonly healthProbePath?: string;
+  /**
+   * Readiness HTTP probe path. Defaults to `/readyz` — distinct from liveness
+   * so the kubelet only routes traffic once a source has bound (WS6); `/readyz`
+   * returns 503 until then, `/healthz` is up as soon as the listener is.
+   */
+  readonly readyProbePath?: string;
   /**
    * Split per-agent config into dedicated ConfigMaps (`<agent>-channels-config`,
    * `<agent>-sources-config`, `<agent>-plugins-config`) mounted via
@@ -94,6 +100,7 @@ export interface ResolvedRenderOptions {
   readonly serviceMonitor: boolean;
   readonly metricsPort: number;
   readonly healthProbePath: string;
+  readonly readyProbePath: string;
   readonly configSplit: boolean;
 }
 
@@ -108,6 +115,7 @@ export function resolveRenderOptions(
     serviceMonitor: opts.serviceMonitor ?? true,
     metricsPort: opts.metricsPort ?? 9464,
     healthProbePath: opts.healthProbePath ?? '/healthz',
+    readyProbePath: opts.readyProbePath ?? '/readyz',
     configSplit: opts.configSplit ?? false,
   };
 }

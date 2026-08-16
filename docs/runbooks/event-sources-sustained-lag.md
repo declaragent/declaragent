@@ -16,26 +16,26 @@ widening.
 Increase the adapter's concurrency ceiling if the host has capacity:
 
 ```bash
-declaragent sources config set <id> limits.concurrency 16
-declaragent sources reload <id>
+# Raise limits.concurrency on the source in event-sources.yaml, then
+# restart to apply:
+declaragent down && declaragent up -d
 ```
 
-If the downstream is genuinely overloaded, pause the source instead:
-
-```bash
-declaragent sources pause <id>
-```
+If the downstream is genuinely overloaded, comment the source out of
+`event-sources.yaml` instead and restart — the broker retains the
+backlog for redelivery.
 
 ## Root-cause investigation
 ```bash
 # Inflight + received/processed counters:
-declaragent sources status <id> --json
+curl -s http://127.0.0.1:9464/metrics | grep -E 'source_inflight|source_messages'
 
 # Grafana: Event Sources → "Received vs Processed" + "Inflight" panels.
 ```
 
-Check the dispatcher's own metrics (`dispatcher_queued_total`,
-`dispatcher_rejected_total`) for deferral patterns.
+Check the receive-vs-process gap (`source_messages_received` minus
+`source_messages_processed`) and `source_inflight` for deferral patterns;
+rejected dispatches surface in `declaragent dlq list --kind dispatch`.
 
 ## Post-incident
 - Capture: peak lag, root cause, mitigation applied.

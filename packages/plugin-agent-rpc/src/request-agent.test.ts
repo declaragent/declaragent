@@ -5,6 +5,7 @@ import {
   parseCapabilitiesConfig,
   parsePeersConfig,
 } from '@declaragent/core';
+import { createHmacAuthProvider } from './auth/hmac.js';
 import { createPendingRegistry } from './pending-registry.js';
 import { createRequestAgentTool } from './request-agent.js';
 import { collectEvents, makeToolContext } from './test-helpers.js';
@@ -176,6 +177,42 @@ describe('createRequestAgentTool', () => {
     const env = transport.published[0]?.envelope;
     expect(env?.kind).toBe('event');
     expect(env?.replyTo).toBeUndefined();
+  });
+
+  test('(WS2) signOutbound signs the envelope so the HMAC verifier accepts it', async () => {
+    const transport = stubTransport();
+    const signer = createHmacAuthProvider({ secret: 'shared', keyId: 'k1' });
+    const tool = createRequestAgentTool({
+      selfAgent: 'agent://concierge',
+      peers: singlePeer(),
+      transports: new Map([['memory', transport]]),
+      pending: createPendingRegistry(),
+      replyTo: 'memory://agents.concierge.responses',
+      signOutbound: (env) => signer.sign(env),
+    });
+
+    await collectEvents(
+      tool.execute(
+        {
+          to: 'agent://pr-reviewer',
+          capability: 'broadcast-update',
+          payload: { msg: 'hi' },
+          mode: 'fire-and-forget',
+        },
+        makeToolContext(),
+      ),
+    );
+    const env = transport.published[0]?.envelope;
+    if (!env) throw new Error('expected a published envelope');
+    // Outbound envelope is HMAC-signed, not the legacy internal kind.
+    expect(env.auth?.kind).toBe('hmac');
+    // The receiver's verifier (same secret) accepts it end-to-end.
+    const verifier = createHmacAuthProvider({ secret: 'shared', keyId: 'k1' });
+    const result = await verifier.verify(env, { provider: 'hmac', keyId: 'k1' });
+    expect(result.ok).toBe(true);
+    // A verifier with a different secret rejects it.
+    const wrong = createHmacAuthProvider({ secret: 'other', keyId: 'k1' });
+    expect((await wrong.verify(env, { provider: 'hmac', keyId: 'k1' })).ok).toBe(false);
   });
 
   test('unknown peer returns EAGENTRPC_NO_PEER error', async () => {

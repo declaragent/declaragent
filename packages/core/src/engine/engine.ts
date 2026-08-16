@@ -1,9 +1,11 @@
 import { frameEvent } from '../events/dispatcher.js';
 import type { Mailbox } from '../events/mailbox.js';
+import { POWER_OF_TWO_BUCKETS } from '../events/observability.js';
 import type { AgentEvent, EventBus, MetricsRegistry } from '../events/types.js';
 import { bindLoopHooks, createHookRegistry } from '../hooks/registry.js';
 import type { HookRegistry } from '../hooks/types.js';
 import { shouldEscalate } from '../permission/gate.js';
+import { estimateCostUSD } from '../session/pricing.js';
 import { QuotaExceededError, type QuotaTracker } from '../tenancy/quota.js';
 import { stampTenantId } from '../tenancy/stamp.js';
 import type { TenantContext } from '../tenancy/types.js';
@@ -390,7 +392,56 @@ export function createEngine(config: EngineConfig): Engine {
         };
 
         turnLogger.debug('llm.request', { iteration: iter });
-        const response = await provider.complete(request, signal);
+        // WS7 — LLM golden signals. Time the provider call, count requests /
+        // errors, and record token + estimated-cost counters so an operator can
+        // alert on provider latency, an outage (errors_total climbing), and
+        // spend. Labelled by agent + model. All guarded by `if (metrics)`.
+        const llmLabels = { agent: session.spec.name, model: session.spec.model ?? 'default' };
+        const llmStartedAt = performance.now();
+        let response: Awaited<ReturnType<typeof provider.complete>>;
+        try {
+          response = await provider.complete(request, signal);
+        } catch (err) {
+          metrics
+            ?.counter('declaragent.provider.errors_total', 'LLM provider call errors')
+            .inc(1, llmLabels);
+          throw err;
+        }
+        // Estimate cost once — used by both the metric and the WS8 spend cap,
+        // so it must be computed even when metrics are off.
+        const costUSD = estimateCostUSD(response.model ?? session.spec.model, response.usage, {
+          onUnknownModel: (m) =>
+            metrics
+              ?.counter(
+                'declaragent.provider.unpriced_calls_total',
+                'LLM calls whose model had no price-book entry (cost undercounted)',
+              )
+              .inc(1, { agent: session.spec.name, model: m }),
+        });
+        if (metrics) {
+          const durationMs = performance.now() - llmStartedAt;
+          metrics
+            .histogram(
+              'declaragent.provider.request.duration_ms',
+              'LLM provider call latency (ms)',
+              POWER_OF_TWO_BUCKETS,
+            )
+            .observe(durationMs, llmLabels);
+          metrics
+            .counter('declaragent.provider.requests_total', 'LLM provider calls')
+            .inc(1, llmLabels);
+          metrics
+            .counter('declaragent.provider.input_tokens_total', 'LLM input tokens consumed')
+            .inc(response.usage.inputTokens, llmLabels);
+          metrics
+            .counter('declaragent.provider.output_tokens_total', 'LLM output tokens produced')
+            .inc(response.usage.outputTokens, llmLabels);
+          if (costUSD > 0) {
+            metrics
+              .counter('declaragent.provider.cost_usd_total', 'Estimated LLM spend (USD)')
+              .inc(costUSD, llmLabels);
+          }
+        }
         totalInputTokens += response.usage.inputTokens;
         totalOutputTokens += response.usage.outputTokens;
         turnLogger.debug('llm.response', {
@@ -410,6 +461,33 @@ export function createEngine(config: EngineConfig): Engine {
         };
         lastAssistantMessage = assistantMessage;
         await session.appendMessage(assistantMessage);
+
+        // WS8 — dollar spend brake. Record this call's cost against the tenant's
+        // rolling daily spend; if `dailyTokenUSD` is now breached, halt the turn
+        // fail-closed (no further LLM calls). The cost already incurred is kept;
+        // the cap prevents the NEXT call, bounding runaway/looping spend.
+        if (quotas && costUSD > 0) {
+          try {
+            quotas.addTokenSpendUSD(costUSD);
+          } catch (err) {
+            if (err instanceof QuotaExceededError) {
+              turnLogger.warn('llm.spend_capped', {
+                quota: err.quota,
+                limit: err.limit,
+                observed: err.observed,
+              });
+              metrics
+                ?.counter(
+                  'declaragent.provider.spend_capped_total',
+                  'Turns halted by the dailyTokenUSD spend cap',
+                )
+                .inc(1, llmLabels);
+              stopReason = 'quota_exceeded';
+              break;
+            }
+            throw err;
+          }
+        }
 
         if (response.stopReason !== 'tool_use') {
           stopReason = response.stopReason === 'error' ? 'error' : 'end_turn';
@@ -556,6 +634,7 @@ export function createEngine(config: EngineConfig): Engine {
             logger: turnLogger.child({ toolName: tool.name }),
             ...(createChildSession !== undefined && { createChildSession }),
             ...(tenant !== undefined && { tenant }),
+            ...(input.subject !== undefined && { subject: input.subject }),
             ...(input.causedBy !== undefined && { correlationId: input.causedBy }),
           };
           let output: unknown;

@@ -34,7 +34,7 @@
 import { readFile } from 'node:fs/promises';
 import type { LoadedFleet } from '@declaragent/core';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import type { AgentSource } from './k8s-renderer.js';
+import { type AgentSource, readAgentExtraFiles } from './k8s-renderer.js';
 import {
   type RenderOptions,
   type RenderedFile,
@@ -54,6 +54,9 @@ export async function renderHelm(
     fleet.agents.map(async (a) => ({
       agent: a,
       agentYaml: await readFile(a.agentYamlPath, 'utf-8'),
+      // WS6 — embed the top-level agent-dir config (event-sources.yaml, etc.)
+      // so a deployed pod's sources bind, matching the k8s renderer.
+      extraFiles: await readAgentExtraFiles(a.agentYamlPath),
     })),
   );
   return renderHelmFromSources(fleet, sources, opts);
@@ -129,6 +132,7 @@ export function renderHelmFromSources(
         src.agentYaml,
         resolved.serviceMonitor,
         resolved.configSplit ? detectAgentSections(src.agentYaml) : [],
+        src.extraFiles ?? {},
       ),
     });
   }
@@ -168,6 +172,7 @@ function renderValuesYaml(
     },
     metricsPort: resolved.metricsPort,
     healthProbePath: resolved.healthProbePath,
+    readyProbePath: resolved.readyProbePath,
     serviceMonitor: {
       enabled: resolved.serviceMonitor,
       interval: '30s',
@@ -347,6 +352,7 @@ function renderAgentTemplate(
   agentYaml: string,
   serviceMonitor: boolean,
   splitSections: readonly HelmSplitSection[] = [],
+  extraFiles: Record<string, string> = {},
 ): string {
   const safeId = sanitizeDns1123Label(agentId);
   // Embed the agent.yaml content. Helm passes template strings through
@@ -354,7 +360,16 @@ function renderAgentTemplate(
   // misinterpreted as actions. Escape them using Helm's documented
   // `{{ "{{" }}` trick — at render time Go emits a literal `{{` into
   // the output, preserving the agent.yaml content byte-for-byte.
-  const safeAgentYaml = agentYaml.replace(/\{\{/g, '{{ "{{" }}').replace(/\}\}/g, '{{ "}}" }}');
+  const escapeHelm = (s: string): string =>
+    s.replace(/\{\{/g, '{{ "{{" }}').replace(/\}\}/g, '{{ "}}" }}');
+  const safeAgentYaml = escapeHelm(agentYaml);
+  // WS6 — embed the top-level agent-dir config files (event-sources.yaml, etc.)
+  // into the same ConfigMap so they mount as files at /etc/declaragent/, exactly
+  // like the k8s renderer. Sorted for deterministic output; same Helm escaping.
+  const extraFileBlock = Object.keys(extraFiles)
+    .sort()
+    .map((name) => `\n  ${name}: |\n${indent(escapeHelm(extraFiles[name] ?? ''), 4)}`)
+    .join('');
 
   // Build the split-ConfigMap blocks (one per matching section). Gated
   // on `.Values.configSplit.enabled` so operators can toggle without
@@ -442,7 +457,7 @@ metadata:
     {{- include "declaragent.agentLabels" (merge (dict "agentId" $agentId) .) | nindent 4 }}
 data:
   agent.yaml: |
-${indent(safeAgentYaml, 4)}${splitConfigBlock}
+${indent(safeAgentYaml, 4)}${extraFileBlock}${splitConfigBlock}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -465,9 +480,10 @@ spec:
         - name: declaragent
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # WS6 - foreground up (no -d): the detached child exits, leaving PID 1
+          # to exit 0 (CrashLoopBackOff). Foreground keeps PID 1 alive.
           args:
             - up
-            - -d
             - -f
             - /etc/declaragent/agent.yaml
           ports:
@@ -479,10 +495,19 @@ spec:
               value: ${safeId}
             - name: DECLARAGENT_FLEET_NAME
               value: {{ include "declaragent.name" . | quote }}
+            # WS6 — foreground up defaults the listener OFF; set it so the pod
+            # serves /metrics + /healthz + /readyz for the probes.
+            - name: DECLARAGENT_METRICS_PORT
+              value: "{{ .Values.metricsPort }}"
+            # WS6 — bind all interfaces so the kubelet reaches the probes via the
+            # pod IP (default 127.0.0.1 → probes unreachable). Requires a
+            # controlPlane.auth block per the WS3 fail-closed rule.
+            - name: DECLARAGENT_BIND_ADDRESS
+              value: "0.0.0.0"
 ${splitEnvFromBlock}
           readinessProbe:
             httpGet:
-              path: {{ .Values.healthProbePath }}
+              path: {{ .Values.readyProbePath }}
               port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10

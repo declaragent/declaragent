@@ -15,8 +15,9 @@ p99 of `source.process.duration_ms` on `{{ id }}` (`{{ type }}`) is above
 If schema-registry latency is the cause, bump the registry cache TTL:
 
 ```bash
-declaragent config set event-sources.schemaRegistry.cacheTtlMs 300000
-declaragent daemon reload
+# Raise the registry cache TTL in the source's schemaRegistry config in
+# event-sources.yaml, then restart to apply:
+declaragent down && declaragent up -d
 ```
 
 ## Root-cause investigation

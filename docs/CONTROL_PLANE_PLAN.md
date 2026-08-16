@@ -1,5 +1,12 @@
 # Control-plane plan — aggregate N `up` processes into one fleet view
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 **Target release:** `@declaragent/cli@0.7.0` · **Effort:** ~6 calendar weeks · **Authored:** 2026-04-22
 
 This plan answers the single biggest enterprise-production gap in [FIRST_PRINCIPLES_AUDIT.md](./FIRST_PRINCIPLES_AUDIT.md): SSH-per-host doesn't scale. Operators running 5 / 20 / 200 agents across hosts, zones, or Kubernetes clusters need **one place to see what's happening**, without introducing a hosted SaaS dependency.

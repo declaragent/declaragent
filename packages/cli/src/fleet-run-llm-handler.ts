@@ -136,7 +136,7 @@ export function createLLMHandlerFactory(
     // Engine per agent so `createChildSession` closes over the
     // right spec. One provider is shared; one session store is
     // shared; only the spec identity differs.
-    const { buildRuntimeTools } = await import('./builtin-tools.js');
+    const { resolveRuntimeTools } = await import('./resolve-tools.js');
     const extraTools: Tool[] = [];
     // When `rpc-peers.yaml` was supplied at daemon-boot, every agent
     // gets a `RequestAgent` tool that can call its declared peers.
@@ -197,12 +197,25 @@ export function createLLMHandlerFactory(
         );
       }
     }
+    // WS1 — enforce the agent's declared tool set + permission rules. fleet-run
+    // handles untrusted broker input with no human to prompt, so the gate runs
+    // in `default` mode (undeclared tools → prompt → denied). RequestAgent and
+    // any plugin tools in `extraTools` are auto-exempt.
+    // Throws AgentToolConfigError on an unknown tool name (fail boot). Advisory
+    // warnings (no tools.defaults / unmatched MCP glob) are surfaced on the
+    // daemon's stderr — fleet-run has no per-agent logger plumbed here yet.
+    const resolvedTools = resolveRuntimeTools({
+      declared: loaded.toolNames,
+      permissionRules: loaded.permissionRules,
+      ...(extraTools.length > 0 && { extra: extraTools }),
+    });
+    for (const warning of resolvedTools.warnings) {
+      process.stderr.write(`[fleet-run] tools.permission (${spec.name}): ${warning}\n`);
+    }
     const engine = createEngine({
       provider: options.provider,
-      tools: [...buildRuntimeTools(extraTools.length > 0 ? { extra: extraTools } : {})],
-      // Bypass permissions in fleet-run — there's no human to prompt,
-      // and the scaffolded agent has already declared its tool set.
-      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      tools: resolvedTools.tools,
+      permissions: resolvedTools.gate,
       createChildSession: () => options.sessionStore.create(spec),
       // Item A step 3 — register the iteration histogram + cap-hit
       // counter when the caller supplies a metrics registry. `spec`

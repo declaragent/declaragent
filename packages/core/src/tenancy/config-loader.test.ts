@@ -2,12 +2,39 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TenantsConfigError, loadTenantsConfig } from './config-loader.js';
+import { TenantsConfigError, loadTenantsConfig, resolveTenantContext } from './config-loader.js';
 
 function withTmp<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), 'declaragent-tenants-'));
   return run(dir).finally(() => rmSync(dir, { recursive: true, force: true }));
 }
+
+describe('resolveTenantContext (WS8)', () => {
+  test('returns the matching tenant context, undefined for an unknown id', async () => {
+    await withTmp(async (dir) => {
+      const path = join(dir, 'tenants.yaml');
+      writeFileSync(
+        path,
+        `version: 1
+tenants:
+  - id: acme-prod
+    quotas:
+      dailyTokenUSD: 200
+  - id: beta
+    quotas:
+      dailyTokenUSD: 50
+`,
+        'utf-8',
+      );
+      const config = await loadTenantsConfig({ path, env: {} });
+      expect(resolveTenantContext(config, 'acme-prod')?.id).toBe('acme-prod');
+      expect(resolveTenantContext(config, 'acme-prod')?.quotas?.dailyTokenUSD).toBe(200);
+      expect(resolveTenantContext(config, 'beta')?.quotas?.dailyTokenUSD).toBe(50);
+      // Unknown id → undefined (caller fails loud, not a silent default).
+      expect(resolveTenantContext(config, 'ghost')).toBeUndefined();
+    });
+  });
+});
 
 describe('loadTenantsConfig', () => {
   test('parses a canonical two-tenant YAML', async () => {

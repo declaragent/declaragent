@@ -17,6 +17,7 @@ import type {
   AgentEvent,
   AgentEventMeta,
   EventKind,
+  EventSourceTag,
   EventTarget,
   JsonPath,
   MessageNormalizer,
@@ -124,8 +125,17 @@ export function createMessageNormalizer(
       // 4. Resolve event kind.
       const kind = resolveKind(body, routing.kindSelector);
 
-      // 5. Resolve event target.
-      const target = resolveTarget(body, routing.targetSelector);
+      // 5. Resolve event target. The interpolation context lets a skill
+      //    target's templated `sessionKey` reference more than the body
+      //    (headers / source / kind) while staying body-rooted for `$.`
+      //    paths — same namespace rule as every other JSONPath here.
+      const interp: InterpolationContext = {
+        body,
+        source: ctx.source,
+        kind,
+        ...(raw.headers !== undefined && { headers: raw.headers }),
+      };
+      const target = resolveTarget(body, routing.targetSelector, interp);
 
       // 6. Build meta (correlationId + idempotencyKey).
       const meta: AgentEventMeta = {};
@@ -234,7 +244,24 @@ function resolveKind(body: unknown, selector: RoutingConfig['kindSelector']): Ev
 
 // ─── Target selector ─────────────────────────────────────────────────────
 
-function resolveTarget(body: unknown, selector: TargetSelector): EventTarget {
+/**
+ * Context a templated skill `sessionKey` resolves against. `body` is the
+ * (post-transform) decoded body — the same `$.`-rooted namespace `inputs`
+ * use; `headers` / `source` / `kind` are the extra metadata templates may
+ * reference. Carried only to support session-pin key interpolation.
+ */
+interface InterpolationContext {
+  body: unknown;
+  source: EventSourceTag;
+  kind: EventKind;
+  headers?: Record<string, unknown>;
+}
+
+function resolveTarget(
+  body: unknown,
+  selector: TargetSelector,
+  interp: InterpolationContext,
+): EventTarget {
   switch (selector.type) {
     case 'broadcast':
       return { type: 'broadcast' };
@@ -273,7 +300,16 @@ function resolveTarget(body: unknown, selector: TargetSelector): EventTarget {
           }
         }
       }
-      return { type: 'skill', name: selector.name, inputs };
+      // Resolve an optional session-pin key (static literal or `{{ }}`
+      // template). `undefined` ⇒ no key emitted ⇒ byte-for-byte the old
+      // fresh-per-event target shape (back-compat).
+      const sessionKey = resolveSessionKey(selector.sessionKey, interp);
+      return {
+        type: 'skill',
+        name: selector.name,
+        inputs,
+        ...(sessionKey !== undefined && { sessionKey }),
+      };
     }
 
     case 'sub-agent': {
@@ -286,6 +322,119 @@ function resolveTarget(body: unknown, selector: TargetSelector): EventTarget {
       return { type: 'sub-agent', parentSessionId, spec: {} };
     }
   }
+}
+
+// ─── Session-pin key resolution ──────────────────────────────────────────
+
+const TEMPLATE_PLACEHOLDER = /\{\{\s*([^}]*?)\s*\}\}/g;
+
+/**
+ * Resolve a skill target's optional `sessionKey` to a concrete pin key.
+ *
+ * - `undefined` / empty / whitespace-only ⇒ `undefined` (no pin).
+ * - A string WITHOUT a `{{ ... }}` placeholder ⇒ used verbatim as a STATIC
+ *   literal (trimmed-empty ⇒ `undefined`).
+ * - A string WITH `{{ ... }}` placeholders ⇒ each placeholder is resolved
+ *   per-event against {@link InterpolationContext}. If ANY placeholder fails
+ *   to resolve to a scalar (missing field/header, non-scalar value, or a
+ *   malformed path), the whole template yields `undefined` (no pin) — a
+ *   documented no-throw fallback to the fresh-per-event path, matching the
+ *   dispatcher's "non-empty string ⇒ pin, else fresh" gate.
+ *
+ * Never throws: any path-parse error is caught and converted to `undefined`.
+ */
+function resolveSessionKey(raw: string | undefined, ctx: InterpolationContext): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  if (raw.trim().length === 0) return undefined;
+
+  // Static literal — no placeholders.
+  if (!raw.includes('{{')) return raw;
+
+  // Template — substitute each placeholder. A `null` sentinel from any
+  // single placeholder aborts the whole resolution (no partial keys).
+  let aborted = false;
+  const resolved = raw.replace(TEMPLATE_PLACEHOLDER, (_match, exprRaw: string) => {
+    if (aborted) return '';
+    const piece = resolvePlaceholder(exprRaw.trim(), ctx);
+    if (piece === undefined) {
+      aborted = true;
+      return '';
+    }
+    return piece;
+  });
+
+  if (aborted) return undefined;
+  const trimmed = resolved.trim();
+  return trimmed.length > 0 ? resolved : undefined;
+}
+
+/**
+ * Resolve a single `{{ ... }}` placeholder body to a scalar string, or
+ * `undefined` when it can't be resolved (caller treats that as no-pin).
+ * Supported grammar: `source`, `kind`, `header.<name>`, `$.path`, `body.path`.
+ */
+function resolvePlaceholder(expr: string, ctx: InterpolationContext): string | undefined {
+  if (expr.length === 0) return undefined;
+
+  if (expr === 'source') return sourceId(ctx.source);
+  if (expr === 'kind') return ctx.kind;
+
+  if (expr.startsWith('header.')) {
+    const name = expr.slice('header.'.length).trim();
+    if (name.length === 0) return undefined;
+    return lookupHeader(ctx.headers, name);
+  }
+
+  // Body field. Accept both `$.path` (canonical) and a `body.`-prefixed form
+  // (rewritten to the `$.`-rooted grammar `resolveJsonPath` understands).
+  let path: string | undefined;
+  if (expr.startsWith('$')) {
+    path = expr;
+  } else if (expr === 'body') {
+    path = '$';
+  } else if (expr.startsWith('body.')) {
+    path = `$.${expr.slice('body.'.length)}`;
+  }
+  if (path === undefined) return undefined;
+
+  try {
+    return scalarToString(resolveJsonPath(ctx.body, path));
+  } catch {
+    // Malformed path (JsonPathError) ⇒ no-pin fallback, never a throw.
+    return undefined;
+  }
+}
+
+/** Stable identifier for a source tag: its declared id, else the `type`. */
+function sourceId(source: EventSourceTag): string {
+  const s = source as Record<string, unknown>;
+  for (const field of ['triggerId', 'channelId', 'topic', 'subject', 'path']) {
+    const v = s[field];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return source.type;
+}
+
+/** Case-insensitive header lookup; non-scalar / absent ⇒ `undefined`. */
+function lookupHeader(
+  headers: Record<string, unknown> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const direct = headers[name];
+  if (direct !== undefined) return scalarToString(direct);
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower) return scalarToString(value);
+  }
+  return undefined;
+}
+
+/** Coerce a scalar to string; objects/arrays/null/undefined ⇒ `undefined`. */
+function scalarToString(v: unknown): string | undefined {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return undefined;
 }
 
 // ─── Idempotency key derivation ─────────────────────────────────────────

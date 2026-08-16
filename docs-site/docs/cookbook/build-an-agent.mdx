@@ -148,8 +148,9 @@ Three safety floors kick in automatically:
   actionable hint. You paste the value into `.env` yourself.
 - **Deploys are denied by default.** `Bash:declaragent deploy*`
   and `Bash:declaragent fleet deploy*` are floor-level deny rules
-  in the permission gate. To deploy, switch to `/mode bypass` after
-  confirming the plan — the builder never drops the rule itself.
+  in the permission gate — and explicit denies beat every mode,
+  including `/mode bypass`. To deploy, run `declaragent deploy`
+  outside the REPL; the builder never drops the rule itself.
 
 ## Monitoring — "what happened?"
 
@@ -190,8 +191,9 @@ The builder scaffolds and wires. It does **not** deploy. After
    `DeclaraAddSecret` reserved.
 3. Run `declaragent fleet validate` (for fleets) or just start the
    agent locally with `declaragent up`.
-4. For production, `/mode bypass` lets you run `declaragent deploy
-   gcp-cloud-run …` — or invoke it outside the REPL entirely.
+4. For production, run `declaragent deploy gcp-cloud-run …` outside
+   the REPL — the deny rule holds in every mode, `/mode bypass`
+   included.
 
 ## Related
 

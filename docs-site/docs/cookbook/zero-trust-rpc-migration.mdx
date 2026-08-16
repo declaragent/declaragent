@@ -26,15 +26,17 @@ Shipped at 0.7.3 (`packages/cli/src/fleet-audit-rpc-cli.ts`). Safe to run in any
 From the fleet root:
 
 ```bash
-declaragent fleet audit-rpc --json | jq '.findings[]'
+declaragent fleet audit-rpc --json | jq '.agents[]'
 ```
 
-Each finding categorises a peer:
+The JSON envelope is `{ ok, allEnabled, agents: [...] }`; each agent entry carries
+`agentId`, `agentYamlPath`, a `state`, and (when relevant) `reason`,
+`peerAuthProvider`, and a `suggestion` snippet. The `state` values:
 
-- `OK` — has an `auth:` block today, no action needed.
-- `MISSING_AUTH` — peer will fail boot at 0.8.0.
-- `MISSING_PEERS_FILE` — agent declares peers but no `rpc-peers.yaml` exists.
-- `INVALID_PROVIDER` — `auth.provider` doesn't match the peer's declared provider.
+- `enabled` — `rpc.auth.enabled: true` today, no action needed.
+- `disabled` — explicitly `false`; will need a decision before 0.8.0.
+- `absent` — no `rpc.auth` block; this agent flips behavior at 0.8.0.
+- `unreadable` — `agent.yaml` couldn't be parsed; fix the file first.
 
 ## Step 2 — Apply the suggested diff
 
@@ -42,29 +44,25 @@ Each finding categorises a peer:
 declaragent fleet audit-rpc --suggest-enable
 ```
 
-Example output (each gap is pre-filled with the peer's declared provider):
+The inspector emits one **agent.yaml** snippet per gap (the enable flag is
+per-agent; the peer's declared provider is echoed as a comment):
 
 ```yaml
-# agents/concierge/rpc-peers.yaml
-peers:
-  - id: pr-reviewer
-    transport: kafka
-    topic: agents.pr-reviewer.inbound
-+   auth:
-+     enabled: true
-+     provider: hs256                     # from peer's declared provider
-+     secret: env:AGENT_RPC_SHARED_SECRET
-+     audience: pr-reviewer
-+     issuer: concierge
+# agents/concierge/agent.yaml — suggested by --suggest-enable
+rpc:
+  auth:
+    enabled: true    # peer "pr-reviewer" declares provider: hmac
 ```
 
-Paste the blocks into each `rpc-peers.yaml`. Common auth providers:
+Paste the `rpc.auth.enabled` block into each flagged `agent.yaml`. The *how* of
+authentication — the per-peer `auth:` block — lives in `rpc-peers.yaml` and is
+hand-authored. The supported providers:
 
-| Provider | When to use | Secret ref |
+| Provider | When to use | Key fields |
 | --- | --- | --- |
-| `hs256` | Shared secret between trusted peers | `env:…` or `${secret:vault:…}` |
-| `rs256` | Peers in different trust domains | JWKS URL |
-| `oidc` | Peers mediated by your IdP | Issuer + audience |
+| `hmac` | Shared secret between trusted peers | `keyId`, `secretRef` (`secret://…`) |
+| `oidc` | Peers mediated by your IdP (bearer JWT) | `issuer`, `audience`, optional `jwksUri`, `scopes` |
+| `oauth2-client` | Service-to-service client-credentials tokens | `tokenEndpoint`, `clientId`, `clientSecretRef`, `scopes` |
 
 ## Step 3 — Validate
 
@@ -87,10 +85,11 @@ Run this for **at least 2–3 weeks** before upgrading to 0.8.0. It catches PRs 
 
 ## Step 5 — Flip the default locally (dry-run)
 
-Before 0.8.0 ships, you can opt-in early:
+Before 0.8.0 ships, you can opt-in early — per agent, in each `agent.yaml`
+(`fleet.yaml` has no `rpc.auth` key; adding one fails schema validation):
 
 ```yaml
-# fleet.yaml
+# agents/<id>/agent.yaml
 rpc:
   auth:
     enabled: true                  # opt-in to the 0.8.0 default today
@@ -105,23 +104,22 @@ Once CI has been green on `--strict` for 2+ weeks:
 ```bash
 bun add -D @declaragent/cli@^0.8
 declaragent fleet validate
-declaragent fleet up -d
+declaragent fleet run          # or `declaragent up -d` per agent host
 ```
 
-Fleets that skipped the pre-flight will see this at boot:
-
-```
-✗ AUTH_REJECTED: peer "pr-reviewer" on agent "concierge" has no `auth:` block.
-  Since 0.8.0, `rpc.auth.enabled` defaults to true when rpc-peers.yaml is present.
-  Remediation: run `declaragent fleet audit-rpc --suggest-enable` and paste
-  the generated auth block into agents/concierge/rpc-peers.yaml.
-```
+Fleets that skipped the pre-flight will fail boot with `AUTH_REJECTED` naming the
+peer that lacks an `auth:` block. Remediation: run
+`declaragent fleet audit-rpc --suggest-enable`, paste the `rpc.auth.enabled`
+snippet into the flagged `agent.yaml`, and author the peer's `auth:` block in
+`rpc-peers.yaml` (Step 2).
 
 ## Rollback
 
-If you need to delay the flip (e.g. mid-incident), opt back out temporarily:
+If you need to delay the flip (e.g. mid-incident), opt back out temporarily — again
+per agent, in `agent.yaml`:
 
 ```yaml
+# agents/<id>/agent.yaml
 rpc:
   auth:
     enabled: false                 # temporary — re-enable before end of sprint

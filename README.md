@@ -30,15 +30,18 @@ for the full walkthrough.
 ## What ships
 
 - **Runtime core** — engine loop, built-in tools (Read / Write / Edit /
-  Glob / Grep / Bash / Agent / SendMessage), permission gate, session
-  persistence, sub-agents, slash commands.
+  Glob / Grep / Bash / Agent — plus SendMessage when channels are
+  configured), permission gate, session persistence, sub-agents, slash
+  commands.
 - **Event sources** — cron, webhook, file-watch, plus broker adapters
-  for Kafka, NATS, MQTT, AMQP, SQS. DLQ + replay + hot reload.
+  for Kafka, NATS, MQTT, AMQP, SQS. DLQ + replay (Kafka); config changes
+  apply on restart (`declaragent down && up -d`).
 - **Channels** — Slack, Telegram, Discord, WhatsApp.
 - **Multi-tenant** — per-tenant quotas, audit with hash-chain, Vault /
   AWS-SM / GCP-SM / K8s secret providers, Prometheus metrics.
-- **Agent RPC** — typed request/response between agents over
-  any broker. Memory transport for dev.
+- **Agent RPC** — typed request/response between agents over Kafka or
+  NATS from `fleet.yaml` (JetStream/SQS/AMQP/MQTT via the
+  `plugin-agent-rpc` library factories). Memory transport for dev.
 - **Fleet** — one `fleet.yaml` declares N agents; `fleet run`
   hosts them together; `fleet deploy` rolls them out atomically.
 

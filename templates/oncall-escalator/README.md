@@ -32,15 +32,15 @@ You need a real Slack app with Socket Mode and `im:write`. See the
 
 ```sh
 cp .env.example .env
-declaragent run
+declaragent up
 ```
 
-The agent listens on `http://localhost:8787/webhook/alertmanager` by
+The agent listens on `http://localhost:7777/webhook/alertmanager` by
 default. To smoke-test with the bundled mock payload:
 
 ```sh
 SIG=$(printf %s "$(cat mock-alert.json)" | openssl dgst -sha256 -hmac "$ALERTMANAGER_WEBHOOK_SECRET" | awk '{print $2}')
-curl -X POST http://localhost:8787/webhook/alertmanager \
+curl -X POST http://localhost:7777/webhook/alertmanager \
   -H "Content-Type: application/json" \
   -H "X-Alertmanager-Signature: sha256=$SIG" \
   -H "X-Alertmanager-Timestamp: $(date -u +%s)" \
@@ -58,7 +58,9 @@ re-page.
 declaragent deploy gcp-cloud-run
 ```
 
-The generated `service.yaml` exposes port 8787 on Cloud Run. Point
+The generated `service.yaml` exposes port 8787 on Cloud Run, while the
+webhook source defaults to 7777 — set `port: 8787` in
+`event-sources.yaml` for the deployed container so they match. Point
 Alertmanager's `webhook_configs[].url` at the resulting URL.
 
 ## Estimated cost (lower bound)

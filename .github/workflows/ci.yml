@@ -54,6 +54,9 @@ jobs:
             exit 1
           fi
 
+      - name: Docs-truth lint — commands, env vars, metrics, policy (DOCS_TRUTH_PLAN Wave 3)
+        run: bun run lint:docs
+
       - name: Drift guard — sidebars.ts biome format (#49)
         run: |
           bun run biome format --write docs-site/sidebars.ts

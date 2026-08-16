@@ -240,7 +240,19 @@ function renderReadme(ctx: {
   const { serviceName, project, region, memoryMib, cpu, minInstances } = ctx;
   return `# Deploy ${serviceName} to GCP Cloud Run
 
-Three commands:
+First, stage what the Dockerfile copies into the image (it does not build
+the binary itself):
+
+    mkdir -p bin config
+    # 1. Place the linux binary at bin/declaragent-linux-x64
+    #    (from the GitHub release for your CLI version, or scripts/build-binary.sh)
+    # 2. Copy the agent's config files (agent.yaml, event-sources.yaml,
+    #    channels.yaml, skills/, ...) into config/ — it is mounted at
+    #    /etc/declaragent via DECLARAGENT_CONFIG_DIR.
+    #    Webhook sources: the container EXPOSEs 8787, so set port: 8787
+    #    in event-sources.yaml (the source default is 7777).
+
+Then three commands:
 
     docker build -t gcr.io/${project}/${serviceName}:latest .
     docker push gcr.io/${project}/${serviceName}:latest

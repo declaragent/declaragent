@@ -15,9 +15,10 @@ is hung / paused or the metrics pipeline dropped.
 Verify the process is actually running:
 
 ```bash
-declaragent daemon status
+declaragent ps
+curl -s --max-time 2 http://127.0.0.1:9464/healthz
 # If unresponsive:
-declaragent daemon restart
+declaragent down && declaragent up -d
 ```
 
 ## Root-cause investigation
@@ -26,8 +27,9 @@ network partition. If the host is healthy, the daemon is internally
 hung; take a stack dump before restarting if possible.
 
 ```bash
-# Bun stack dump (where supported):
-kill -USR1 $(pgrep -f 'declaragent daemon')
+# Take a sample of the hung process before restarting (macOS):
+sample $(pgrep -f 'declaragent') 5
+# (Linux: gdb/eu-stack, or capture `declaragent logs -f` output around the hang.)
 ```
 
 ## Post-incident

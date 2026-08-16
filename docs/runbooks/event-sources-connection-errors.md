@@ -16,18 +16,19 @@ If the partner's status page shows an outage, no action — the breaker
 will pause the adapter automatically. Otherwise, check credentials:
 
 ```bash
-# Rotate and redeploy:
+# Rotate, then restart so the resolver picks up the new value:
 declaragent secrets rotate <ref>
-declaragent sources reload <id>
+declaragent down && declaragent up -d
 ```
 
 ## Root-cause investigation
 ```bash
 # Health detail + last connection error:
-declaragent sources health <id> --json
+curl -s http://127.0.0.1:9464/status | jq
+curl -s http://127.0.0.1:9464/metrics | grep source_connection_errors
 
-# If the adapter supports it, enable wire-level debug:
-DECLARAGENT_LOG_LEVEL=debug declaragent sources reload <id>
+# Watch the adapter's own log lines live:
+declaragent logs -f
 ```
 
 ## Post-incident

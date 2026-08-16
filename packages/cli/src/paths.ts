@@ -2,8 +2,18 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export function configDir(root = homedir()): string {
-  const dir = join(root, '.declaragent');
+/**
+ * Per-user config directory. `DECLARAGENT_CONFIG_DIR` overrides the
+ * default `~/.declaragent` (the deploy-generated Dockerfile relies on
+ * this to mount `/etc/declaragent`); an explicit `root` argument is the
+ * test seam and wins over the env var.
+ */
+export function configDir(root?: string): string {
+  const override = process.env.DECLARAGENT_CONFIG_DIR;
+  const dir =
+    root === undefined && override !== undefined && override !== ''
+      ? override
+      : join(root ?? homedir(), '.declaragent');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return dir;
 }

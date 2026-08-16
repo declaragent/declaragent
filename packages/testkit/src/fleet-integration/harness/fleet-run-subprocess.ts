@@ -56,6 +56,7 @@
 import type { AgentRpcEnvelope, RpcTransport } from '@declaragent/core';
 import { loadFleet } from '@declaragent/core';
 import { createKafkaTransport, createRespondHook } from '@declaragent/plugin-agent-rpc';
+import { resolveKafkaJsModule } from './kafkajs-resolver.js';
 
 interface SubprocessConfig {
   fleetRoot: string;
@@ -140,6 +141,9 @@ async function main(): Promise<void> {
     brokers: cfg.brokers,
     clientId: cfg.clientId,
     groupId: cfg.groupId,
+    // Resolve kafkajs from testkit's own deps — the spawned subprocess can't
+    // rely on plugin-agent-rpc's bare `import('kafkajs')` resolving.
+    kafkajsModule: resolveKafkaJsModule(),
   });
 
   const selfAddress: `agent://${string}` = `agent://${cfg.agentId}`;

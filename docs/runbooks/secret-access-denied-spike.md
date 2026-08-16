@@ -16,10 +16,13 @@ fail on every invocation.
 If a specific ref is the hot one, block it at the secret-provider layer:
 
 ```bash
-declaragent secrets block --ref <ref>
+# There is no secrets-block verb — revoke the credential at the
+# provider (Vault policy / IAM), rotate, and restart:
+declaragent secrets rotate <ref>
+declaragent down && declaragent up -d
 ```
 
-This short-circuits the denial loop before the audit log fills.
+Revoking at the provider short-circuits the denial loop at its source.
 
 ## Root-cause investigation
 ```bash

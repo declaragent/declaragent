@@ -11,7 +11,9 @@ import TabItem from '@theme/TabItem';
 
 # Quickstart — 10-minute path
 
-From an empty laptop to an agent running on **GCP Cloud Run**, in under ten minutes. Measured, not estimated.
+From an empty laptop to a running local agent in under ten minutes — plus the
+generated artifacts to take it to **GCP Cloud Run** (the container build/push and
+`gcloud` steps are yours to run and add a few more minutes).
 
 The short version:
 
@@ -19,10 +21,11 @@ The short version:
 # 1. Install
 curl -sSL https://get.declaragent.dev | sh
 
-# 2. Scaffold
+# 2. Scaffold + run locally
 declaragent init
+declaragent up
 
-# 3. Deploy
+# 3. Generate deploy artifacts (Dockerfile + service.yaml + printed gcloud steps)
 declaragent deploy gcp-cloud-run
 ```
 
@@ -45,7 +48,8 @@ Use **Conversational tour** if you're new and want to see the headline capabilit
 my-agent/
 ├── agent.yaml               # identity + system prompt
 ├── .env.example             # credentials template
-├── channels.yaml            # optional — only when a channel is picked
+├── README.md                # the template's own runbook
+├── channels.yaml            # ships with channel-using templates (incl. concierge)
 ├── event-sources.yaml       # optional — only for webhook/Kafka/etc templates
 └── skills/
     └── concierge.md
@@ -57,9 +61,6 @@ Everything here is plain text. Commit it, branch it, `git revert` it — that's 
 
 _Screenshot: `declaragent init` walkthrough — placeholder, landing 2026-Q2._
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Real screenshots of the init wizard, REPL, and deploy verify step land with slice 9.
-</div>
 
 ## Cross-links
 

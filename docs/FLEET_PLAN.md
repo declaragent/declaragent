@@ -1,5 +1,12 @@
 # Fleet — Multi-Agent Monorepo Plan
 
+> ⚠️ **Historical design doc — not maintained.** This document predates the shipped
+> implementation and is kept for design context only; command names, config shapes,
+> versions, and file paths in it may no longer match the code. `docs/SPEC_AND_PLAN.md`
+> supersedes it for requirements; for live capability status see `AGENTS.md`, and for
+> user-facing behavior see the docs site (`docs-site/`).
+
+
 **Status:** Design-frozen for v1.2. §14 decisions are binding for the v1.2 freeze; revisit only via changeset. Positioned to land after the v1.1 Agent RPC work and before any centralized registry / cross-tenant federation story.
 **Last updated:** 2026-04-19.
 

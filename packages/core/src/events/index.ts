@@ -173,6 +173,8 @@ export type {
   RequeueResultErr,
   RequeueResultOk,
 } from './dlq.js';
+export { recoverPendingEvents } from './recovery.js';
+export type { RecoverPendingOptions, RecoverPendingResult } from './recovery.js';
 export {
   computeNextFire,
   createCronAdapter,

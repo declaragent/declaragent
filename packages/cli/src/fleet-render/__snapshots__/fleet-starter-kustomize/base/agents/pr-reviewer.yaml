@@ -50,6 +50,15 @@ data:
       - Timeout: the request envelope's `deadline` is enforced by the
         requestor. If you can't respond in time, the pending-RPC registry
         times out — your response will be discarded as stale.
+    tools:
+      # Read-only review surface. The reviewer inspects the diff and returns a
+      # recommendation over RPC (via ctx.respond) — it never needs Bash/Write/Edit.
+      # Declaring the set explicitly keeps the runtime from exposing destructive
+      # tools to an agent that processes untrusted PR payloads (WS1 enforcement).
+      defaults:
+        - Read
+        - Glob
+        - Grep
     skills:
       - skills/review-pr.md
     event-sources:
@@ -85,7 +94,6 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - up
-            - -d
             - -f
             - /etc/declaragent/agent.yaml
           ports:
@@ -97,13 +105,17 @@ spec:
               value: pr-reviewer
             - name: DECLARAGENT_FLEET_NAME
               value: fleet-starter
+            - name: DECLARAGENT_METRICS_PORT
+              value: "9464"
+            - name: DECLARAGENT_BIND_ADDRESS
+              value: 0.0.0.0
           volumeMounts:
             - name: agent-config
               mountPath: /etc/declaragent
               readOnly: true
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10

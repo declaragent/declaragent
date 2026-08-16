@@ -13,8 +13,8 @@ The single most common Cloud Run failure. `gcloud run services replace` returns 
 
 ```mermaid
 flowchart TD
-    A[gcloud run services replace → 403] --> B{Did the preflight pass?<br/>declaragent deploy --verify}
-    B -->|no — listed missing role| B1[Grant the named role to<br/>the deploying principal.<br/>gcloud projects add-iam-policy-binding ...]
+    A[gcloud run services replace → 403] --> B{Does the deploying principal<br/>hold the three roles below?<br/>gcloud projects get-iam-policy ...}
+    B -->|no — role missing| B1[Grant the missing role to<br/>the deploying principal.<br/>gcloud projects add-iam-policy-binding ...]
     B -->|yes, but deploy still 403| C{Service account on<br/>the revision?}
     C -->|default compute SA| C1[Grant roles/secretmanager.secretAccessor<br/>on every referenced secret.]
     C -->|custom SA| C2{Does the deployer<br/>have iam.serviceAccountUser<br/>on that SA?}
@@ -25,15 +25,25 @@ flowchart TD
 
 ## The three IAM roles that matter
 
-The [§9.2 preflight](https://github.com/declaragent/declaragent/blob/main/docs/PHASE_7_PLAN.md) checks these:
-
 | Role | Why it's needed |
 | --- | --- |
 | `roles/run.admin` | Create + update the Cloud Run service. |
 | `roles/iam.serviceAccountUser` | Attach a service account to a Cloud Run revision. |
 | `roles/secretmanager.secretAccessor` | Bind `${secret:...}` refs into env vars. |
 
-If your deploying principal is missing any of these, `declaragent deploy --verify` will tell you which before `gcloud` has a chance to 403 you.
+There is no built-in IAM preflight today — check the roles yourself before deploying:
+
+```bash
+PRINCIPAL="user:you@example.com"
+PROJECT="my-project"
+
+gcloud projects get-iam-policy "$PROJECT" \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:$PRINCIPAL" \
+  --format="value(bindings.role)"
+```
+
+If any of the three roles is missing from the output, grant it (next section) before running `gcloud`.
 
 ## Quick fixes
 
@@ -50,9 +60,16 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --member="$PRINCIPAL" --role="roles/secretmanager.secretAccessor"
 ```
 
+## After the deploy
+
+`declaragent deploy gcp-cloud-run --verify` is a **post-deploy health check**: it runs
+`gcloud run services describe` on the deployed service and probes its `/health`
+endpoint. Use it to confirm a deploy that succeeded is actually serving — it cannot
+diagnose a 403 that prevented the service from being created in the first place.
+
 ## Still stuck
 
-- Run `declaragent deploy gcp-cloud-run --verify` and paste the full output into a GitHub issue — the preflight message is the most diagnostic piece.
+- Run `declaragent deploy gcp-cloud-run --verify` and paste the full output into a GitHub issue, together with the `get-iam-policy` output above.
 - Confirm the `Dockerfile` + `service.yaml` generators emitted the expected secret bindings by inspecting `.declaragent/deploy/service.yaml`.
 
 ## Related

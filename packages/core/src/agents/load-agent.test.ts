@@ -56,6 +56,36 @@ describe('loadAgent', () => {
     expect(loaded.skillConflicts).toEqual([]);
   });
 
+  test('parses a quotas block (WS8)', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      'name: q-bot\nmodel: m\nquotas:\n  dailyTokenUSD: 5\n  maxConcurrentToolCalls: 10\n',
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.quotas).toEqual({ dailyTokenUSD: 5, maxConcurrentToolCalls: 10 });
+  });
+
+  test('omits quotas when the block is absent', async () => {
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.quotas).toBeUndefined();
+  });
+
+  test('parses the tenant field (WS8)', async () => {
+    writeFileSync(join(dir, 'agent.yaml'), 'name: t\nmodel: m\ntenant: acme-prod\n');
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.tenantId).toBe('acme-prod');
+  });
+
+  test('omits tenantId when the field is absent', async () => {
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.tenantId).toBeUndefined();
+  });
+
+  test('rejects a typo in the strict quotas block', async () => {
+    writeFileSync(join(dir, 'agent.yaml'), 'name: q\nmodel: m\nquotas:\n  dailyTokensUSD: 5\n');
+    await expect(loadAgent({ agentDir: dir })).rejects.toBeInstanceOf(AgentConfigError);
+  });
+
   test('returns an empty skills array when skills/ is empty or missing', async () => {
     rmSync(join(dir, 'skills'), { recursive: true });
     const loaded = await loadAgent({ agentDir: dir });
@@ -208,6 +238,58 @@ describe('loadAgent', () => {
       ['name: x', 'model: y', 'systemPrompt: z', 'maxIterations: 2.5', ''].join('\n'),
     );
     await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/maxIterations|integer|validation/i);
+  });
+
+  test('memory is undefined on the spec when the yaml omits the block (back-compat)', async () => {
+    // The default AGENT_YAML fixture has no memory block.
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.spec.memory).toBeUndefined();
+    // Back-compat: the rest of the spec is byte-identical to the
+    // pre-change expectations exercised above.
+    expect(loaded.spec.name).toBe('acme-bot');
+    expect(loaded.spec.model).toBe('claude-sonnet-4-5');
+    expect(loaded.spec.maxIterations).toBeUndefined();
+  });
+
+  test('memory:{enabled:true,namespace} reaches the spec', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      `${AGENT_YAML}\nmemory:\n  enabled: true\n  namespace: support\n`,
+    );
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.spec.memory).toEqual({ enabled: true, namespace: 'support' });
+  });
+
+  test('memory:{enabled:false} parses with namespace optional', async () => {
+    writeFileSync(join(dir, 'agent.yaml'), `${AGENT_YAML}\nmemory:\n  enabled: false\n`);
+    const loaded = await loadAgent({ agentDir: dir });
+    expect(loaded.spec.memory).toEqual({ enabled: false });
+  });
+
+  test('rejects a non-boolean memory.enabled with a path-anchored error', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      ['name: x', 'model: y', 'systemPrompt: z', 'memory:', "  enabled: 'yes'", ''].join('\n'),
+    );
+    await expect(loadAgent({ agentDir: dir })).rejects.toBeInstanceOf(AgentConfigError);
+    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/memory\.enabled|validation/i);
+  });
+
+  test('rejects an unknown memory sub-key (strict)', async () => {
+    writeFileSync(
+      join(dir, 'agent.yaml'),
+      [
+        'name: x',
+        'model: y',
+        'systemPrompt: z',
+        'memory:',
+        '  enabled: true',
+        '  ns: oops',
+        '',
+      ].join('\n'),
+    );
+    await expect(loadAgent({ agentDir: dir })).rejects.toBeInstanceOf(AgentConfigError);
+    await expect(loadAgent({ agentDir: dir })).rejects.toThrow(/memory|unrecognized|validation/i);
   });
 
   test('controlPlaneAuth is undefined when block absent (back-compat)', async () => {

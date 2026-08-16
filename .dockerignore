@@ -1,0 +1,15 @@
+# Build context for the declaragent agent image. node_modules is excluded so
+# `bun install` resolves correct-arch deps inside the image; pre-built `dist/`
+# (arch-independent JS emitted by tsc) IS included so the image ships the
+# already-verified build rather than re-running the monorepo tsc build.
+node_modules
+**/node_modules
+.git
+.github
+docs-site
+**/*.test.ts
+**/*.test.tsx
+coverage
+*.log
+.DS_Store
+/tmp

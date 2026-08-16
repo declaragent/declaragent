@@ -47,6 +47,26 @@ data:
     event-sources:
       - ./event-sources.yaml
 
+  event-sources.yaml: |
+    # Concierge's inbox. Subscribes to the responses topic so `RequestAgent`
+    # (sync mode) can match incoming responses against its pending-RPC registry.
+    - type: agent-inbox
+      config:
+        id: inbox
+        agentId: concierge
+        # Default topics are `agents.<agentId>.requests` + `.responses`.
+      delivery:
+        mode: at-least-once
+        ackStrategy: after-dispatch
+        maxRetries: 3
+        retryBackoff:
+          initialMs: 500
+          maxMs: 10000
+          jitter: true
+      limits:
+        concurrency: 8
+        maxInflight: 256
+
 {{- if .Values.configSplit.enabled }}
 ---
 apiVersion: v1
@@ -84,9 +104,10 @@ spec:
         - name: declaragent
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # WS6 - foreground up (no -d): the detached child exits, leaving PID 1
+          # to exit 0 (CrashLoopBackOff). Foreground keeps PID 1 alive.
           args:
             - up
-            - -d
             - -f
             - /etc/declaragent/agent.yaml
           ports:
@@ -98,6 +119,15 @@ spec:
               value: concierge
             - name: DECLARAGENT_FLEET_NAME
               value: {{ include "declaragent.name" . | quote }}
+            # WS6 — foreground up defaults the listener OFF; set it so the pod
+            # serves /metrics + /healthz + /readyz for the probes.
+            - name: DECLARAGENT_METRICS_PORT
+              value: "{{ .Values.metricsPort }}"
+            # WS6 — bind all interfaces so the kubelet reaches the probes via the
+            # pod IP (default 127.0.0.1 → probes unreachable). Requires a
+            # controlPlane.auth block per the WS3 fail-closed rule.
+            - name: DECLARAGENT_BIND_ADDRESS
+              value: "0.0.0.0"
           {{- if .Values.configSplit.enabled }}
           envFrom:
             - configMapRef:
@@ -113,7 +143,7 @@ spec:
           {{- end }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.healthProbePath }}
+              path: {{ .Values.readyProbePath }}
               port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10

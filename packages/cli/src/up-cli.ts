@@ -45,13 +45,16 @@ import {
   type EventBus,
   type EventDispatcher,
   type EventStore,
+  type HeartbeatHandle,
   type LLMProvider,
   type LoadedAgent,
   type LoadedAuditExport,
   type LoadedControlPlaneAuth,
   type Logger,
+  type OtelSdkHandle,
   type PrometheusRegistry,
   type TenantAuditSink,
+  type TenantQuotas,
   type Tracer,
   type UpStatusSnapshot,
   auditRoute,
@@ -62,37 +65,44 @@ import {
   createEventDispatcher,
   createExtensionRegistry,
   createHookRegistry,
+  createMemoryTools,
   createOtelBridge,
   createPermissionGate,
   createPrometheusRegistry,
+  createQuotaTracker,
   createSendMessageTool,
   createSplunkExporter,
+  createSqliteMemoryStore,
   createSqliteSessionStore,
   createToolRateLimitGate,
-  defaultRateForProvider,
   dlqDropRoute,
   dlqRequeueRoute,
   dlqRoute,
   eventsRoute,
+  healthRoute,
   isRpcAuthDefaultFlagOn,
   loadAgent,
   loadFleet,
   loadPeersConfig,
+  loadTenantsConfig,
   logsRoute,
   metricsRoute,
+  readyRoute,
+  recoverPendingEvents,
   resolveEffectiveRpcAuth,
+  resolveTenantContext,
   skillExtension,
   startAuditExportLoop,
   startControlPlaneServer,
   startControlSocket,
+  startHeartbeat,
+  startOtelSdk,
   statusRoute,
-  withProviderRateLimit,
 } from '@declaragent/core';
 import type { ResolveLogPaths } from '@declaragent/core';
 import { type AuthVerifyRegistry, buildAuthVerifyRegistry } from '@declaragent/plugin-agent-rpc';
 import { acquireTenantAuditSink, releaseTenantAuditSink } from './audit-sink-singleton.js';
 import { resolveCredentials } from './auth.js';
-import { buildRuntimeTools } from './builtin-tools.js';
 import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
 import { buildControlPlaneAuth } from './control-plane-auth-factory.js';
 import { resolveControlPlaneAuth } from './fleet-control-plane-resolver.js';
@@ -102,9 +112,11 @@ import {
   loadScopedMCPServers,
   startMCPServers,
 } from './mcp-runtime.js';
-import { auditDbPath, sessionsDbPath } from './paths.js';
+import { auditDbPath, configDir, sessionsDbPath } from './paths.js';
 import { type PluginRuntime, startPluginRuntime } from './plugins-runtime.js';
 import { createProviderFromCreds } from './provider-factory.js';
+import { wrapProviderWithRateLimit } from './provider-rate-limit.js';
+import { resolveRuntimeTools } from './resolve-tools.js';
 import { type StartAgentSourcesResult, startAgentSources } from './run-agent-sources.js';
 import {
   type AgentLogger,
@@ -114,10 +126,13 @@ import {
   type UpState,
   clearUpState,
   detachSelf,
+  drainWithDeadline,
   isAlive,
   openAgentLog,
   readUpState,
   reapStaleState,
+  resolveDetachInvocation,
+  resolveDrainDeadlineMs,
   upLogPath,
   upStartupLogPath,
   waitForUpState,
@@ -189,12 +204,15 @@ export async function up(args: UpArgs, deps: UpDeps = {}): Promise<number> {
   if (args.detach && !args.__detached) {
     let childPid: number;
     try {
+      // When the CLI runs under an interpreter (`bun dist/index.js`, the npm
+      // launcher's preferred path), the re-exec must hand the interpreter the
+      // entry script before the `up` subcommand — otherwise bun reads `up` as a
+      // script path and dies with `Script not found "up"`. A compiled binary
+      // launcher takes the subcommand directly (empty scriptArgs).
+      const invocation = resolveDetachInvocation();
       childPid = detachSelf({
-        // `process.execPath` is the compiled-binary path (Bun sets
-        // argv[0] to the interpreter name "bun" for `bun build
-        // --compile` outputs, which would make spawn interpret
-        // subsequent args as "script to run" → Script not found).
-        launcher: process.execPath || process.argv[0] || 'declaragent',
+        launcher: invocation.launcher,
+        scriptArgs: invocation.scriptArgs,
         args: buildDetachedArgs(args),
       });
     } catch (err) {
@@ -312,6 +330,13 @@ interface RunningAgent {
    */
   detachDispatcher?: () => void;
   /**
+   * WS5 — await in-flight dispatches (the dispatcher's `draining()`). Called on
+   * graceful shutdown AFTER sources stop and BEFORE teardown, so a routine
+   * `down`/SIGTERM lets running engine turns finish instead of aborting them.
+   * Undefined for skill-only / provider-less agents (no dispatcher).
+   */
+  drainDispatcher?: () => Promise<void>;
+  /**
    * Control socket bound at `~/.declaragent/<agent-id>/control.sock`.
    * Speaks the `ping`/`status`/`dlq.requeue`/`reload`/`shutdown` ops
    * defined in {@link startControlSocket}. Closed during `stopAll`.
@@ -386,6 +411,18 @@ interface UpRuntime {
    * @since 0.7.x — Enterprise Production Plan §3 Item #7 follow-up
    */
   auditSink?: TenantAuditSink;
+  /**
+   * Opt-in long-term memory store (durable-with-memory "mode 3"). A
+   * single SQLite handle shared across every agent this up-process
+   * hosts — the store is namespaced per-agent internally, so one
+   * connection is correct. Lazily opened on the FIRST agent that sets
+   * `agent.yaml#memory.enabled`; stays `undefined` (and the file is
+   * never created) when no agent opts in, keeping the disabled path
+   * byte-for-byte unchanged. Closed in `doShutdown` only when opened.
+   *
+   * @since 0.5.6
+   */
+  memoryStore?: ReturnType<typeof createSqliteMemoryStore>;
 }
 
 async function runForeground(
@@ -426,7 +463,11 @@ async function runForeground(
   // pre-consent via `declaragent mcp add` (auto-approves) or a future
   // `mcp approve <name>` verb.
   const interactive = _args.__detached !== true && process.stdin.isTTY === true;
-  const tracer = await maybeCreateOtelTracer(io);
+  const otel = await maybeCreateOtelTracer(io);
+  const tracer = otel.tracer;
+  // WS7 — handle for the OTel SDK (when span export actually started); stopped
+  // in doShutdown to flush pending spans on a clean exit.
+  const otelSdk = otel.sdk;
   const metrics = createPrometheusRegistry();
   // Wrap the provider (when one is configured) with a per-provider rate
   // limiter (Slice 4). Defaults: Anthropic 50 rps, OpenRouter 20 rps.
@@ -434,7 +475,7 @@ async function runForeground(
   //   DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1 → skip wrapping entirely
   //   DECLARAGENT_PROVIDER_RATE_LIMIT_RPS=<n>  → override the default
   const provider = creds
-    ? wrapProviderWithRateLimit({
+    ? wrapProviderWithMetrics({
         provider: createProviderFromCreds({ creds }),
         providerId: creds.providerId,
         metrics,
@@ -481,7 +522,15 @@ async function runForeground(
     ...(sharedAuditSink !== null && { auditSink: sharedAuditSink }),
   };
   if (tracer !== undefined) {
-    io.out(`  otel: tracing enabled (OTLP endpoint ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT})\n`);
+    // Honest banner (WS7). When the NodeSDK started, spans actually export to
+    // the collector; otherwise the bridge still produces a tracer but spans go
+    // nowhere until an SDK is registered — say which is true.
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    io.out(
+      otelSdk !== undefined
+        ? `  otel: spans exporting to ${endpoint} (NodeSDK started).\n`
+        : `  otel: tracer bridged to @opentelemetry/api (endpoint ${endpoint}), but no SDK started — spans will not export. Install @opentelemetry/sdk-node to enable export.\n`,
+    );
   }
   if (!creds) {
     io.out(
@@ -550,10 +599,16 @@ async function runForeground(
   //        0.7.0-slice.1c (/logs SSE)
   const metricsPort = resolveMetricsPort(_args.__detached === true);
   let controlPlaneHandle: ControlPlaneServerHandle | null = null;
+  let heartbeat: HeartbeatHandle | undefined;
   if (metricsPort > 0) {
     const routes: ControlPlaneRoute[] = [
       metricsRoute(runtime.metrics),
       statusRoute(() => buildUpStatusSnapshot(state, running)),
+      // WS6 — auth-exempt kubelet probes. /healthz: process is up. /readyz:
+      // at least one source is bound (the agent is actually serving), so k8s
+      // holds traffic off a pod that booted but hasn't wired its sources yet.
+      healthRoute(),
+      readyRoute(() => running.some((r) => r.summary.sources.length > 0)),
     ];
     // Wire `/events` + `/dlq` to the first agent that owns a store
     // (the single-agent default for back-compat), plus a `fanOut`
@@ -736,37 +791,63 @@ async function runForeground(
       }
     }
 
-    try {
-      controlPlaneHandle = await startControlPlaneServer({
-        routes,
-        port: metricsPort,
-        hostname: '127.0.0.1',
-        // Authenticated listener implicitly accepts non-loopback Host
-        // headers — otherwise the middleware is unreachable for the
-        // remote callers it was installed to protect. Bind remains
-        // `127.0.0.1` (kernel-level firewall) until operators flip the
-        // future `observability.bindAddress` knob; this only relaxes
-        // the in-process Host-header sniff so a reverse-proxied remote
-        // request can complete the token handshake.
-        ...(controlPlaneAuth !== undefined && {
-          auth: controlPlaneAuth,
-          allowRemote: true,
-        }),
-      });
-      io.out(`  metrics: http://127.0.0.1:${controlPlaneHandle.port}/metrics\n`);
-      io.out(`  status:  http://127.0.0.1:${controlPlaneHandle.port}/status\n`);
-      if (eventStoreForRoutes) {
-        io.out(`  events:  http://127.0.0.1:${controlPlaneHandle.port}/events\n`);
-        io.out(`  dlq:     http://127.0.0.1:${controlPlaneHandle.port}/dlq\n`);
+    // WS3 — resolve the bind address (DECLARAGENT_BIND_ADDRESS, default
+    // 127.0.0.1). A non-loopback bind requires auth (fail-closed); on a
+    // mis-config we refuse to bind insecurely + skip the listener loudly
+    // rather than exposing the routes to the network.
+    const bindResolution = resolveBindAddress({ hasAuth: controlPlaneAuth !== undefined });
+    {
+      const bindHost = bindResolution.hostname;
+      const displayHost = isLoopbackBindAddress(bindHost) ? '127.0.0.1' : bindHost;
+      // WS6 — on a non-loopback bind without auth, serve ONLY the safe routes
+      // (/metrics, /healthz, /readyz) so kubelet probes work without exposing
+      // /events,/audit,/dlq unauthenticated. The sensitive routes are dropped,
+      // not merely auth-skipped, so nothing leaks.
+      const servedRoutes =
+        bindResolution.mode === 'safe-subset'
+          ? routes.filter((r) => SAFE_CONTROL_PLANE_PATHS.has(r.path))
+          : routes;
+      if (bindResolution.mode === 'safe-subset') {
+        io.out(
+          '  control plane: non-loopback bind without auth → serving only /metrics,/healthz,/readyz (add controlPlane.auth to expose /events,/audit,/dlq).\n',
+        );
       }
-      if (sharedAuditSink) {
-        io.out(`  audit:   http://127.0.0.1:${controlPlaneHandle.port}/audit\n`);
+      try {
+        controlPlaneHandle = await startControlPlaneServer({
+          routes: servedRoutes,
+          port: metricsPort,
+          hostname: bindHost,
+          // Accept non-loopback requests when EITHER auth gates every route
+          // (full mode) OR only the safe subset is served (safe-subset mode) —
+          // otherwise the server defaults to loopback-only and 403s the
+          // kubelet's pod-network probe to /healthz + /readyz (WS6).
+          ...(controlPlaneAuth !== undefined && { auth: controlPlaneAuth }),
+          ...((controlPlaneAuth !== undefined || bindResolution.mode === 'safe-subset') && {
+            allowRemote: true,
+          }),
+        });
+        // WS7 — daemon heartbeat. Refresh a timestamp gauge on the served
+        // registry so `DaemonHeartbeatTimeout` (alert on staleness) can finally
+        // fire. Stopped in doShutdown so a clean `down` isn't seen as a hang.
+        heartbeat = startHeartbeat({ metrics: runtime.metrics });
+        io.out(`  metrics: http://${displayHost}:${controlPlaneHandle.port}/metrics\n`);
+        io.out(`  health:  http://${displayHost}:${controlPlaneHandle.port}/healthz (+ /readyz)\n`);
+        if (bindResolution.mode === 'full') {
+          io.out(`  status:  http://${displayHost}:${controlPlaneHandle.port}/status\n`);
+          if (eventStoreForRoutes) {
+            io.out(`  events:  http://${displayHost}:${controlPlaneHandle.port}/events\n`);
+            io.out(`  dlq:     http://${displayHost}:${controlPlaneHandle.port}/dlq\n`);
+          }
+          if (sharedAuditSink) {
+            io.out(`  audit:   http://${displayHost}:${controlPlaneHandle.port}/audit\n`);
+          }
+          io.out(`  logs:    http://${displayHost}:${controlPlaneHandle.port}/logs\n`);
+        }
+      } catch (err) {
+        io.err(
+          `⚠ control-plane exporter failed to bind on :${metricsPort} — ${err instanceof Error ? err.message : String(err)}. Continuing without HTTP endpoints.\n`,
+        );
       }
-      io.out(`  logs:    http://127.0.0.1:${controlPlaneHandle.port}/logs\n`);
-    } catch (err) {
-      io.err(
-        `⚠ control-plane exporter failed to bind on :${metricsPort} — ${err instanceof Error ? err.message : String(err)}. Continuing without HTTP endpoints.\n`,
-      );
     }
   }
 
@@ -832,6 +913,10 @@ async function runForeground(
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
       io.out('\nshutting down…\n');
+      // Stop the heartbeat first so a clean shutdown doesn't read as a hang.
+      heartbeat?.stop();
+      // WS7 — flush + shut the OTel SDK so buffered spans aren't lost on exit.
+      await otelSdk?.stop();
       for (const loop of auditExportLoops) {
         try {
           await loop.stop();
@@ -854,6 +939,16 @@ async function runForeground(
       // (test runner, nested spawn) would hand out a closed handle.
       if (sharedAuditSink) {
         await releaseTenantAuditSink({ path: auditSinkPath, owner: 'up-cli' });
+      }
+      // Close the long-term memory store only if some agent opened it.
+      // When no agent enabled memory this is undefined and the file was
+      // never created — nothing to tear down.
+      if (runtime.memoryStore) {
+        try {
+          runtime.memoryStore.close();
+        } catch {
+          // best-effort — never block shutdown on a close failure
+        }
       }
       clearUpState();
       io.out('✓ down\n');
@@ -1075,6 +1170,7 @@ async function bringUp(
   // `outcome: pending` forever and the skill never runs. With it,
   // `target: {type: skill, name: X}` events flow into an engine turn.
   let detachDispatcher: (() => void) | undefined;
+  let drainDispatcher: (() => Promise<void>) | undefined;
   let plugins: PluginRuntime | undefined;
   if (sources.bus && runtime.provider) {
     try {
@@ -1087,6 +1183,7 @@ async function bringUp(
         ...(channelsRuntime && { channelsRuntime }),
       });
       detachDispatcher = attached.detach;
+      drainDispatcher = attached.draining;
       plugins = attached.plugins;
       if (plugins.activations.length > 0) {
         io.out(
@@ -1122,6 +1219,7 @@ async function bringUp(
     ...(channelsRuntime && { channels: channelsRuntime }),
     ...(plugins && { plugins }),
     ...(detachDispatcher !== undefined && { detachDispatcher }),
+    ...(drainDispatcher !== undefined && { drainDispatcher }),
     ...(loaded.auditExport !== undefined && { auditExport: loaded.auditExport }),
     ...(authRegistry !== undefined && { authRegistry }),
     ...(loaded.controlPlaneAuth !== undefined && {
@@ -1270,6 +1368,8 @@ async function bindControlSocket(opts: {
 interface AttachDispatcherResult {
   detach: () => void;
   plugins: PluginRuntime;
+  /** Await in-flight dispatches (dispatcher `draining()`) for graceful drain. */
+  draining?: () => Promise<void>;
 }
 
 async function attachDispatcherToAgent(opts: {
@@ -1283,6 +1383,13 @@ async function attachDispatcherToAgent(opts: {
   const { loaded, runtime, sources, logger, mcpTools, channelsRuntime } = opts;
   const bus = sources.bus;
   const eventStore = sources.eventStore;
+  // WS5 — snapshot events left pending (outcome=NULL) by a prior crash/SIGKILL
+  // BEFORE the dispatcher subscription goes live, so a freshly-arrived event
+  // can't be momentarily-pending and double-dispatched. Recovered (re-dispatched
+  // as fresh-id clones) once the dispatcher is attached, below.
+  const pendingAtBoot = eventStore
+    ? await eventStore.list({ outcomeKind: 'pending', limit: 1000 })
+    : [];
   const emptyPluginRuntime: PluginRuntime = {
     tools: [],
     activations: [],
@@ -1346,6 +1453,28 @@ async function attachDispatcherToAgent(opts: {
   }
   extraTools.push(...plugins.tools);
 
+  // Opt-in long-term memory (durable-with-memory "mode 3"). Only when the
+  // agent declares `agent.yaml#memory.enabled: true` do we lazily open the
+  // process-shared SQLite store (a file alongside `sessions.db`) and bind
+  // the memory_write/read/search tools to it under the resolved namespace
+  // (defaulting to the agent id). When disabled we push nothing, so the
+  // runtime tool set + ordering are identical to today. See
+  // `docs/AGENT_MEMORY.md`.
+  if (spec.memory?.enabled) {
+    if (!runtime.memoryStore) {
+      runtime.memoryStore = createSqliteMemoryStore({
+        path: join(configDir(), 'memory.db'),
+      });
+    }
+    const memoryNamespace = spec.memory.namespace ?? spec.name;
+    extraTools.push(
+      ...(createMemoryTools({
+        store: runtime.memoryStore,
+        namespace: memoryNamespace,
+      }).all as import('@declaragent/core').Tool[]),
+    );
+  }
+
   // Enterprise Production Plan §3 Item #7 — per-tool token-bucket gate.
   // Built only when `agent.yaml#tools.rateLimit` has at least one entry,
   // to avoid allocating buckets for agents that opt out. `auditSink` is
@@ -1380,20 +1509,83 @@ async function attachDispatcherToAgent(opts: {
   //                round-5 via `auditSink` plumbing; up-cli mirrors
   //                the pattern here so single-process deployments
   //                emit the same tenant-keyed records).
-  const tenant = DEFAULT_TENANT_CONTEXT;
+  // WS8 — resolve the agent's tenant. When `agent.yaml#tenant` is set and a
+  // `tenants.yaml` is found near the agent dir, use that tenant's context
+  // (id + quotas + residency); the tenant's quotas WIN over the agent's inline
+  // `quotas` so a fleet shares one tenant budget. A declared-but-unresolvable
+  // tenant warns (and falls back to default) rather than silently mis-scoping.
+  let tenant = DEFAULT_TENANT_CONTEXT;
+  let effectiveQuotas: TenantQuotas | undefined = loaded.quotas;
+  if (loaded.tenantId !== undefined) {
+    const tenantsPath = findTenantsConfig(loaded.agentDir);
+    if (tenantsPath === undefined) {
+      logger.write({
+        level: 'warn',
+        event: 'tenant.config-missing',
+        tenantId: loaded.tenantId,
+        message: `agent declares tenant "${loaded.tenantId}" but no tenants.yaml was found — using the default tenant`,
+      });
+    } else {
+      try {
+        const loadedTenants = await loadTenantsConfig({ path: tenantsPath });
+        const ctx = resolveTenantContext(loadedTenants, loaded.tenantId);
+        if (ctx === undefined) {
+          logger.write({
+            level: 'warn',
+            event: 'tenant.not-found',
+            tenantId: loaded.tenantId,
+            message: `tenant "${loaded.tenantId}" is not declared in ${tenantsPath} — using the default tenant`,
+          });
+        } else {
+          tenant = ctx;
+          if (ctx.quotas !== undefined) effectiveQuotas = ctx.quotas;
+          logger.write({ level: 'info', event: 'tenant.resolved', tenantId: ctx.id });
+        }
+      } catch (err) {
+        logger.write({
+          level: 'error',
+          event: 'tenant.load-failed',
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  // Build a QuotaTracker from the effective quotas (tenant's, else the agent's
+  // inline `quotas`) so the dollar spend brake (dailyTokenUSD) + rate quotas
+  // are enforced by the engine. Absent → no tracker (no overhead, no caps).
+  // A breach halts the turn fail-closed (stopReason quota_exceeded).
+  const quotaTracker =
+    effectiveQuotas !== undefined
+      ? createQuotaTracker({
+          tenant: { ...tenant, quotas: effectiveQuotas },
+          ...(runtime.auditSink !== undefined && { audit: runtime.auditSink }),
+        })
+      : undefined;
+
+  // WS1 — resolve the engine's tool list + permission gate from the agent's
+  // declared `tools.defaults` + `permissions.rules`, instead of exposing every
+  // built-in behind a bypass gate. Undeclared built-ins (Bash/Write/Edit/Agent)
+  // are not handed to the model, and the gate denies them defensively. Capability
+  // tools (SendMessage / memory / RequestAgent) and plugin tools are auto-exempt.
+  const resolvedTools = resolveRuntimeTools({
+    declared: loaded.toolNames,
+    permissionRules: loaded.permissionRules,
+    ...(mcpTools !== undefined && { mcpTools }),
+    ...(extraTools.length > 0 && { extra: extraTools }),
+  });
+  for (const warning of resolvedTools.warnings) {
+    logger.write({ level: 'warn', event: 'tools.permission', message: warning });
+  }
 
   const engine = createEngine({
     provider,
-    tools: [
-      ...buildRuntimeTools({
-        ...(mcpTools !== undefined && { mcpTools }),
-        ...(extraTools.length > 0 && { extra: extraTools }),
-      }),
-    ],
-    permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+    tools: resolvedTools.tools,
+    permissions: resolvedTools.gate,
     hookRegistry,
     createChildSession: () => runtime.sessionStore.create(spec),
     tenant,
+    ...(quotaTracker !== undefined && { quotas: quotaTracker }),
     ...(toolRateLimit !== undefined && { toolRateLimit }),
     // Item A step 3 — register the per-turn iterations histogram +
     // max-iterations-hit counter on the shared registry that backs the
@@ -1507,7 +1699,35 @@ async function attachDispatcherToAgent(opts: {
     skills: loaded.skills.length,
     skillNames: loaded.skills.map((s) => s.lookupName),
   });
-  return { detach: unsub, plugins };
+
+  // WS5 — recover the pre-boot pending snapshot now that the dispatcher is live
+  // on the bus (so re-dispatched clones route). Best-effort: a failure here must
+  // not abort agent boot.
+  if (eventStore && pendingAtBoot.length > 0) {
+    try {
+      const recovery = await recoverPendingEvents({
+        store: eventStore,
+        events: pendingAtBoot,
+        publish: (e) => bus.publish(e),
+        logger: coreLogger,
+      });
+      if (recovery.recovered > 0) {
+        logger.write({
+          level: 'warn',
+          event: 'events.recovered',
+          count: recovery.recovered,
+          message: `re-dispatched ${recovery.recovered} event(s) interrupted by a prior crash`,
+        });
+      }
+    } catch (err) {
+      logger.write({
+        level: 'error',
+        event: 'events.recovery-failed',
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { detach: unsub, plugins, draining: () => dispatcher.draining() };
 }
 
 function printBanner(io: UpIO, agent: RunningAgent): void {
@@ -1539,6 +1759,23 @@ async function stopAll(running: RunningAgent[]): Promise<void> {
     } catch {
       // swallow — best-effort shutdown
     }
+    // WS5 — graceful drain. Stop sources FIRST so no new events arrive, then
+    // wait for in-flight engine turns to settle (bounded by a deadline) BEFORE
+    // detaching the dispatcher and tearing down sessions/MCP/channels. Without
+    // this, a routine `down`/SIGTERM aborted live turns; boot-recovery would
+    // then re-run them, so draining avoids the needless re-execution.
+    try {
+      await r.sources.stop();
+    } catch {
+      // swallow — best-effort shutdown
+    }
+    if (r.drainDispatcher) {
+      try {
+        await drainWithDeadline(r.drainDispatcher, resolveDrainDeadlineMs());
+      } catch {
+        // swallow — never block shutdown on a stuck turn past the deadline
+      }
+    }
     try {
       r.detachDispatcher?.();
     } catch {
@@ -1546,11 +1783,6 @@ async function stopAll(running: RunningAgent[]): Promise<void> {
     }
     try {
       await r.plugins?.shutdown();
-    } catch {
-      // swallow — best-effort shutdown
-    }
-    try {
-      await r.sources.stop();
     } catch {
       // swallow — best-effort shutdown
     }
@@ -1624,6 +1856,44 @@ async function gracefulStop(pid: number, io: UpIO): Promise<void> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
+/** True for addresses that only accept same-host connections. */
+export function isLoopbackBindAddress(host: string): boolean {
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost';
+}
+
+/** Routes safe to expose on a non-loopback bind without auth (WS6). */
+export const SAFE_CONTROL_PLANE_PATHS: ReadonlySet<string> = new Set([
+  '/metrics',
+  '/healthz',
+  '/readyz',
+]);
+
+/**
+ * WS3/WS6 — resolve the control-plane listener bind address + mode.
+ *
+ * Source: `DECLARAGENT_BIND_ADDRESS` (default `127.0.0.1`).
+ *
+ * - Loopback bind, or non-loopback WITH a `controlPlane.auth` block → `full`
+ *   mode: every route (incl. `/events`,`/audit`,`/dlq`) is served (authed when
+ *   a non-loopback bind exposes them).
+ * - Non-loopback bind WITHOUT auth → `safe-subset` mode: bind anyway, but serve
+ *   ONLY `/metrics` + `/healthz` + `/readyz` (the routes safe to expose
+ *   unauthenticated). This is what k8s needs — the kubelet probes the pod IP,
+ *   not loopback — WITHOUT forcing operators to stand up an OIDC IdP just to
+ *   get liveness/readiness. The sensitive routes are simply not registered, so
+ *   nothing is exposed unauthenticated (the WS3 fail-closed guarantee holds).
+ */
+export function resolveBindAddress(opts: {
+  hasAuth: boolean;
+  env?: Record<string, string | undefined>;
+}): { hostname: string; mode: 'full' | 'safe-subset' } {
+  const env = opts.env ?? process.env;
+  const configured = env.DECLARAGENT_BIND_ADDRESS?.trim();
+  const hostname = configured && configured.length > 0 ? configured : '127.0.0.1';
+  const mode = !isLoopbackBindAddress(hostname) && !opts.hasAuth ? 'safe-subset' : 'full';
+  return { hostname, mode };
+}
+
 function buildDetachedArgs(args: UpArgs): string[] {
   const out: string[] = ['up'];
   if (args.manifestPath !== undefined) {
@@ -1636,6 +1906,25 @@ function findEventSourcesConfig(agentDir: string): string | undefined {
   for (const name of ['event-sources.yaml', 'event-sources.yml', 'event-sources.json']) {
     const p = join(agentDir, name);
     if (existsSync(p)) return p;
+  }
+  return undefined;
+}
+
+/**
+ * WS8 — locate `tenants.yaml` for an agent. Checks the agent dir, then walks up
+ * to two parents (fleet root layout: `<root>/agents/<name>/`) so a single
+ * fleet-level `tenants.yaml` covers every member. Returns the first hit.
+ */
+export function findTenantsConfig(agentDir: string): string | undefined {
+  let dir = agentDir;
+  for (let depth = 0; depth < 3; depth += 1) {
+    for (const name of ['tenants.yaml', 'tenants.yml', 'tenants.json']) {
+      const p = join(dir, name);
+      if (existsSync(p)) return p;
+    }
+    const parent = join(dir, '..');
+    if (parent === dir) break;
+    dir = parent;
   }
   return undefined;
 }
@@ -1745,46 +2034,20 @@ function buildUpStatusSnapshot(state: UpState, running: RunningAgent[]): UpStatu
  * @since 0.6.0-slice.2
  */
 /**
- * Apply the default provider-level rate limiter from Slice 4. Emits
- * wait counters + a histogram through the shared metrics registry so
- * the Prometheus endpoint surfaces the throttle activity. Env var
- * escape hatches:
- *
- *   - `DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1` bypasses the wrap
- *     entirely. Useful for load tests + offline backfills.
- *   - `DECLARAGENT_PROVIDER_RATE_LIMIT_RPS=<n>` overrides the preset's
- *     default. Floating-point values accepted.
+ * Apply the default provider-level rate limiter from Slice 4, threading
+ * throttle activity into the shared Prometheus registry. The wrap
+ * itself (env-var escape hatches included) lives in the shared
+ * `provider-rate-limit.ts` module so `fleet run` applies the same
+ * policy.
  *
  * @since 0.6.0-slice.4
  */
-function wrapProviderWithRateLimit(opts: {
+function wrapProviderWithMetrics(opts: {
   provider: LLMProvider;
   providerId: string;
   metrics: PrometheusRegistry;
   io: UpIO;
 }): LLMProvider {
-  if (process.env.DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE === '1') {
-    opts.io.out('  rate-limit: disabled via DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE\n');
-    return opts.provider;
-  }
-  const override = process.env.DECLARAGENT_PROVIDER_RATE_LIMIT_RPS;
-  let rate: number;
-  if (override !== undefined && override !== '') {
-    const parsed = Number.parseFloat(override);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      rate = parsed;
-    } else {
-      opts.io.err(
-        `⚠ DECLARAGENT_PROVIDER_RATE_LIMIT_RPS="${override}" is not a positive number; using default.\n`,
-      );
-      rate = defaultRateForProvider(opts.providerId);
-    }
-  } else {
-    rate = defaultRateForProvider(opts.providerId);
-  }
-  opts.io.out(
-    `  rate-limit: ${rate} rps (provider=${opts.providerId}; env DECLARAGENT_PROVIDER_RATE_LIMIT_RPS overrides, DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1 opts out)\n`,
-  );
   const waitsCounter = opts.metrics.counter(
     'declaragent.provider.rate_limit.waits',
     'Provider rate-limiter wait events',
@@ -1793,8 +2056,10 @@ function wrapProviderWithRateLimit(opts: {
     'declaragent.provider.rate_limit.wait_ms',
     'Provider rate-limiter wait duration in ms',
   );
-  return withProviderRateLimit(opts.provider, {
-    ratePerSec: rate,
+  return wrapProviderWithRateLimit({
+    provider: opts.provider,
+    providerId: opts.providerId,
+    io: opts.io,
     onWait: (waitMs) => {
       waitsCounter.inc(1, { provider: opts.providerId });
       waitMsHistogram.observe(waitMs, { provider: opts.providerId });
@@ -1816,20 +2081,36 @@ function stateToNumeric(s: 'closed' | 'half-open' | 'open'): number {
   return 0;
 }
 
-async function maybeCreateOtelTracer(io: UpIO): Promise<Tracer | undefined> {
-  if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) return undefined;
+async function maybeCreateOtelTracer(io: UpIO): Promise<{ tracer?: Tracer; sdk?: OtelSdkHandle }> {
+  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  if (!endpoint) return {};
+  let tracer: Tracer | undefined;
   try {
     const bridge = await createOtelBridge({
       meterName: '@declaragent/core',
       tracerName: '@declaragent/core',
     });
-    return bridge.tracer;
+    tracer = bridge.tracer;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     io.err(
-      `⚠ OTEL_EXPORTER_OTLP_ENDPOINT is set but tracing could not start: ${msg}\n  Install peer deps to enable:\n    npm i @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http\n  Falling back to noop tracer — the up-loop will still work, just without spans.\n`,
+      `⚠ OTEL_EXPORTER_OTLP_ENDPOINT is set but the @opentelemetry/api bridge could not load: ${msg}\n  Install peer deps to enable:\n    npm i @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http\n  Falling back to noop tracer — the up-loop will still work, just without spans.\n`,
     );
-    return undefined;
+    return {};
+  }
+  // WS7 — actually start the SDK so the bridge's spans EXPORT to the collector.
+  // A missing sdk-node peer dep is non-fatal: we keep the tracer (harmless) and
+  // warn that spans won't flow until the SDK is installed.
+  try {
+    const sdk = await startOtelSdk({ endpoint, serviceName: 'declaragent' });
+    return { tracer, sdk };
+  } catch (err) {
+    io.err(
+      `⚠ OTel API bridged but span export not started: ${
+        err instanceof Error ? err.message : String(err)
+      }\n  Install @opentelemetry/sdk-node to export spans to ${endpoint}.\n`,
+    );
+    return { tracer };
   }
 }
 

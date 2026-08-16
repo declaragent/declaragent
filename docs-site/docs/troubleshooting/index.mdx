@@ -26,7 +26,7 @@ flowchart TD
     B -->|brew| E{Formula error?}
     C -->|yes| C1[Retry — transient CDN issue.<br/>Do NOT set DECLARAGENT_NO_CHECKSUM.]
     C -->|no| C2{Download 404?}
-    C2 -->|yes| C3[Check DECLARAGENT_VERSION.<br/>v1.0.x and later are expected.]
+    C2 -->|yes| C3[Check DECLARAGENT_VERSION.<br/>Expected tags are v0.x releases —<br/>see the GitHub releases page.]
     C2 -->|no| C4[Check DECLARAGENT_PREFIX<br/>write permissions.]
     D -->|yes| D1[Re-run: cd $(npm root -g)/@declaragent/cli<br/>&& node bin/postinstall.js]
     D -->|no| D2[Check DECLARAGENT_BASE_URL +<br/>corporate proxy.]
@@ -38,11 +38,10 @@ If none of those branches match, open an issue with the full installer output.
 
 ## Logging
 
-Every runbook expects `DECLARAGENT_LOG_LEVEL=debug` when reproducing an issue:
-
-```bash
-DECLARAGENT_LOG_LEVEL=debug declaragent daemon
-```
+When reproducing an issue, capture the daemon's per-agent log files
+(`~/.declaragent/logs/<agent>.log`, tail live with `declaragent logs -f`) and
+attach them to the report. (There is no log-level env var today — the runtime
+logs at its default verbosity.)
 
 ## Still stuck?
 

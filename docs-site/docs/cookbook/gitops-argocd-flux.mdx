@@ -32,12 +32,13 @@ Output shape:
 ```
 deploy/chart/
 ├── Chart.yaml
-├── values.yaml                      # stub — real values live in Argo/Flux
-├── templates/
-│   ├── deployment-<agent>.yaml
-│   ├── service-<agent>.yaml
-│   ├── servicemonitor-<agent>.yaml   # gate with --no-servicemonitor
-│   └── secret-<agent>.yaml           # empty stub — populated by ESO / Vault
+├── values.yaml                      # replicas / image / namespace / serviceMonitor toggle
+├── .helmignore
+└── templates/
+    ├── _helpers.tpl                 # std labels + name helpers
+    ├── namespace.yaml
+    ├── secret.yaml                  # key-only stub — populated by ESO / Vault
+    └── agents/<id>.yaml             # ConfigMap + Deployment + Service + (opt) ServiceMonitor
 └── README.md
 ```
 

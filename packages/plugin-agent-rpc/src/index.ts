@@ -20,6 +20,7 @@ export type {
 } from './pending-registry.js';
 export {
   DEFAULT_REQUEST_TIMEOUT_MS,
+  brokerAddressKind,
   brokerAddressToTopic,
   createRequestAgentTool,
 } from './request-agent.js';
@@ -37,6 +38,11 @@ export type {
   AuthVerifyRegistry,
   CreateAgentInboxAdapterOptions,
 } from './agent-inbox.js';
+export { createHmacAuthProvider } from './auth/hmac.js';
+export type {
+  CreateHmacAuthProviderOptions,
+  HmacAuthPeerConfig,
+} from './auth/hmac.js';
 export { createOidcAuthProvider } from './auth/oidc.js';
 export type {
   CreateOidcAuthProviderOptions,

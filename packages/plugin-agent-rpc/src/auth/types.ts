@@ -45,7 +45,14 @@ export type RpcAuthRejectReason =
   | 'wrong-audience'
   | 'insufficient-scope'
   | 'idp-unreachable'
-  | 'config-error';
+  | 'config-error'
+  /**
+   * Strict-mode rejection: the envelope's `from` has no entry in the auth
+   * registry, so it cannot be verified. Closes the unregistered-sender spoof.
+   *
+   * @since 0.7.6 — production-readiness WS2
+   */
+  | 'unknown-peer';
 
 export interface RpcAuthPrincipal {
   /** The resolved subject claim (`sub`). */
@@ -70,7 +77,7 @@ export type RpcAuthVerifyResult =
  * variants honor.
  */
 export interface RpcAuthPeerConfigBase {
-  readonly provider: 'oidc' | 'oauth2-client';
+  readonly provider: 'oidc' | 'oauth2-client' | 'hmac';
   readonly scopes?: readonly string[];
 }
 

@@ -45,8 +45,10 @@ declaragent up -d
 
 `up` detects the env var, calls `createOtelBridge()` internally, and threads the bridged tracer into every source + channel via `deps.tracer`. You will see one of these banners at startup:
 
-- `otel: tracing enabled (OTLP endpoint http://localhost:4318)` — peer deps present, tracer active.
-- `⚠ OTEL_EXPORTER_OTLP_ENDPOINT is set but tracing could not start: …` — peer dep missing; the up-loop continues with the noop tracer. Install peer deps and re-run.
+- `  otel: spans exporting to <endpoint> (NodeSDK started).` — full pipeline active.
+- `  otel: tracer bridged to @opentelemetry/api (endpoint <endpoint>) — no NodeSDK started; spans go to whatever SDK the host process registered.` — API present, `sdk-node`/exporter missing.
+- `⚠ otel: OTEL_EXPORTER_OTLP_ENDPOINT is set but @opentelemetry/api could not be loaded …` — bridge load failed; the up-loop continues with the noop tracer. Install the peer deps and re-run.
+- `⚠ otel: NodeSDK failed to start …` — SDK present but startup threw; falls back to the bridged tracer.
 
 Metrics are NOT routed through the bridge — `up` keeps its dedicated Prometheus registry for pull-based scraping. If you want metrics in your OTel backend too, run an OTel collector with the Prometheus receiver in front (see §5).
 
@@ -54,7 +56,7 @@ Metrics are NOT routed through the bridge — `up` keeps its dedicated Prometheu
 
 ## 2. Install the SDK (peer deps)
 
-The `@declaragent/core` package declares `@opentelemetry/api` as a peer dep only — nothing is pulled in by default. The auto-enable path in §1 needs at minimum:
+The `@declaragent/core` package declares `@opentelemetry/api`, `@opentelemetry/sdk-node`, and `@opentelemetry/exporter-trace-otlp-http` as **optional peerDependencies** (since 0.7.6) — optional peers are not auto-installed by npm, so nothing is pulled in by default. The auto-enable path in §1 needs all three installed:
 
 ```bash
 npm install \

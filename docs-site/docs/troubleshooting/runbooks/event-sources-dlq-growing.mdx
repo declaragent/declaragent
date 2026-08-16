@@ -10,7 +10,41 @@ sidebar_label: event-sources-dlq-growing
 
 **Canonical markdown:** [`docs/runbooks/event-sources-dlq-growing.md`](https://github.com/declaragent/declaragent/blob/main/docs/runbooks/event-sources-dlq-growing.md)
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Content mirrored from the canonical
-runbook under `docs/runbooks/`.
-</div>
+**Severity:** critical.
+
+## Symptom
+`source.messages.dlq` on `{{ id }}` (`{{ type }}`) is growing > 0.01/s
+sustained for 15 minutes. The adapter is exhausting its retry budget on
+a stream of messages.
+
+## Likely cause
+1. Poison-pill payload class (always throws during normalize or publish).
+2. Downstream dispatch is rejecting (unauthorized, rate-limited).
+3. Transport-level issue surfaces only after the retry budget runs out (transient but wider than the window).
+
+## Immediate mitigation
+Inspect the top DLQ entry — often a single payload shape is responsible:
+
+```bash
+declaragent dlq list --source <id> --limit 20
+declaragent dlq show <entry-id>
+```
+
+If the entries share a shape, add a filter at the source or patch the
+normalizer before anything else.
+
+## Root-cause investigation
+```bash
+# DLQ sample with the failure reason:
+declaragent dlq list --source <id> --json
+
+# Grafana: Event Sources → "DLQ rate" + "Failed by reason" panels.
+```
+
+If it's a normalize bug, fix the normalizer and redrive the entries
+(slice-3 adapters support `redriveDLQ`).
+
+## Post-incident
+- Capture: DLQ sample shape, root cause, remediation (filter / normalizer / platform).
+- Close when: DLQ rate < 0.001/s for 30 minutes.
+- Post-mortem: required if > 100 entries hit DLQ during the incident.

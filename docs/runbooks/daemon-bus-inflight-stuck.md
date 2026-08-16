@@ -15,20 +15,24 @@ subscriber is hung and `Promise.allSettled` is waiting on it.
 Restart the daemon:
 
 ```bash
-declaragent daemon restart
+declaragent down && declaragent up -d
 ```
 
 Bus state is in-process — the restart drops the hung subscriber.
 
 ## Root-cause investigation
 ```bash
-# Active subscribers:
-declaragent daemon status --json | jq '.bus.subscribers'
+# Daemon snapshot (agents + sources):
+declaragent ps
+curl -s http://127.0.0.1:9464/status | jq
+
+# In-flight gauge:
+curl -s http://127.0.0.1:9464/metrics | grep source_inflight
 ```
 
 If the daemon had CPU profiling enabled, pull the profile and identify
-the hung handler. Otherwise, reproduce locally with
-`DECLARAGENT_LOG_LEVEL=debug`.
+the hung handler. Otherwise, reproduce locally while tailing
+`declaragent logs -f`.
 
 ## Post-incident
 - Capture: hung subscriber id, cause, fix commit.

@@ -8,9 +8,11 @@ This is the **tracking doc**. Keep the status board (§1) accurate. Detailed spe
 
 ## 0 · Summary banner
 
+> ⚠️ **Accuracy note (2026-08-16).** The 12/12 banner below records the plan's own item tracker and predates the 2026-06 multi-agent audit; several behaviors marked complete needed post-hoc runtime wiring on `agent-durability-followups` (see `PRODUCTION_READINESS_PLAN.md`). For live capability status use the AGENTS.md evidence ledger, not this banner.
+
 ```
-Enterprise pillars status:  ▓▓▓▓▓▓▓▓▓▓▓▓  ( 12 / 12 items complete ✅ — all five pillars shipped; all CLI integrations live in `up` + `fleet run` )
-Latest release:             @declaragent/cli@0.6.0 (all 12 plan items + #5 Slice 2 + #4/#7/#8/#11 CLI integrations + #12 BUILDER_RECORD all merged 2026-04-23; unreleased)
+Enterprise pillars status:  ▓▓▓▓▓▓▓▓▓▓▓▓  ( 12 / 12 plan items complete — see accuracy note above )
+Latest release:             @declaragent/cli@0.7.6 on npm (this banner is no longer the live status surface — see POST_ENTERPRISE_BACKLOG.md + AGENTS.md)
 Next milestone:             Pillar 3 enterprise badge flip after first green `weekly-soak.yml` run (scheduled Sunday 00:00 UTC per #1 acceptance #4); release @declaragent/cli@0.7.0 with the enterprise stack
 Active blocker:             none
 ```
@@ -128,10 +130,10 @@ Each item has: **Why · Scope (in / out) · Acceptance criteria · Test plan · 
 - Docs page: `docs-site/docs/reference/rpc.mdx` — add NATS to the transport table.
 
 **Scope out:**
-- SQS / AMQP / MQTT transports. Same pattern; done after NATS proves the template. Track as follow-ups in POST_DEMO_BACKLOG.md.
+- SQS / AMQP / MQTT transports. Same pattern; done after NATS proves the template. Shipped later as POST_ENTERPRISE_BACKLOG.md #24 (library factories).
 
 **Acceptance.**
-1. `import { createNatsTransport } from '@declaragent/plugin-agent-rpc/nats'` works.
+1. `import { createNatsTransport } from '@declaragent/plugin-agent-rpc'` works.
 2. Two-agent round trip passes with the new transport.
 3. Nightly CI green on both Kafka and NATS integration tests.
 
@@ -490,5 +492,5 @@ All twelve boxes in §1 ticked. Plus:
 - [FIRST_PRINCIPLES_AUDIT.md](./FIRST_PRINCIPLES_AUDIT.md) — exhaustive capability matrix.
 - [CONTROL_PLANE_PLAN.md](./CONTROL_PLANE_PLAN.md) — the M4 deep plan.
 - [AGENT_RPC_PLAN.md](./AGENT_RPC_PLAN.md) — the M6 typed-capabilities background.
-- [RELEASE_0_6_0_PLAN.md](./RELEASE_0_6_0_PLAN.md) — what shipped so far.
+- [RELEASE_0_6_0_PLAN.md](./archive/RELEASE_0_6_0_PLAN.md) — what shipped so far.
 - [THREAT_MODEL.md](./THREAT_MODEL.md) — pairs with #4 auth and #10 audit export.

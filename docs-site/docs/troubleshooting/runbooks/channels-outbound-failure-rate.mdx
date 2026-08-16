@@ -10,8 +10,49 @@ sidebar_label: channels-outbound-failure-rate
 
 **Canonical markdown:** [`docs/runbooks/channels-outbound-failure-rate.md`](https://github.com/declaragent/declaragent/blob/main/docs/runbooks/channels-outbound-failure-rate.md)
 
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Content mirrored from the canonical
-runbook under `docs/runbooks/`. Slice 7.5 will inline the full
-runbook text here.
-</div>
+**Severity:** critical.
+
+## Symptom
+More than 1% of outbound sends on channel `{{ id }}` are failing over a
+rolling 5-minute window. Dashboards show the `channel.outbound.failed`
+rate climbing while `channel.outbound.sent` stays flat or drops.
+
+## Likely cause
+1. Platform returned `429` faster than the one-shot retry can absorb.
+2. Auth token rotated out-of-band and the adapter is presenting stale credentials.
+3. Downstream template / payload validation is failing (WhatsApp, Slack block-kit).
+
+Decision tree:
+- 429 codes dominate → rate-limit path. Go to `channels-rate-limit-sustained`.
+- 401 / 403 dominate → token invalid. Rotate + redeploy.
+- 400 dominates → payload-shape problem; check recent release diffs.
+
+## Immediate mitigation
+Disable the offending channel instance temporarily:
+
+```bash
+# There is no channel-pause verb — comment the channel out of
+# channels.yaml and restart:
+declaragent down && declaragent up -d
+```
+
+Removing only the failing channel leaves the other channels' outbound
+flowing after the restart.
+
+## Root-cause investigation
+```bash
+# Outbound channel audit records from the last 15 minutes (filter in jq):
+declaragent audit query --kind channel_outbound --since -15m --json
+
+# Correlate with the platform's status API (Slack / Meta / Discord).
+# Grafana: "Channels" dashboard → "Outbound failure rate" panel.
+```
+
+If the adapter supports it, bump `deps.logger` to `debug` level and
+capture one round of failed sends verbatim.
+
+## Post-incident
+- Capture: channel id, failure mode, top 3 error bodies, restoration action.
+- Close when: failure rate < 0.1% sustained for 10 minutes.
+- Post-mortem: required for any outage > 30 minutes or any breach of a
+  customer-facing SLA window.

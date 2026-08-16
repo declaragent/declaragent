@@ -1,8 +1,14 @@
 # Templates
 
-Starter packs for `declaragent init`. Each directory is a fully-
-specified agent that `declaragent init --template <name>` unpacks
-into the user's project directory.
+Starter packs. Single-agent templates unpack via
+`declaragent init --template <name>`; multi-agent/fleet templates are
+added to a fleet via `declaragent fleet add --template <name>` or copied
+from the repo.
+
+**Init-able** (in `TEMPLATE_NAMES`): `concierge`, `oncall-escalator`,
+`pr-review`, `kafka-pipeline`, `multi-tenant-starter`.
+**Fleet-add / copy-only**: `rpc-client`, `rpc-server`, `fleet-starter`,
+`marketing`.
 
 ## Catalog
 
@@ -11,7 +17,7 @@ into the user's project directory.
 | [`concierge`](./concierge) | Minimal Slack Q&A bot (Socket Mode, provider-default tools) | Slack `@mention` + DM | Slack reply |
 | [`oncall-escalator`](./oncall-escalator) | Webhook source + idempotency key + outbound SendMessage | Alertmanager webhook | Slack DM |
 | [`pr-review`](./pr-review) | Plugin-contributed tool via `@declaragent/plugin-github` | GitHub webhook | GitHub review |
-| [`kafka-pipeline`](./kafka-pipeline) | Kafka source + DLQ + daily token budget | `orders.created` topic | `orders.enriched` topic |
+| [`kafka-pipeline`](./kafka-pipeline) | Kafka source + DLQ + daily token budget | `orders.created` topic | logged enrichment (Kafka outbound on roadmap) |
 | [`multi-tenant-starter`](./multi-tenant-starter) | Two tenants on one daemon, scoped extensions + quotas | Slack (per-tenant) | Slack (per-tenant) |
 | [`rpc-client`](./rpc-client) / [`rpc-server`](./rpc-server) | Paired agents exchanging typed requests via `agent-rpc` | In-process user prompt | `RequestAgent` → peer `ctx.respond` |
 

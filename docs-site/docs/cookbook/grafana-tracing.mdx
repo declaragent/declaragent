@@ -6,7 +6,14 @@ sidebar_label: Grafana tracing
 
 # Trace a request in Grafana
 
-Declaragent emits OpenTelemetry spans + Prometheus metrics by default. The testkit ships a `docker-compose.yaml` with Prometheus, Tempo, and Grafana pre-wired so you can see the full inbound → engine → outbound trace out of the box.
+Declaragent exposes Prometheus metrics by default (detached mode) and exports OpenTelemetry **spans** when you opt in. The testkit ships a `docker-compose.yml` with an OTel collector, Prometheus, Jaeger, and Grafana pre-wired.
+
+:::note Current span coverage
+Tracing today covers the ingest and egress edges — three span types, each currently
+a **root span** (no parent/child links yet). Engine-turn, tool-call, and RPC spans
+plus cross-span trace propagation are on the roadmap. See
+[Reference → Observability](/reference/observability#opentelemetry) for the exact list.
+:::
 
 ## Bring up the observability stack
 
@@ -14,33 +21,36 @@ Declaragent emits OpenTelemetry spans + Prometheus metrics by default. The testk
 cd packages/testkit/observability
 docker compose up -d
 # Grafana on http://localhost:3000 (admin / admin)
-# Tempo on http://localhost:3200
+# Jaeger UI on http://localhost:16686
 # Prometheus on http://localhost:9090
 ```
 
 See [`packages/testkit/alerts/README.md`](https://github.com/declaragent/declaragent/tree/main/packages/testkit/alerts) for the alert rules bundled with the stack.
 
-## OTel pointing
+## Enable span export
 
-Point Declaragent at the collector:
+Install the OTel packages (they are not bundled with the CLI), then point Declaragent at the collector:
 
 ```bash
+npm install @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http
+
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_SERVICE_NAME=declaragent-agent
 declaragent up
 ```
 
-See [`docs/OTEL_SETUP.md`](https://github.com/declaragent/declaragent/blob/main/docs/OTEL_SETUP.md) for the full set of OTel env vars.
+The OTel service name is currently fixed to `declaragent` (`OTEL_SERVICE_NAME` is not
+read). See [`docs/OTEL_SETUP.md`](https://github.com/declaragent/declaragent/blob/main/docs/OTEL_SETUP.md) for details.
 
 ## Explore
 
-Send a test message. In Grafana → Explore → pick the `Tempo` data source → paste the span id or search by service name → you'll see a single trace with:
+Send a test message. In Jaeger (http://localhost:16686) → search service `declaragent` — you'll see the spans emitted today:
 
-- `channel.inbound.<platform>` — raw inbound decode.
-- `bus.dispatch` — message handed to the engine.
-- `engine.turn` — one per LLM call (with `turn_number`, `model`, `tokens_in`, `tokens_out`).
-- `tool.invoke` — one per tool call (`Read`, `Glob`, `Grep`, etc.).
-- `channel.outbound.<platform>` — outbound send with latency + status code.
+- `source.message` — one span per inbound event-source message (`message.id`, `message.topic`, `event.id`, `event.kind`, `correlation.id`, `outcome`).
+- `channel.outbound.send` — one span per outbound channel send (`conversation.id`, `content.kind`, `latency.ms`).
+- `channel.outbound.edit` — one span per outbound message edit.
+
+Each span stands alone — to follow one request end-to-end today, filter by the
+`correlation.id` attribute rather than expecting a single trace waterfall.
 
 ## Alert rules
 
@@ -48,10 +58,6 @@ The six shipped rule files live under [`packages/testkit/alerts/`](https://githu
 
 ## Related
 
+- [Reference → Observability](/reference/observability) — the full metric + span index, plus the shipped Grafana dashboards.
 - [Troubleshooting → runbook index](/troubleshooting/runbook-index).
 - [Reference → env vars → OTel](/reference/env-vars).
-
-<div className="todo-block">
-[placeholder — landing 2026-Q2] Sample Grafana dashboard JSON (engine
-latency + channel outbound failure rate + DLQ depth).
-</div>

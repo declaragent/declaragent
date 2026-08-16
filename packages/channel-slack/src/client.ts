@@ -140,12 +140,18 @@ export type SlackSocketHandler = (frame: SlackSocketFrame) => void | Promise<voi
  * Tests supply their own transport so no real network is touched.
  */
 export interface SocketModeTransport {
-  /** Open the WSS connection. Rejects on failure; caller decides whether to retry. */
+  /** Open the WSS connection. Rejects on the FIRST connect failure. */
   connect(): Promise<void>;
   /** Register the inbound-frame handler. Called for every decoded frame. */
   onEvent(handler: SlackSocketHandler): void;
   /** Close the WSS connection and stop reconnect attempts. */
   close(): Promise<void>;
+  /**
+   * True while the WSS is currently open. Reflects reconnect state honestly —
+   * after Slack recycles the connection this reads `false` until the socket
+   * re-establishes, so channel health doesn't lie. (WS11)
+   */
+  connected(): boolean;
 }
 
 export interface CreateSocketModeTransportOptions {
@@ -158,34 +164,125 @@ export interface CreateSocketModeTransportOptions {
     debug?: (event: string, data?: Record<string, unknown>) => void;
     warn?: (event: string, data?: Record<string, unknown>) => void;
   };
+  /** Backoff (ms) before reconnect attempt N (0-indexed). Default exp 1s→30s. */
+  backoffMs?: (attempt: number) => number;
+  /** Fired on each reconnect attempt (e.g. to bump a `*_reconnects_total` counter). */
+  onReconnect?: (attempt: number) => void;
+  /** Timer seams (tests). */
+  setTimeoutFn?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimeoutFn?: (handle: ReturnType<typeof setTimeout>) => void;
 }
 
 /**
- * Hand-rolled Socket Mode transport. Handles the hello frame + auto-ack
- * + payload decode; does NOT implement reconnect-with-backoff (TODO:
- * slice 7.x). Consumers that need long-lived sockets wrap the transport
- * with their own retry.
+ * Hand-rolled Socket Mode transport. Handles the hello frame + auto-ack +
+ * payload decode, and — since WS11 — reconnects with exponential backoff when
+ * Slack recycles the WSS (every ~hour) or the network blips. `connected()`
+ * reflects the live socket state so channel health is truthful.
  */
 export function createSocketModeTransport(
   opts: CreateSocketModeTransportOptions,
 ): SocketModeTransport {
-  const WSImpl = opts.webSocketImpl ?? (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
-  if (!WSImpl) {
+  const maybeWS = opts.webSocketImpl ?? (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+  if (!maybeWS) {
     throw new Error(
       'Socket Mode requires a WebSocket implementation (global.WebSocket is missing)',
     );
   }
+  // Definitely-assigned const so nested closures (reopen) keep the narrowing.
+  const WSImpl: typeof WebSocket = maybeWS;
+  const backoff = opts.backoffMs ?? ((attempt) => Math.min(1000 * 2 ** attempt, 30_000));
+  const setT = opts.setTimeoutFn ?? ((cb, ms) => setTimeout(cb, ms));
+  const clearT = opts.clearTimeoutFn ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
   let ws: WebSocket | null = null;
   let handler: SlackSocketHandler | null = null;
   let closed = false;
+  let isConnected = false;
+  let reconnectAttempt = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Attach the message + ack + close→reconnect listeners to a socket. Defined
+  // per-socket so the ack `send` targets the CURRENT socket after a reconnect.
+  function wire(socket: WebSocket): void {
+    socket.addEventListener('message', (ev) => {
+      if (closed) return;
+      const raw = typeof ev.data === 'string' ? ev.data : String(ev.data);
+      let frame: SlackSocketFrame;
+      try {
+        frame = JSON.parse(raw) as SlackSocketFrame;
+      } catch (err) {
+        opts.logger?.warn?.('slack.socket.decode.failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+      if (frame.envelope_id && !closed) {
+        try {
+          socket.send(JSON.stringify({ envelope_id: frame.envelope_id }));
+        } catch (err) {
+          opts.logger?.warn?.('slack.socket.ack.failed', {
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      if (handler) {
+        void Promise.resolve(handler(frame)).catch((err: unknown) => {
+          opts.logger?.warn?.('slack.socket.handler.error', {
+            err: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
+    });
+    socket.addEventListener('close', () => {
+      isConnected = false;
+      opts.logger?.debug?.('slack.socket.closed');
+      if (!closed) scheduleReconnect();
+    });
+  }
+
+  function scheduleReconnect(): void {
+    if (closed || reconnectTimer !== null) return;
+    const delay = backoff(reconnectAttempt);
+    reconnectAttempt += 1;
+    opts.logger?.warn?.('slack.socket.reconnecting', { attempt: reconnectAttempt, delayMs: delay });
+    opts.onReconnect?.(reconnectAttempt);
+    reconnectTimer = setT(() => {
+      reconnectTimer = null;
+      void reopen();
+    }, delay);
+  }
+
+  async function reopen(): Promise<void> {
+    if (closed) return;
+    try {
+      const url = await opts.getUrl();
+      const socket = new WSImpl(url);
+      ws = socket;
+      socket.addEventListener('open', () => {
+        isConnected = true;
+        reconnectAttempt = 0; // reset backoff once we're healthy again
+        opts.logger?.debug?.('slack.socket.reconnected');
+      });
+      wire(socket);
+    } catch (err) {
+      opts.logger?.warn?.('slack.socket.reconnect.failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      scheduleReconnect();
+    }
+  }
 
   return {
     async connect() {
       const url = await opts.getUrl();
       const socket = new WSImpl(url);
       ws = socket;
-      return new Promise<void>((resolve, reject) => {
+      // Wire message + close→reconnect BEFORE awaiting open so no early frame
+      // is missed and a drop during/after handshake triggers reconnect.
+      wire(socket);
+      await new Promise<void>((resolve, reject) => {
         const onOpen = () => {
+          isConnected = true;
+          reconnectAttempt = 0;
           socket.removeEventListener('open', onOpen);
           socket.removeEventListener('error', onError);
           resolve();
@@ -197,46 +294,21 @@ export function createSocketModeTransport(
         };
         socket.addEventListener('open', onOpen);
         socket.addEventListener('error', onError);
-        socket.addEventListener('message', (ev) => {
-          if (closed) return;
-          const raw = typeof ev.data === 'string' ? ev.data : String(ev.data);
-          let frame: SlackSocketFrame;
-          try {
-            frame = JSON.parse(raw) as SlackSocketFrame;
-          } catch (err) {
-            opts.logger?.warn?.('slack.socket.decode.failed', {
-              err: err instanceof Error ? err.message : String(err),
-            });
-            return;
-          }
-          // Ack envelope_id-bearing frames right away.
-          if (frame.envelope_id && !closed) {
-            try {
-              socket.send(JSON.stringify({ envelope_id: frame.envelope_id }));
-            } catch (err) {
-              opts.logger?.warn?.('slack.socket.ack.failed', {
-                err: err instanceof Error ? err.message : String(err),
-              });
-            }
-          }
-          if (handler) {
-            void Promise.resolve(handler(frame)).catch((err: unknown) => {
-              opts.logger?.warn?.('slack.socket.handler.error', {
-                err: err instanceof Error ? err.message : String(err),
-              });
-            });
-          }
-        });
-        socket.addEventListener('close', () => {
-          opts.logger?.debug?.('slack.socket.closed');
-        });
       });
     },
     onEvent(h) {
       handler = h;
     },
+    connected() {
+      return isConnected;
+    },
     async close() {
       closed = true;
+      isConnected = false;
+      if (reconnectTimer !== null) {
+        clearT(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (ws) {
         try {
           ws.close();

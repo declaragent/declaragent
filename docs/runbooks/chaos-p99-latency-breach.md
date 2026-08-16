@@ -15,8 +15,9 @@ exceeds the 10s SLO.
 Stop the chaos run and review assertions:
 
 ```bash
-declaragent chaos stop
-declaragent chaos report --run <runId>
+# The chaos harness is the testkit chaos driver (packages/testkit/src/chaos)
+# — stop the run by interrupting the harness process (Ctrl-C / SIGINT);
+# the driver's stop() emits the run report on the way out.
 ```
 
 ## Root-cause investigation

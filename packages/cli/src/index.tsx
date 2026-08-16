@@ -2,6 +2,7 @@
 import type { PermissionMode } from '@declaragent/core';
 import type { DispatchOutcome, EventKind } from '@declaragent/core';
 import { render } from 'ink';
+import { agentValidate } from './agent-cli.js';
 import { App } from './app.js';
 import type { AuditQueryArgs } from './audit-cli.js';
 import { auditErase, auditPrune, auditQuery, auditVerify } from './audit-cli.js';
@@ -26,6 +27,7 @@ import {
   dlqDispatchShow,
 } from './dlq-dispatch-cli.js';
 import { down } from './down-cli.js';
+import { eraseUser } from './erase-cli.js';
 import { eventsList, eventsReplay, eventsReplayRange, eventsShow } from './events-cli.js';
 import { eventsConfigValidate } from './events-config-cli.js';
 import { extensionsList } from './extensions-cli.js';
@@ -140,6 +142,8 @@ Usage:
 
   declaragent extensions
 
+  declaragent agent validate [<dir>] [--json]       # validate an agent.yaml (schema + tools + key typos)
+
   declaragent up [-d|--detach] [-f <path>]         # bring agents online (compose-like)
   declaragent down                                  # stop agents brought up by \`up\`
   declaragent ps                                    # list bound agents + sources
@@ -209,6 +213,8 @@ Usage:
   declaragent audit verify [--tenant X] [--json]
   declaragent audit erase --user <platformUserId> [--reason R] [--json]
   declaragent audit prune --tenant <id> --retention-days <N> [--json]
+
+  declaragent erase --user <platformUserId> [--reason R] [--json]   # GDPR: erase a subject across audit + events
 
   declaragent secrets list [--provider <name>] [--json]
   declaragent secrets describe <ref> [--json]
@@ -502,6 +508,20 @@ if (subcommand === 'extensions') {
 if (subcommand === 'daemon') {
   const code = await daemonStart();
   process.exit(code);
+}
+if (subcommand === 'agent') {
+  const action = argv[1];
+  if (action === 'validate') {
+    const json = argv.includes('--json');
+    const dir = argv.slice(2).find((a) => !a.startsWith('-'));
+    const validateArgs: Parameters<typeof agentValidate>[0] = {};
+    if (dir !== undefined) validateArgs.dir = dir;
+    if (json) validateArgs.json = true;
+    const code = await agentValidate(validateArgs);
+    process.exit(code);
+  }
+  process.stderr.write(`unknown agent subcommand: ${action ?? '(none)'}. Supported: validate.\n`);
+  process.exit(1);
 }
 if (subcommand === 'up') {
   // `declaragent up [-d] [-f <path>]` — Docker-Compose-style lifecycle.
@@ -1511,6 +1531,18 @@ if (subcommand === 'tenants') {
 }
 if (subcommand === 'audit') {
   const code = await runAuditSubcommand(argv[1], argv.slice(2));
+  process.exit(code);
+}
+if (subcommand === 'erase') {
+  const rest = argv.slice(1);
+  const user = flagValue(rest, '--user');
+  const reason = flagValue(rest, '--reason');
+  const json = rest.includes('--json');
+  const code = await eraseUser({
+    ...(user !== undefined && { user }),
+    ...(reason !== undefined && { reason }),
+    json,
+  });
   process.exit(code);
 }
 if (subcommand === 'secrets') {

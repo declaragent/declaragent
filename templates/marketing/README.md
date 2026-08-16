@@ -33,18 +33,22 @@ else uses — same tools, same audit log, same git-versioned config.
 ## Required MCP servers
 
 Declan talks to external systems via MCP. The `mcp:` block in
-`agent.yaml` declares them; at `declaragent up`, the CLI prompts
-the operator to consent to each server on first run.
+`agent.yaml` documents them, but the runtime loads MCP servers from
+`.mcp.json` in the agent directory (or user-global
+`~/.declaragent/mcp-servers.json`) — copy each server below into
+`.mcp.json` before `declaragent up`; the CLI prompts for consent on
+first run. (Reading `agent.yaml#mcp.servers` directly is on the
+roadmap.)
 
 | Server | Package | Why Declan needs it | Setup |
 |---|---|---|---|
-| **github** | `@modelcontextprotocol/server-github` | Stars, issues, PRs, releases, repo traffic, comment drafting targets | GitHub PAT with `repo` + `read:org` + `read:user` scopes. Store in keychain: `declaragent auth store github-token`. |
+| **github** | `@modelcontextprotocol/server-github` | Stars, issues, PRs, releases, repo traffic, comment drafting targets | GitHub PAT with `repo` + `read:org` + `read:user` scopes. Env: `GITHUB_TOKEN`. |
 | **brave-search** | `@modelcontextprotocol/server-brave-search` | Trend tracking, competitor monitoring, mention discovery, recipient research for outbound | [Brave Search API key](https://api.search.brave.com/) (free tier: 2000 queries/mo). Env: `BRAVE_API_KEY`. |
 | **fetch** | `@modelcontextprotocol/server-fetch` | Fetch external URLs (npm-stat, blog posts, newsletter issues) for verification and research | No auth. Runs locally. |
 | **filesystem** | `@modelcontextprotocol/server-filesystem` | Write drafts to `./marketing-drafts/`, maintain `mentions-seen.json` | Scoped to `./marketing-drafts` only — cannot escape. |
-| **posthog** | `@posthog/mcp` | Docs-site analytics, install → activation funnel, top landing pages | PostHog personal API key + host URL. Keychain: `declaragent auth store posthog-personal-api-key`. Swap for Plausible if you standardize there — no first-party MCP yet. |
-| **notion** | `@notionhq/notion-mcp-server` | Editorial calendar, campaign briefs, brand guidelines source of truth | Notion integration token. Keychain: `declaragent auth store notion-integration-token`. Skip if you keep all planning in GitHub issues. |
-| **linear** | `@tacticlaunch/mcp-linear` | Campaign + marketing task tracking | Linear API key. Keychain: `declaragent auth store linear-api-key`. Swap for GitHub Projects if preferred — in that case drop this server and extend the `github` server scope. |
+| **posthog** | `@posthog/mcp` | Docs-site analytics, install → activation funnel, top landing pages | PostHog personal API key + host URL. Env: `POSTHOG_API_KEY` + `POSTHOG_HOST`. Swap for Plausible if you standardize there — no first-party MCP yet. |
+| **notion** | `@notionhq/notion-mcp-server` | Editorial calendar, campaign briefs, brand guidelines source of truth | Notion integration token. Env: `NOTION_API_KEY`. Skip if you keep all planning in GitHub issues. |
+| **linear** | `@tacticlaunch/mcp-linear` | Campaign + marketing task tracking | Linear API key. Env: `LINEAR_API_KEY`. Swap for GitHub Projects if preferred — in that case drop this server and extend the `github` server scope. |
 
 ### Optional / gaps
 
@@ -106,14 +110,15 @@ export BRAVE_API_KEY=...
 export POSTHOG_HOST=https://app.posthog.com
 export GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)
 
-# Store tokens in keychain
-declaragent auth store github-token
-declaragent auth store posthog-personal-api-key
-declaragent auth store notion-integration-token         # optional
-declaragent auth store linear-api-key                   # optional
+# Export the MCP tokens (there is no keychain-backed `auth store` verb —
+# tokens resolve via ${env:...} refs; use a secret provider in prod)
+export GITHUB_TOKEN=...
+export POSTHOG_API_KEY=...
+export NOTION_API_KEY=...            # optional
+export LINEAR_API_KEY=...            # optional
 
 # Verify the agent config
-declaragent doctor              # or: d9t doctor
+declaragent agent validate      # or: d9t agent validate
 
 # Bring Declan up
 declaragent up -d               # or: d9t up -d

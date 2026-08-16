@@ -13,7 +13,7 @@
  * @since 0.4.1
  */
 
-import { clearUpState, isAlive, reapStaleState } from './up-lifecycle.js';
+import { clearUpState, isAlive, reapStaleState, resolveDrainDeadlineMs } from './up-lifecycle.js';
 
 export interface DownIO {
   out: (s: string) => void;
@@ -36,7 +36,12 @@ export interface DownDeps {
   now?: () => number;
   /** Poll interval override (ms). Default 150. */
   pollIntervalMs?: number;
-  /** Grace period before escalating to SIGKILL (ms). Default 5000. */
+  /**
+   * Grace period before escalating to SIGKILL (ms). Defaults to the graceful
+   * drain deadline (`DECLARAGENT_DRAIN_DEADLINE_MS`, default 15s) + a 5s margin,
+   * so `down` doesn't SIGKILL the daemon while it is still draining in-flight
+   * turns (WS5). Override explicitly to force a faster stop.
+   */
   graceMs?: number;
 }
 
@@ -45,7 +50,7 @@ export async function down(deps: DownDeps = {}): Promise<number> {
   const kill = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
   const now = deps.now ?? Date.now;
   const pollMs = deps.pollIntervalMs ?? 150;
-  const graceMs = deps.graceMs ?? 5000;
+  const graceMs = deps.graceMs ?? resolveDrainDeadlineMs() + 5000;
 
   const state = reapStaleState();
   if (state === null) {

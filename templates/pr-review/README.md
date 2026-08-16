@@ -37,11 +37,11 @@ See the [GitHub webhook setup runbook](../../docs/runbooks/github-webhook-setup.
 
 ```sh
 cp .env.example .env
-declaragent run
+declaragent up
 ```
 
-The agent listens on `http://localhost:8787/webhook/github`. For
-local testing, tunnel via `ngrok http 8787` and point your GitHub
+The agent listens on `http://localhost:7777/webhook/github`. For
+local testing, tunnel via `ngrok http 7777` and point your GitHub
 webhook at the public URL.
 
 ## Deploy to Cloud Run
@@ -50,7 +50,9 @@ webhook at the public URL.
 declaragent deploy gcp-cloud-run
 ```
 
-The generated `service.yaml` exposes port 8787 for the webhook. Update
+The generated `service.yaml` exposes port 8787 for the webhook, while
+the webhook source defaults to 7777 — set `port: 8787` in
+`event-sources.yaml` for the deployed container so they match. Update
 the GitHub webhook's Payload URL to the Cloud Run service URL.
 
 ## Estimated cost (lower bound)
@@ -65,6 +67,6 @@ PRs/day) push token cost into the $150–$300 band.
 ## Template deferrals
 
 - `@declaragent/plugin-github` is referenced here but is not yet
-  published. Until it ships, `declaragent run` will fail plugin
+  published. Until it ships, `declaragent up` will fail plugin
   load with "unknown plugin id". Track in the Phase 2 ecosystem
   roadmap.

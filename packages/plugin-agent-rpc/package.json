@@ -23,10 +23,26 @@
     "access": "public"
   },
   "peerDependencies": {
+    "@aws-sdk/client-sqs": "^3.600.0",
     "@declaragent/core": "^0.5.3",
+    "amqplib": "^0.10.4",
+    "kafkajs": "^2.2.4",
+    "mqtt": "^5.10.1",
     "nats": "^2.28.0"
   },
   "peerDependenciesMeta": {
+    "@aws-sdk/client-sqs": {
+      "optional": true
+    },
+    "amqplib": {
+      "optional": true
+    },
+    "kafkajs": {
+      "optional": true
+    },
+    "mqtt": {
+      "optional": true
+    },
     "nats": {
       "optional": true
     }

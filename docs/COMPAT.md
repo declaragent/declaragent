@@ -21,7 +21,7 @@ The declarative agent definition: identity, tools, skills, plugins, event source
 permissions, secrets, deployment.
 
 - **Authoritative loader:** [`packages/core/src/agents/load-agent.ts`](../packages/core/src/agents/load-agent.ts)
-  (`loadAgent`, around line 575). The fields it parses and validates are the frozen surface.
+  (the exported `loadAgent` function). The fields it parses and validates are the frozen surface.
 - **1.0 promise:** fields documented as stable keep their meaning and shape. New optional
   fields may be added in minors. Removing or repurposing a field, or tightening validation
   in a way that rejects a previously-valid file, is a major-version change.
@@ -45,7 +45,7 @@ are frozen at 1.0 (additional flags may be added; existing flags keep their mean
 - `declaragent ps` / `declaragent logs` / `declaragent down`
 - `declaragent events list` / `declaragent audit verify` / `declaragent dlq list`
 - `declaragent fleet audit-rpc [--suggest-enable] [--strict] [--json]`
-- `declaragent fleet render --format k8s|helm`
+- `declaragent fleet render --target k8s|helm [--format helm|kustomize]`
 - `declaragent fleet run`
 - `declaragent fleet ps` / `events` / `dlq` / `logs [--host <name>] [--json]`
 - `declaragent fleet deploy [--canary --canary-wait-ms <n>]`

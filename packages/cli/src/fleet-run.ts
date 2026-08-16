@@ -61,6 +61,7 @@ import {
   type AuthVerifyRegistry,
   type CapabilitySchemaViolationEmitter,
   type MemoryBus,
+  brokerAddressKind,
   buildAuthVerifyRegistry,
   createMemoryBus,
   createMemoryTransport,
@@ -75,7 +76,9 @@ import {
 import { createLLMHandlerFactory } from './fleet-run-llm-handler.js';
 import { auditDbPath, sessionsDbPath } from './paths.js';
 import { createProviderFromCreds } from './provider-factory.js';
+import { wrapProviderWithRateLimit } from './provider-rate-limit.js';
 import { getPreset } from './providers-registry.js';
+import { buildTransportFactories } from './transport-factories.js';
 import { evaluateZeroTrustPreview, formatZeroTrustBootReject } from './zero-trust-preview.js';
 
 export interface FleetRunIO {
@@ -258,6 +261,16 @@ export interface StartFleetDaemonOptions {
    * @since 0.7.4 — POST_ENTERPRISE_BACKLOG.md #18
    */
   authRegistryByAgent?: ReadonlyMap<string, AuthVerifyRegistry>;
+  /**
+   * WS2 — fail CLOSED on unregistered senders. When `true`, an envelope whose
+   * `from` has no entry in the effective registry is rejected (`unknown-peer`)
+   * instead of falling through to the legacy accept path. `fleetRun` sets this
+   * when `fleet.yaml`/agent `rpc.auth.enabled: true`. Becomes the default at
+   * the 0.8.0 zero-trust cutover. Default false (legacy back-compat).
+   *
+   * @since 0.7.6 — production-readiness WS2
+   */
+  strictAuth?: boolean;
   /**
    * Audit sink used for `auth_check` + `capability_schema_violation`
    * records. Shared across every agent in the fleet — one SQLite handle
@@ -501,6 +514,10 @@ export async function startFleetDaemon(options: StartFleetDaemonOptions): Promis
         // #4 inline verify-auth — now per-agent (#18). Each worker
         // binds to the registry resolved above; sinks remain shared.
         ...(effectiveAuthRegistry !== undefined && { authRegistry: effectiveAuthRegistry }),
+        // WS2 — fail closed on unregistered senders only when a registry is in
+        // play (strict has no meaning without one) and the operator opted in.
+        ...(effectiveAuthRegistry !== undefined &&
+          options.strictAuth === true && { strictAuth: true }),
         ...(options.auditSink !== undefined && { auditSink: options.auditSink }),
         ...(options.authRejectSink !== undefined && {
           authRejectSink: options.authRejectSink,
@@ -567,6 +584,13 @@ interface StartAgentWorkerOptions {
   minFleetVersion?: string;
   // ── #4 inline verify-auth ─────────────────────────────────────────
   authRegistry?: AuthVerifyRegistry;
+  /**
+   * WS2 — fail CLOSED on an unregistered sender. When `true` and an
+   * `authRegistry` is present, an envelope whose `from` has no registry entry
+   * is rejected (`unknown-peer`) instead of falling through to dispatch. Set
+   * by `fleetRun` when `rpc.auth.enabled: true`. Default false (legacy).
+   */
+  strictAuth?: boolean;
   auditSink?: TenantAuditSink;
   authRejectSink?: (entry: {
     envelope: AgentRpcEnvelope;
@@ -581,14 +605,24 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
   const capabilities: string[] = [];
   const topics: string[] = [];
   const detachers: Array<() => void> = [];
-  // Per-agent transport handle — for the memory case today we reuse
-  // the shared memory transport; future per-agent factories could
-  // supply a dedicated instance.
+  // Memory is the always-present fallback transport. The ACTUAL respond
+  // transport is chosen per-envelope from the inbound `replyTo` scheme (see
+  // `selectRespondTransport`) so a request that arrived over Kafka/NATS/… is
+  // answered on that same broker — the WS4 fix for the memory-pinned respond
+  // path that made every cross-host sync round-trip time out.
   const maybeRespond = transports.get('memory');
   if (maybeRespond === undefined) {
     throw new Error('fleet-run requires a memory transport to be wired (internal invariant)');
   }
-  const respondTransport: RpcTransport = maybeRespond;
+  const respondFallback: RpcTransport = maybeRespond;
+  const selectRespondTransport = (envelope: AgentRpcEnvelope): RpcTransport => {
+    const kind = envelope.replyTo ? brokerAddressKind(envelope.replyTo) : undefined;
+    if (kind !== undefined) {
+      const t = transports.get(kind);
+      if (t !== undefined) return t;
+    }
+    return respondFallback;
+  };
   const metricsRef: FleetAgentWorkerMetrics = {
     received: 0,
     responded: 0,
@@ -626,7 +660,7 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
 
     const respond = createRespondHook({
       request: envelope,
-      transport: respondTransport,
+      transport: selectRespondTransport(envelope),
       selfAgent: `agent://${agent.id}`,
     });
 
@@ -725,6 +759,36 @@ function startAgentWorker(opts: StartAgentWorkerOptions): FleetAgentWorker {
           }
           return;
         }
+      } else if (opts.strictAuth) {
+        // WS2 — fail closed: the sender has no registry entry, so it cannot be
+        // verified. Reject rather than fall through to dispatch (closes the
+        // `from: agent://not-in-registry` spoof).
+        await writeAuthCheck(opts, envelope, agent.id, 'reject', 'none', undefined, 'unknown-peer');
+        if (opts.authRejectSink !== undefined) {
+          try {
+            await opts.authRejectSink({
+              envelope,
+              reason: 'auth-rejected',
+              message: `sender ${envelope.from} is not in the auth registry (strict mode)`,
+            });
+          } catch (err) {
+            opts.logger?.err(
+              `fleet.auth.reject-sink-error agent=${agent.id} ${
+                err instanceof Error ? err.message : String(err)
+              }\n`,
+            );
+          }
+        }
+        const error: RpcError = {
+          code: RPC_ERROR_CODES.AUTH_REJECTED,
+          message: `unknown peer ${envelope.from}`,
+        };
+        try {
+          await respond({ ok: false, error });
+        } catch {
+          // ignore — caller times out if transport is dead
+        }
+        return;
       }
     }
 
@@ -969,7 +1033,14 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
       );
       return 1;
     }
-    const provider = createProviderFromCreds({ creds });
+    // Same token-bucket policy as `up` (docs-truth Wave 1: the docs'
+    // "token bucket wraps every provider" claim previously held for
+    // `up` only — fleet-run built a bare provider).
+    const provider = wrapProviderWithRateLimit({
+      provider: createProviderFromCreds({ creds }),
+      providerId: creds.providerId,
+      io,
+    });
     sessionStore = createSqliteSessionStore({ path: sessionsDbPath() });
     const defaultModel = resolveDefaultModel(creds.providerId);
     makeHandler = createLLMHandlerFactory({
@@ -1249,13 +1320,29 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
     }
   }
 
+  // WS4 — supply broker transport factories so declared kafka/nats transports
+  // actually instantiate (previously every non-memory kind warn-skipped because
+  // the CLI passed no factories). Config→constructor mapping lives in
+  // buildTransportFactories (unit-tested); the live connection is exercised by
+  // the integration soak. WS11 — a secret resolver lets a kafka transport's
+  // `sasl.passwordRef` resolve to real broker credentials (TLS via `ssl`).
+  const transportSecretResolver = createDefaultSecretResolver({ fileRoot: root });
+  const transportFactories = buildTransportFactories({
+    fleetName: filteredFleet.manifest.name,
+    resolveSecret: (ref) => transportSecretResolver.resolve(ref),
+  });
+
   const daemon = await startFleetDaemon({
     fleet: filteredFleet,
     ...(makeHandler !== undefined && { makeHandler }),
     ...(peers !== undefined && { peers }),
+    transportFactories,
     io,
     ...(authRegistry !== undefined && { authRegistry }),
     ...(authRegistryByAgent.size > 0 && { authRegistryByAgent }),
+    // WS2 — when the operator enabled rpc.auth, fail closed on unregistered
+    // senders (an opted-in fleet should not silently accept unknown peers).
+    ...(anyAgentHasRpcAuth && { strictAuth: true }),
     ...(auditSink !== undefined && { auditSink }),
     ...(authRejectSink !== undefined && { authRejectSink }),
     ...(peerCapabilities !== undefined && { peerCapabilities }),

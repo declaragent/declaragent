@@ -36,6 +36,8 @@ interface StubConsumer extends KafkaConsumerHandle {
   deliver(msg: KafkaIncomingMessage): Promise<void>;
   fireRebalance(): void;
   readonly committed: Array<{ topic: string; partition: number; offset: string }>;
+  /** Per-topic committed offsets returned by `fetchCommittedOffsets`. */
+  committedOffsets: Record<string, Array<{ partition: number; offset: string }>>;
   readonly seekCalls: Array<{ topic: string; partition: number; offset: string }>;
   readonly paused: Array<readonly { topic: string; partitions?: readonly number[] }[]>;
   readonly resumed: Array<readonly { topic: string; partitions?: readonly number[] }[]>;
@@ -76,6 +78,7 @@ function makeStubClient(): StubClient {
     connected: false,
     connectShouldFail: false,
     committed: [],
+    committedOffsets: {},
     seekCalls: [],
     paused: [],
     resumed: [],
@@ -108,8 +111,8 @@ function makeStubClient(): StubClient {
       rebalanceHandlers.add(h);
       return () => rebalanceHandlers.delete(h);
     },
-    async fetchCommittedOffsets() {
-      return [];
+    async fetchCommittedOffsets(topic: string) {
+      return this.committedOffsets[topic] ?? [];
     },
     async deliver(msg) {
       if (!handler) throw new Error('handler not registered');
@@ -468,17 +471,35 @@ describe('KafkaSourceInstance seek + lag', () => {
     await source.stop();
   });
 
-  test('lag() returns end offsets keyed by topic:partition', async () => {
+  test('lag() returns end − committed per topic:partition (clamped ≥ 0)', async () => {
     const { source, client } = buildInstance();
     client.admin.endOffsets = {
       orders: [
         { partition: 0, offset: '10' },
         { partition: 1, offset: '7' },
+        { partition: 2, offset: '5' },
+      ],
+    };
+    client.consumer.committedOffsets = {
+      orders: [
+        { partition: 0, offset: '4' }, // lag 6
+        { partition: 1, offset: '-1' }, // no commit → fully unconsumed → lag 7
+        { partition: 2, offset: '8' }, // committed ahead of end → clamp to 0
       ],
     };
     await source.start();
     const out = await source.lag();
-    expect(out).toEqual({ 'orders:0': 10, 'orders:1': 7 });
+    expect(out).toEqual({ 'orders:0': 6, 'orders:1': 7, 'orders:2': 0 });
+    await source.stop();
+  });
+
+  test('lag() treats a partition with no committed entry as fully unconsumed', async () => {
+    const { source, client } = buildInstance();
+    client.admin.endOffsets = { orders: [{ partition: 0, offset: '12' }] };
+    client.consumer.committedOffsets = {}; // nothing committed for any partition
+    await source.start();
+    const out = await source.lag();
+    expect(out).toEqual({ 'orders:0': 12 });
     await source.stop();
   });
 

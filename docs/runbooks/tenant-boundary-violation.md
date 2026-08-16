@@ -20,7 +20,9 @@ If the source tenant is a known-good tenant acting unexpectedly, pause
 its runtime to stop further attempts while investigating:
 
 ```bash
-declaragent tenants pause <sourceTenantId>
+# There is no tenant-pause verb — to hard-stop a tenant, remove its
+# channel/source wiring in tenants.yaml + channels.yaml and restart
+# (declaragent down && declaragent up -d)
 ```
 
 ## Root-cause investigation

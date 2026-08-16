@@ -7,6 +7,11 @@
 # fires on an empty vector). That way the ops config for the adapter is
 # complete from day 1 of telemetry wiring.
 
+# ⚠ Metric-emission gap (docs-truth 2026-08-16, backlog #65): the WhatsApp
+# channel does not yet register `channel_conversation_window_*`,
+# `channel_template_sent_total`, or `channel_whatsapp_tier_health` — these rules
+# are the alerting CONTRACT for that work and will not fire until the metrics
+# are emitted.
 groups:
   - name: declaragent.whatsapp
     interval: 30s

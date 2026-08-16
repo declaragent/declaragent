@@ -21,16 +21,18 @@ Decision tree:
 Disable the offending channel instance temporarily:
 
 ```bash
-declaragent channels pause <id>
+# There is no channel-pause verb — comment the channel out of
+# channels.yaml and restart:
+declaragent down && declaragent up -d
 ```
 
-This halts outbound dispatch on `<id>` while leaving inbound
-consumption running, so queued events keep flowing to other channels.
+Removing only the failing channel leaves the other channels' outbound
+flowing after the restart.
 
 ## Root-cause investigation
 ```bash
-# Error-response samples from the last 15 minutes:
-declaragent channels audit query --id <id> --kind outbound --since -15m --outcome failed
+# Outbound channel audit records from the last 15 minutes (filter in jq):
+declaragent audit query --kind channel_outbound --since -15m --json
 
 # Correlate with the platform's status API (Slack / Meta / Discord).
 # Grafana: "Channels" dashboard → "Outbound failure rate" panel.

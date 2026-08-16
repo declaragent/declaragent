@@ -5,6 +5,7 @@ import { createMailbox } from '../events/mailbox.js';
 import type { AgentEvent } from '../events/types.js';
 import { createPrometheusRegistry } from '../observability/prometheus.js';
 import { createPermissionGate } from '../permission/gate.js';
+import { createQuotaTracker } from '../tenancy/quota.js';
 import { FakeProvider } from '../testing/fake-provider.js';
 import { createMemorySession } from '../testing/memory-session.js';
 import { Read } from '../tools/read.js';
@@ -605,6 +606,65 @@ describe('engine — multi-step observability (D2 / Item A step 3)', () => {
     // Two observations now (3 + 1), summing to 4 across both turns.
     expect(sampleValue(afterText, 'declaragent_engine_turn_iterations_count')).toBe(2);
     expect(sampleValue(afterText, 'declaragent_engine_turn_iterations_sum')).toBe(4);
+  });
+
+  test('(WS7) provider golden signals: latency, requests, tokens, cost', async () => {
+    const metrics = createPrometheusRegistry();
+    const engine = createEngine({
+      provider: new FakeProvider([textResponse('hi', { inputTokens: 1_000_000, outputTokens: 0 })]),
+      tools: [],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      metrics,
+    });
+    await engine.runAgent({ session: createMemorySession(), userMessage: 'hi' });
+
+    const scrape = metrics.scrape();
+    expect(sampleValue(scrape, 'declaragent_provider_requests_total')).toBe(1);
+    expect(sampleValue(scrape, 'declaragent_provider_input_tokens_total')).toBe(1_000_000);
+    expect(sampleValue(scrape, 'declaragent_provider_request_duration_ms_count')).toBe(1);
+    // 1M input tokens @ opus $15/1M = $15 cost recorded.
+    expect(sampleValue(scrape, 'declaragent_provider_cost_usd_total')).toBeCloseTo(15, 1);
+    // No errors on the happy path.
+    expect(scrape).not.toContain('declaragent_provider_errors_total');
+  });
+
+  test('(WS7) provider error increments errors_total and rethrows', async () => {
+    const metrics = createPrometheusRegistry();
+    const engine = createEngine({
+      provider: new FakeProvider([]), // out of responses → complete() throws
+      tools: [],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      metrics,
+    });
+    const result = await engine.runAgent({ session: createMemorySession(), userMessage: 'hi' });
+    // The engine surfaces the provider error as a failed turn.
+    expect(result.stopReason).toBe('error');
+    expect(sampleValue(metrics.scrape(), 'declaragent_provider_errors_total')).toBe(1);
+  });
+
+  test('(WS8) dailyTokenUSD spend cap halts the turn fail-closed (quota_exceeded)', async () => {
+    const quotas = createQuotaTracker({ tenant: { id: 't1', quotas: { dailyTokenUSD: 0.0001 } } });
+    const engine = createEngine({
+      // 1M input tokens @ opus $15/1M = $15, far over the $0.0001 cap.
+      provider: new FakeProvider([textResponse('hi', { inputTokens: 1_000_000, outputTokens: 0 })]),
+      tools: [],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      quotas,
+    });
+    const result = await engine.runAgent({ session: createMemorySession(), userMessage: 'hi' });
+    expect(result.stopReason).toBe('quota_exceeded');
+  });
+
+  test('(WS8) spend under the cap completes normally', async () => {
+    const quotas = createQuotaTracker({ tenant: { id: 't1', quotas: { dailyTokenUSD: 1000 } } });
+    const engine = createEngine({
+      provider: new FakeProvider([textResponse('hi')]),
+      tools: [],
+      permissions: createPermissionGate({ mode: 'bypass', rules: [] }),
+      quotas,
+    });
+    const result = await engine.runAgent({ session: createMemorySession(), userMessage: 'hi' });
+    expect(result.stopReason).toBe('end_turn');
   });
 
   test('(b) hitting the maxIterations cap increments the counter and records iterations==cap', async () => {

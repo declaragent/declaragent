@@ -12,7 +12,7 @@ half-right, and the nuance matters:
 
 | Concern | Reality |
 | --- | --- |
-| "Agents are single-prompt." | **False within a turn.** The engine runs perceive→reason→act→observe up to `DEFAULT_MAX_ITERATIONS = 50` tool-use iterations, breaking only when the model returns a non-`tool_use` stop reason (`packages/core/src/engine/engine.ts:32`, `:411`). |
+| "Agents are single-prompt." | **False within a turn.** The engine runs perceive→reason→act→observe up to `DEFAULT_MAX_ITERATIONS = 50` tool-use iterations, breaking only when the model returns a non-`tool_use` stop reason (`packages/core/src/engine/engine.ts:34`, applied at `:261`). |
 | "Agents have no memory." | **True by default across events**, fixable per-route via `sessionKey` (mode 2 below). |
 
 ---
@@ -103,6 +103,98 @@ Pick a key that scopes the conversation you want to persist:
 > **Cardinality is your responsibility.** A key with unbounded cardinality
 > (e.g. per message id) defeats the purpose — every event mints a new pinned
 > session, which is just mode 1 with extra storage. Choose a key that *repeats*.
+
+### Pinning webhook / cron / broker (event-source) routes
+
+Session pinning is not channel-only. **Any** route whose skill target carries a
+`sessionKey` pins — including plain event sources (webhook, cron, file-watch)
+and the Phase-4 broker adapters (Kafka, NATS, JetStream, SQS, AMQP, MQTT). The
+downstream is identical: a non-empty `sessionKey` on the resolved skill
+`EventTarget` makes the dispatcher resolve-or-create one durable session and run
+the event as a new turn on it.
+
+There are two key forms, **static** and **templated**:
+
+#### Static key — works on every source
+
+A `sessionKey` with no `{{ ... }}` placeholder is used verbatim. Every event on
+the route pins the same durable session — useful for a single long-running
+"inbox" agent that accumulates all inbound webhooks/cron fires into one
+transcript.
+
+A **built-in webhook/cron/file-watch** source carries its skill target (and the
+key) directly on the trigger's `target`:
+
+```yaml
+# event-sources.yaml (built-in webhook)
+sources:
+  - id: support-webhook
+    type: webhook
+    target:
+      type: skill
+      name: support
+      sessionKey: support-inbox      # static — one durable session for all hits
+```
+
+A **broker** source carries it on `routing.targetSelector` (the normalizer
+resolves it per message):
+
+```yaml
+# event-sources.yaml (Kafka broker)
+sources:
+  - id: orders-stream
+    type: kafka
+    routing:
+      kindSelector: { const: trigger.fire }
+      targetSelector:
+        type: skill
+        name: order-workflow
+        sessionKey: orders-inbox      # static
+```
+
+#### Templated key — broker / normalizer-based sources only
+
+A `sessionKey` containing `{{ ... }}` is resolved **per-event** against the
+normalized event, so one route can pin a *different* durable session per tenant,
+account, entity, etc. Supported placeholders:
+
+| Placeholder | Resolves to |
+| --- | --- |
+| `{{ $.path }}` / `{{ body.path }}` | a body field, via the same body-rooted JSONPath grammar as `inputs` (e.g. `{{ $.account.id }}`) |
+| `{{ header.<name> }}` | an inbound header value, case-insensitive (e.g. `{{ header.x-tenant }}`) |
+| `{{ source }}` | the source tag's stable id (triggerId / topic / channelId, else its `type`) |
+| `{{ kind }}` | the resolved event kind |
+
+```yaml
+# event-sources.yaml (broker, per-account pinning)
+sources:
+  - id: account-events
+    type: nats
+    routing:
+      kindSelector: { const: trigger.fire }
+      targetSelector:
+        type: skill
+        name: account-agent
+        sessionKey: "acct-{{ $.account_id }}"   # one durable session per account
+```
+
+> **Only normalizer-based (broker) sources template.** Built-in webhook / cron /
+> file-watch emit their `target` verbatim without running the message
+> normalizer, so a `{{ ... }}` placeholder on a built-in source is **not**
+> expanded — it would be treated as a literal static key. Use the **static**
+> form on built-in sources; use **templates** on broker sources (or pre-resolve
+> the value yourself when emitting the event).
+
+#### Fallback — unresolvable templates never throw
+
+If a template can't be fully resolved for a given event — a missing body field
+or header, a value that isn't a scalar (an object/array/null), or a malformed
+JSONPath — that event emits **no** `sessionKey` and falls back to the
+fresh-per-event path (mode 1). It is a documented no-op, **never an error**:
+a malformed `targetSelector.sessionKey` degrades pinning, it does not drop or
+fail the event. (The same `{ unbounded cardinality defeats pinning }` caveat
+above applies to templated keys — pick a field that *repeats*, e.g. an account
+id, not a per-message id.)
 
 ### Guarantees
 
