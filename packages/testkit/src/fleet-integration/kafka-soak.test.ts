@@ -57,7 +57,24 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import type { AgentRpcEnvelope, RpcTransport } from '@declaragent/core';
-import { type MultiProcessHarness, startTwoAgentFleet } from './harness/multi-process.js';
+import { createHmacAuthProvider } from '@declaragent/plugin-agent-rpc';
+import {
+  type MultiProcessHarness,
+  SOAK_HMAC_DEFAULT_SECRET,
+  SOAK_HMAC_KEY_ID,
+  SOAK_HMAC_SECRET_ENV,
+  startTwoAgentFleet,
+} from './harness/multi-process.js';
+
+// WS2 / 0.8.0 strict-mode window: the workers verify fail-closed, so the
+// driver signs every request with the harness's shared HMAC pair — and every
+// response must come back hmac-signed (the workers' respond hook signs).
+// `unsignedResponses` counts violations; the soak asserts it stays 0.
+const driverHmac = createHmacAuthProvider({
+  secret: process.env[SOAK_HMAC_SECRET_ENV] ?? SOAK_HMAC_DEFAULT_SECRET,
+  keyId: SOAK_HMAC_KEY_ID,
+});
+let unsignedResponses = 0;
 
 // ── Configuration ────────────────────────────────────────────────────────
 
@@ -134,6 +151,7 @@ describeSoak('Kafka soak (24h-capable)', () => {
       const entry = pending.get(envelope.correlationId);
       if (entry === undefined) return; // late arrival; already timed out
       pending.delete(envelope.correlationId);
+      if (envelope.auth?.kind !== 'hmac') unsignedResponses += 1;
       entry.resolve(envelope);
     });
 
@@ -188,6 +206,11 @@ describeSoak('Kafka soak (24h-capable)', () => {
 
       // Acceptance #2 — p99 ≤ 3s absolute.
       expect(soakP99).toBeLessThanOrEqual(3_000);
+
+      // WS2 / 0.8.0 window — every response over the 24h run came back
+      // hmac-signed (the workers' respond hook signs; an unsigned reply
+      // means the sign path regressed).
+      expect(unsignedResponses).toBe(0);
 
       // Acceptance #1 — both workers still alive.
       for (const agent of harness.agents.values()) {
@@ -370,6 +393,8 @@ async function drive(inputs: DriveInputs): Promise<number> {
     replyTo: `kafka://${inputs.driverResponsesTopic}`,
     payload: { kind: inputs.kind, seq: inputs.seq, at: Date.now() },
   };
+  // WS2 — the workers verify fail-closed; unsigned requests are rejected.
+  envelope.auth = await driverHmac.sign(envelope);
 
   const sentAt = Date.now();
   const responsePromise = new Promise<AgentRpcEnvelope>((resolve, reject) => {

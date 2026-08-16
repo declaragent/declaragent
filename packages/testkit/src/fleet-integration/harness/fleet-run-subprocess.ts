@@ -53,9 +53,15 @@
  * @since 0.7.1 — post-enterprise backlog item #26
  */
 
-import type { AgentRpcEnvelope, RpcTransport } from '@declaragent/core';
-import { loadFleet } from '@declaragent/core';
-import { createKafkaTransport, createRespondHook } from '@declaragent/plugin-agent-rpc';
+import type { AgentRpcEnvelope, RpcAuth, RpcTransport } from '@declaragent/core';
+import { createDefaultSecretResolver, loadFleet } from '@declaragent/core';
+import {
+  type AuthVerifyRegistry,
+  buildAuthVerifyRegistry,
+  buildOutboundSigner,
+  createKafkaTransport,
+  createRespondHook,
+} from '@declaragent/plugin-agent-rpc';
 import { resolveKafkaJsModule } from './kafkajs-resolver.js';
 
 interface SubprocessConfig {
@@ -137,6 +143,22 @@ async function main(): Promise<void> {
     );
   }
 
+  // WS2 / 0.8.0 strict-mode window: when the fleet declares peers with auth
+  // blocks (the scaffold stamps hmac on every peer), build the SAME verify
+  // registry + outbound signer production `fleet run` uses, verify every
+  // inbound request fail-closed, and sign every response. The soak then
+  // measures the signed path — the exact posture the 0.8.0 flip makes
+  // default — over a real broker for 24h.
+  let authRegistry: AuthVerifyRegistry | undefined;
+  let signOutbound: ((envelope: AgentRpcEnvelope) => Promise<RpcAuth>) | undefined;
+  if (fleet.peers !== undefined) {
+    const resolver = createDefaultSecretResolver({ fileRoot: cfg.fleetRoot });
+    const secrets = (ref: string) => resolver.resolve(ref);
+    authRegistry = await buildAuthVerifyRegistry({ peers: fleet.peers, secrets });
+    const signer = await buildOutboundSigner({ peers: fleet.peers, secrets });
+    if (signer.signablePeers > 0) signOutbound = signer.hook;
+  }
+
   const transport: RpcTransport = await createKafkaTransport({
     brokers: cfg.brokers,
     clientId: cfg.clientId,
@@ -154,13 +176,44 @@ async function main(): Promise<void> {
     emit({ event: 'received', agentId: cfg.agentId, correlationId: envelope.correlationId });
     seq += 1;
 
+    // WS2 — fail-closed verify, mirroring fleet-run's strictAuth path: a
+    // sender with no registry entry or a bad signature is rejected before
+    // the handler runs, and the drop is visible in the event stream.
+    if (authRegistry !== undefined) {
+      const entry = authRegistry.resolve(envelope.from);
+      if (entry === undefined) {
+        emit({
+          event: 'auth-rejected',
+          agentId: cfg.agentId,
+          correlationId: envelope.correlationId,
+          reason: 'unknown-peer',
+        });
+        return;
+      }
+      const verdict = await entry.provider.verify(
+        envelope,
+        entry.config as Parameters<typeof entry.provider.verify>[1],
+      );
+      if (!verdict.ok) {
+        emit({
+          event: 'auth-rejected',
+          agentId: cfg.agentId,
+          correlationId: envelope.correlationId,
+          reason: verdict.reason,
+        });
+        return;
+      }
+    }
+
     // createRespondHook handles replyTo routing + envelope shape. Passing
     // the kafka transport here is the critical difference vs. the fleet-
-    // run.ts path — the respond hop actually crosses the broker.
+    // run.ts path — the respond hop actually crosses the broker. The
+    // signer stamps the response leg (WS2).
     const respond = createRespondHook({
       request: envelope,
       transport,
       selfAgent: selfAddress,
+      ...(signOutbound !== undefined && { signOutbound }),
     });
 
     try {

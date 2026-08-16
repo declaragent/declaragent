@@ -74,6 +74,8 @@ Heed PRP risk 7: bootstrap out-of-band, verify the sentinel on a throwaway
 PR before enabling `enforce_admins`, and keep a documented break-glass.
 
 ## 3 · The strict-mode CI window (flip 1 pre-flight)
+> **✅ WIRED 2026-08-16**: the harness fleet now runs the full zero-trust posture — hmac auth on every peer (driver included), driver-signed requests, fail-closed verify + signed responses in the workers, `unsignedResponses === 0` asserted over the whole soak. `DECLARAGENT_RPC_AUTH_DEFAULT=on` set on the nightly + weekly lanes, and an always-on drift-guard test runs `fleet audit-rpc --strict --dry-run-with-flag` against the scaffold on every CI run. **The ≥14-green-night clock starts with the next scheduled nightly.** Both 0.7.8 warn-windows (flip-2 allowLoopback, flip-3 unknown-key) shipped in the same change, plus the release-flow Biome format fix.
+
 
 `ZERO_TRUST_DEFAULT_MIGRATION.md` §5 recommends **2–3 weeks** of
 `fleet audit-rpc --strict` (plus the preview env var on the integration

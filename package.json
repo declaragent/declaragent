@@ -15,7 +15,7 @@
     "lint:docs": "bun scripts/docs-command-lint.ts && bun scripts/env-vars-lint.ts && bun scripts/metrics-lint.ts && bun scripts/docs-policy-lint.ts",
     "format": "biome format --write .",
     "changeset": "changeset",
-    "version-packages": "changeset version",
+    "version-packages": "changeset version && biome format --write .",
     "release": "bun run build && changeset publish",
     "hooks:install": "bash scripts/install-git-hooks.sh"
   },

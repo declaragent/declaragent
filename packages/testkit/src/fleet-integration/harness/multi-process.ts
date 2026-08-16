@@ -124,6 +124,17 @@ export interface StartTwoAgentFleetOptions {
 // Bun supports `import.meta.url` natively. Resolving the worker path
 // through the module URL lets the harness work whether the caller runs
 // `bun test` from the repo root or from `packages/testkit`.
+/**
+ * WS2 / 0.8.0 strict-mode window — the harness fleet's shared HMAC pair.
+ * The scaffold stamps `secretRef: env:DECLARAGENT_SOAK_HMAC_SECRET` on every
+ * peer; tests set the env var (workers inherit `process.env`) and the driver
+ * signs with the same secret. Exported so the soak driver + the zero-trust
+ * window test agree with the scaffold by construction.
+ */
+export const SOAK_HMAC_KEY_ID = 'soak-k1';
+export const SOAK_HMAC_SECRET_ENV = 'DECLARAGENT_SOAK_HMAC_SECRET';
+export const SOAK_HMAC_DEFAULT_SECRET = 'soak-harness-shared-hmac-secret';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 // The literal-fleet-run subprocess — loads `fleet.yaml` + capabilities
 // via `@declaragent/core` before wiring kafka. See #26 rationale in
@@ -334,6 +345,11 @@ export async function startTwoAgentFleet(
 
   const readyTimeoutMs = opts.readyTimeoutMs ?? 30_000;
 
+  // WS2 — the workers resolve the harness HMAC secret from process.env at
+  // registry build; default it here so a bare local run just works. CI can
+  // override with a real secret without touching the harness.
+  process.env[SOAK_HMAC_SECRET_ENV] ??= SOAK_HMAC_DEFAULT_SECRET;
+
   // #26 — real fleet manifest on disk. The subprocess loads this via
   // `loadFleet`, so any regression in the manifest parser, capabilities
   // validator, or per-agent loader surfaces in soak CI.
@@ -444,7 +460,7 @@ interface ScaffoldOptions {
  *
  * Returns the absolute path to the tempdir; caller owns teardown.
  */
-function scaffoldFleetManifest(opts: ScaffoldOptions): string {
+export function scaffoldFleetManifest(opts: ScaffoldOptions): string {
   const root = mkdtempSync(join(tmpdir(), 'declaragent-soak-fleet-'));
   const agentsDir = join(root, 'agents');
   const alphaDir = join(agentsDir, 'alpha');
@@ -470,6 +486,15 @@ environments:
 `,
   );
 
+  // WS2 / 0.8.0 strict-mode window (RELEASE_0_8_0_PLAN.md §3): every peer —
+  // including the test driver — carries an hmac auth block, so the soak
+  // round-trips run SIGNED and strict-verified over the real broker. The
+  // shared secret resolves via env: so the spawned workers (which inherit
+  // process.env) and the driver agree without any file-side secret.
+  const hmacBlock = `    auth:
+      provider: hmac
+      keyId: ${SOAK_HMAC_KEY_ID}
+      secretRef: env:${SOAK_HMAC_SECRET_ENV}`;
   writeFileSync(
     join(root, 'rpc-peers.yaml'),
     `version: 1
@@ -480,12 +505,21 @@ peers:
         brokers: ["ignored-at-subscribe-time"]
         topics:
           requests: ${opts.alphaRequests}
+${hmacBlock}
   - agent: agent://beta
     transports:
       - kind: kafka
         brokers: ["ignored-at-subscribe-time"]
         topics:
           requests: ${opts.betaRequests}
+${hmacBlock}
+  - agent: agent://driver
+    transports:
+      - kind: kafka
+        brokers: ["ignored-at-subscribe-time"]
+        topics:
+          requests: soak.driver.requests.unused
+${hmacBlock}
 `,
   );
 
@@ -520,6 +554,9 @@ model: claude-haiku-4-5
 systemPrompt: |
   Soak-harness mock agent; never actually invoked since the subprocess
   uses the echo handler in fleet-run-subprocess.ts.
+rpc:
+  auth:
+    enabled: true
 `,
   );
   writeFileSync(

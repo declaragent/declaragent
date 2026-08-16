@@ -75,6 +75,10 @@ jobs:
       - name: Run 24h Kafka soak
         env:
           KAFKA_SOAK: '1'
+          # 0.8.0 strict-mode window (RELEASE_0_8_0_PLAN.md §3): the soak
+          # fleet declares rpc.auth + hmac peers; the driver signs and the
+          # workers verify fail-closed — the 24h run measures the SIGNED path.
+          DECLARAGENT_RPC_AUTH_DEFAULT: 'on'
           KAFKA_BROKERS: localhost:19092
           KAFKA_SOAK_DURATION_MS: ${{ github.event.inputs.duration-ms || '86400000' }}
           KAFKA_SOAK_RATE_HZ: ${{ github.event.inputs.rate-hz || '1' }}

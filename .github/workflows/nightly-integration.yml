@@ -65,6 +65,11 @@ jobs:
         env:
           FLEET_INTEGRATION: '1'
           KAFKA_BROKERS: localhost:19092
+          # 0.8.0 strict-mode window (RELEASE_0_8_0_PLAN.md §3): rehearse the
+          # zero-trust default flip nightly. Any fleet-run-booted fleet in the
+          # suite fails fast if a peer-using agent lacks an explicit
+          # rpc.auth.enabled value.
+          DECLARAGENT_RPC_AUTH_DEFAULT: 'on'
         run: |
           set -euo pipefail
           RETRIES="${{ github.event.inputs.retries || '3' }}"
@@ -127,6 +132,8 @@ jobs:
         env:
           NATS_INTEGRATION: '1'
           NATS_SERVERS: nats://localhost:4222
+          # 0.8.0 strict-mode window — same rehearsal as the Kafka lane.
+          DECLARAGENT_RPC_AUTH_DEFAULT: 'on'
         run: |
           set -euo pipefail
           RETRIES="${{ github.event.inputs.retries || '3' }}"

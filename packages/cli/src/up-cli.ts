@@ -81,6 +81,7 @@ import {
   eventsRoute,
   healthRoute,
   isRpcAuthDefaultFlagOn,
+  lintUnknownTopLevelKeys,
   loadAgent,
   loadFleet,
   loadPeersConfig,
@@ -101,6 +102,7 @@ import {
 } from '@declaragent/core';
 import type { ResolveLogPaths } from '@declaragent/core';
 import { type AuthVerifyRegistry, buildAuthVerifyRegistry } from '@declaragent/plugin-agent-rpc';
+import { parse as parseYaml } from 'yaml';
 import { acquireTenantAuditSink, releaseTenantAuditSink } from './audit-sink-singleton.js';
 import { resolveCredentials } from './auth.js';
 import { type ChannelRuntime, startChannelRuntime } from './channels-runtime.js';
@@ -784,6 +786,14 @@ async function runForeground(
         io.out(
           `  control-plane auth enabled (provider: ${cpResolution.cfg.provider}, source: ${sourceDesc}, allowLoopback: ${loopbackDesc}${routeScopeSuffix})\n`,
         );
+        // 0.8.0 warn-window (flip 2, RELEASE_0_8_0_PLAN.md §4): with auth
+        // configured, `allowLoopback` currently defaults to TRUE — loopback
+        // callers bypass bearer auth. 0.8.0 flips that default to false.
+        if (cpResolution.cfg.allowLoopback === undefined) {
+          io.err(
+            '⚠ controlPlane.auth is enabled but allowLoopback is unset — it defaults to true today (loopback callers bypass bearer auth) and this default flips to FALSE at 0.8.0. Set `allowLoopback: true` explicitly to keep the current behaviour, or `false` to adopt the 0.8.0 posture now.\n',
+          );
+        }
       } catch (err) {
         io.err(
           `⚠ control-plane auth failed to initialise — ${err instanceof Error ? err.message : String(err)}. Falling back to no-auth (loopback-only bind still protects the port).\n`,
@@ -991,6 +1001,21 @@ async function bringUp(
     throw err;
   }
   const agentId = loaded.spec.name;
+  // 0.8.0 warn-window (flip 3, RELEASE_0_8_0_PLAN.md §4): unknown top-level
+  // keys are silently dropped today — a `rcp:` typo disables RPC auth with
+  // no signal. Surface them loudly at boot; the 0.8.0 strict schema makes
+  // this a boot FAILURE.
+  try {
+    const rawDoc = parseYaml(readFileSync(join(agentDir, 'agent.yaml'), 'utf8'));
+    for (const key of lintUnknownTopLevelKeys(rawDoc)) {
+      io.err(
+        `⚠ ${agentId}: unknown top-level key "${key}" in agent.yaml — parsed but consumed by nothing (likely a typo). This becomes a boot failure at 0.8.0. Run \`declaragent agent validate ${agentDir}\` to check.\n`,
+      );
+    }
+  } catch {
+    // agent.yaml was loadable above; a re-read/parse hiccup here must not
+    // block boot — the warn-window is advisory.
+  }
   const logger = openAgentLog(agentId);
   const coreLogger = agentLoggerToCoreLogger(logger);
 
