@@ -1,29 +1,223 @@
 /**
- * Declaragent docs — theme overrides.
- * Keep this file small; most colors use Docusaurus' Infima defaults.
+ * Declaragent docs — "audit-ledger / terminal" theme to match declaragent.dev.
+ * Teal signature, JetBrains Mono headings + Inter body, ✓/◐/○ status system.
  */
 
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap");
+
 :root {
-  --ifm-color-primary: #2563eb;
-  --ifm-color-primary-dark: #1d4ed8;
-  --ifm-color-primary-darker: #1e40af;
-  --ifm-color-primary-darkest: #1e3a8a;
-  --ifm-color-primary-light: #3b82f6;
-  --ifm-color-primary-lighter: #60a5fa;
-  --ifm-color-primary-lightest: #93c5fd;
-  --ifm-code-font-size: 92%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --ifm-color-primary: #0d9488;
+  --ifm-color-primary-dark: #0c8278;
+  --ifm-color-primary-darker: #0b7a70;
+  --ifm-color-primary-darkest: #09645c;
+  --ifm-color-primary-light: #14b8a6;
+  --ifm-color-primary-lighter: #2dd4bf;
+  --ifm-color-primary-lightest: #5eead4;
+  --ifm-font-family-base: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --ifm-font-family-monospace: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ifm-heading-font-family: "JetBrains Mono", ui-monospace, monospace;
+  --ifm-heading-font-weight: 700;
+  --ifm-code-font-size: 90%;
+  --ifm-navbar-background-color: rgba(255, 255, 255, 0.85);
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+
+  --dg-ok: #16a34a;
+  --dg-warn: #d97706;
 }
 
 [data-theme="dark"] {
-  --ifm-color-primary: #60a5fa;
-  --ifm-color-primary-dark: #3b82f6;
-  --ifm-color-primary-darker: #2563eb;
-  --ifm-color-primary-darkest: #1d4ed8;
-  --ifm-color-primary-light: #93c5fd;
-  --ifm-color-primary-lighter: #bfdbfe;
-  --ifm-color-primary-lightest: #dbeafe;
-  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+  --ifm-color-primary: #5eead4;
+  --ifm-color-primary-dark: #2dd4bf;
+  --ifm-color-primary-darker: #14b8a6;
+  --ifm-color-primary-darkest: #0d9488;
+  --ifm-color-primary-light: #99f6e4;
+  --ifm-color-primary-lighter: #ccfbf1;
+  --ifm-color-primary-lightest: #f0fdfa;
+  --ifm-background-color: #090b10;
+  --ifm-background-surface-color: #0d1018;
+  --ifm-navbar-background-color: rgba(9, 11, 16, 0.8);
+  --ifm-footer-background-color: #0b0e14;
+  --ifm-toc-border-color: #222a39;
+  --ifm-color-emphasis-200: #222a39;
+  --ifm-color-emphasis-300: #2f3950;
+  --docusaurus-highlighted-code-line-bg: rgba(94, 234, 212, 0.1);
+
+  --dg-ok: #4ade80;
+  --dg-warn: #f5b14b;
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.02em;
+}
+
+[data-theme="dark"] .navbar {
+  border-bottom: 1px solid #222a39;
+  backdrop-filter: blur(12px);
+}
+.navbar__title {
+  font-family: var(--ifm-font-family-monospace);
+  font-weight: 700;
+}
+
+/* ===== Landing page (intro.mdx slug:/) ================================== */
+.dhome {
+  max-width: 980px;
+  margin: 0 auto;
+}
+.dhome__hero {
+  padding: 1.5rem 0 2.5rem;
+  border-bottom: 1px solid var(--ifm-toc-border-color, #e3e8ef);
+  margin-bottom: 2.5rem;
+}
+.dhome__kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+  color: var(--ifm-color-emphasis-700);
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 999px;
+  padding: 0.3rem 0.8rem;
+  margin: 0 0 1.2rem;
+}
+.dhome__sq {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--ifm-color-primary);
+  box-shadow: 0 0 8px var(--ifm-color-primary);
+}
+.dhome__hero h1 {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: clamp(2rem, 5vw, 3.1rem);
+  line-height: 1.08;
+  margin: 0 0 1rem;
+  font-weight: 800;
+}
+.dhome__hero h1 code {
+  background: none;
+  border: none;
+  color: var(--ifm-color-primary);
+  padding: 0;
+  font-size: inherit;
+}
+.dhome__sub {
+  font-size: 1.1rem;
+  color: var(--ifm-color-emphasis-800);
+  max-width: 38rem;
+  margin-bottom: 1.4rem;
+}
+.dhome__hero pre {
+  max-width: 24rem;
+}
+.dhome__meta {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.82rem;
+  color: var(--ifm-color-emphasis-700);
+  margin-top: 1rem;
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-right: 0.15rem;
+}
+.dot--ok {
+  background: var(--dg-ok);
+}
+.dot--warn {
+  background: var(--dg-warn);
+}
+
+/* card grid */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  margin: 1.5rem 0 0;
+}
+.dcard {
+  display: block;
+  padding: 1.4rem 1.3rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 14px;
+  background: var(--ifm-background-surface-color);
+  text-decoration: none !important;
+  color: inherit;
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+}
+.dcard:hover {
+  border-color: var(--ifm-color-primary);
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px -12px rgba(45, 212, 191, 0.3);
+}
+.dcard__n {
+  font-family: var(--ifm-font-family-monospace);
+  font-weight: 800;
+  font-size: 0.8rem;
+  color: var(--ifm-color-primary);
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: 6px;
+  padding: 0.1rem 0.45rem;
+}
+.dcard h3 {
+  font-family: var(--ifm-font-family-monospace);
+  margin: 0.7rem 0 0.4rem;
+  font-size: 1.1rem;
+}
+.dcard p {
+  margin: 0;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.92rem;
+}
+
+/* status ledger */
+.dledger {
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--ifm-background-surface-color);
+}
+.dledger__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.8rem 1.2rem;
+  align-items: center;
+  padding: 0.85rem 1.2rem;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  font-size: 0.92rem;
+}
+.dledger__row:first-child {
+  border-top: 0;
+}
+.dgrade {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dgrade--ok {
+  color: var(--dg-ok);
+}
+.dgrade--warn {
+  color: var(--dg-warn);
+}
+
+.dhome__note {
+  margin-top: 1.5rem;
+  padding: 1.1rem 1.3rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-left: 3px solid var(--ifm-color-primary);
+  border-radius: 12px;
+  background: var(--ifm-background-surface-color);
+  font-size: 0.92rem;
+  color: var(--ifm-color-emphasis-800);
 }
 
 .todo-block {
@@ -32,4 +226,17 @@
   border-left: 4px solid var(--ifm-color-warning);
   background: rgba(255, 196, 0, 0.08);
   font-size: 0.95em;
+}
+
+@media (max-width: 720px) {
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
+  .dledger__row {
+    grid-template-columns: 1fr;
+    gap: 0.3rem;
+  }
+  .dgrade {
+    font-size: 0.75rem;
+  }
 }

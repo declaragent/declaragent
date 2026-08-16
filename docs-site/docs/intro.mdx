@@ -1,58 +1,79 @@
 ---
 id: intro
-title: Declaragent
+title: Declaragent docs
+description: Declarative, git-versioned AI agents. One agent.yaml. git log. Open source.
 slug: /
 sidebar_position: 1
+hide_table_of_contents: true
 ---
 
-# Declaragent
+<div className="dhome">
 
-**An agent for enterprises to build and manage fleets of agents.**
+<div className="dhome__hero">
+  <p className="dhome__kicker"><span className="dhome__sq"></span>open source · apache-2.0 · v0.7.6 on npm</p>
 
-One `agent.yaml` in git describes identity, capabilities, tools, skills, event sources, channels, secrets, and who can call whom. One CLI — `declaragent` — is itself an agent built on `@declaragent/core`, the same runtime you'd ship to production. No second implementation, no vendor dashboard locked out of your repo.
+# Ship an `agent.yaml`, not a prototype.
 
-## The five pillars
+<p className="dhome__sub">
+Declaragent is a declarative, git-versioned runtime for AI agents. One
+<code>agent.yaml</code> in your repo describes identity, tools, skills, channels,
+permissions, secrets and deploy — <strong>no hidden console, no vendor dashboard</strong>.
+<code>git log</code> is the source of truth.
+</p>
 
-1. **Define** agents declaratively — capabilities, skills, inbound + outbound channels, peers to call.
-2. **Deploy + monitor** fleets — one-command rollout, rolling + canary strategies, Prometheus metrics out of the box (OpenTelemetry span export opt-in).
-3. **Independent by default** — each agent owns its session, secrets, and sources. Delegation between agents is explicit via `rpc-peers.yaml`.
-4. **Tools + MCP** — seven built-in tools, MCP server support (stdio via `mcp add`; HTTP/SSE via config), plugin-contributed extensions.
-5. **Conversational builder** — converse a deployable fleet into existence (`DECLARAGENT_BUILDER=on`), with recorded-conversation regression fixtures replayed in CI.
+```bash
+npm i -g @declaragent/cli
+```
 
-See [FIRST_PRINCIPLES_AUDIT.md](https://github.com/declaragent/declaragent/blob/main/docs/FIRST_PRINCIPLES_AUDIT.md) for an evidence-backed map of intent → code.
-
-## Where to go next
-
-<div className="card-grid">
-
-- **[Quickstart →](/quickstart)** — the 10-minute path. Install, run `declaragent init`, observe it with Prometheus + OTel.
-- **[Reference →](/reference)** — the `agent.yaml` schema, CLI verbs, env vars, provider matrix, extension registry.
-- **[Cookbook →](/cookbook)** — walkthroughs for each template and cross-cutting recipes (multi-agent fleets, deploys, secrets rotation, multi-tenant).
-- **[Troubleshooting →](/troubleshooting)** — error-code reference, install + deploy flowcharts, runbook index.
+<p className="dhome__meta">
+  <span className="dot dot--ok" /> single-machine production-ready ·
+  <span className="dot dot--warn" /> enterprise primitives in preview ·
+  <a href="https://declaragent.dev">declaragent.dev →</a>
+</p>
 
 </div>
 
-## Status
+<div className="card-grid">
+  <a className="dcard" href="/quickstart">
+    <span className="dcard__n">01</span>
+    <h3>Quickstart →</h3>
+    <p>The 10-minute path. Install, <code>declaragent init</code>, run it, watch it with Prometheus + OTel.</p>
+  </a>
+  <a className="dcard" href="/reference">
+    <span className="dcard__n">02</span>
+    <h3>Reference →</h3>
+    <p>The <code>agent.yaml</code> + <code>fleet.yaml</code> schema, every CLI verb, env vars, providers, MCP, RPC, observability.</p>
+  </a>
+  <a className="dcard" href="/cookbook">
+    <span className="dcard__n">03</span>
+    <h3>Cookbook →</h3>
+    <p>Templates and recipes — concierge, PR-review, multi-tenant, GitOps, SIEM export, zero-trust RPC, cross-host fleets.</p>
+  </a>
+  <a className="dcard" href="/troubleshooting">
+    <span className="dcard__n">04</span>
+    <h3>Troubleshooting →</h3>
+    <p>Error-code reference, install + deploy flowcharts, and the operational runbook index.</p>
+  </a>
+</div>
 
-This site tracks the **0.7.x** line (`@declaragent/cli@0.7.6` latest on npm). See the [changelog](https://github.com/declaragent/declaragent/releases) for the per-release deltas.
+## The five pillars
 
-## Shipped in 0.6.0
+<div className="dledger">
+  <div className="dledger__row"><span><strong>Define agents</strong> — capabilities, skills, inbound + outbound channels, peers</span><span className="dgrade dgrade--ok">✓ single-machine</span><span className="dgrade dgrade--warn">◐ enterprise</span></div>
+  <div className="dledger__row"><span><strong>Deploy + monitor fleets</strong> — up/down/ps/logs, Prometheus, OpenTelemetry</span><span className="dgrade dgrade--ok">✓ single-machine</span><span className="dgrade dgrade--warn">◐ enterprise</span></div>
+  <div className="dledger__row"><span><strong>Independent agents</strong> — own session + secrets; optional delegation via Kafka/NATS RPC (SQS/AMQP/MQTT as library transports)</span><span className="dgrade dgrade--ok">✓ single-machine</span><span className="dgrade dgrade--warn">◐ enterprise</span></div>
+  <div className="dledger__row"><span><strong>Tools + MCP</strong> — 7 built-ins (+ SendMessage with channels), MCP (stdio verb; HTTP/SSE via config), npm plugins</span><span className="dgrade dgrade--ok">✓ single-machine</span><span className="dgrade dgrade--warn">◐ enterprise</span></div>
+  <div className="dledger__row"><span><strong>Conversational builder</strong> — describe a fleet in chat, review the plan, <code>git commit</code></span><span className="dgrade dgrade--ok">✓ single-machine</span><span className="dgrade dgrade--warn">◐ enterprise</span></div>
+</div>
 
-- **Prometheus `/metrics` endpoint** _(Slice 1)_ — scrape on `127.0.0.1:9464` when running `declaragent up -d`. Source + channel counters flow through the shared registry automatically.
-- **OpenTelemetry span export (opt-in)** _(Slice 2)_ — set `OTEL_EXPORTER_OTLP_ENDPOINT` and install the optional `@opentelemetry/*` peer deps; `up` then wires the bridged tracer into every source + channel (spans today: `source.message`, `channel.outbound.send`, `channel.outbound.edit`).
-- **Per-skill circuit breakers** _(Slice 3)_ — 10 consecutive failures trip the breaker, 30-s cooldown, half-open probe re-closes. State + transitions exported as Prometheus counters. `declaragent events list --state circuit-open` filter.
-- **Default provider rate limits** _(Slice 4)_ — token bucket at the LLM call site. Anthropic 50 rps / OpenRouter 20 rps / unknown 10 rps. Env escape hatches for loud-dev workloads.
-- **Dispatch DLQ** _(Slice 5)_ — `rejected_events` table tracks every rejected dispatch; `declaragent dlq list/show/drop --kind dispatch` for audit + acknowledge.
-- **Inbound channels → skills** _(Slice 6)_ — `channels.json#inbound.routes` maps Slack mentions / Telegram DMs / Discord / WhatsApp events to skills with one line of config.
-- **Kafka RPC transport** _(Slice 7)_ — `createKafkaTransport` carries `RequestAgent` envelopes across processes. Nightly integration CI against Redpanda.
-- **Canary fleet deploys** _(Slice 8)_ — `declaragent fleet deploy --canary --canary-wait-ms <n>`: deploy one agent, soak, re-probe, then roll out the rest. Auto-rollback on post-soak failure.
+<div className="dhome__note">
+  <strong>Honest status.</strong> Single-machine production is shipping on npm today.{" "}
+  <strong>Enterprise is ◐, on purpose</strong> — the primitives are built and tested, but
+  not yet soak-proven at scale, third-party pen-tested, or running in anyone's production
+  but the maintainer's. Every grade is backed by a test or a <code>file:line</code> in{" "}
+  <a href="https://github.com/declaragent/declaragent/blob/main/AGENTS.md">AGENTS.md</a>.
+  See the <a href="https://github.com/declaragent/declaragent/releases">changelog</a> for
+  per-release deltas.
+</div>
 
-## What's new in 0.5.x (shipped)
-
-The five runtime-activation slices that unlocked end-to-end 0.6.0 work:
-
-- **External source adapter discovery** _(0.5.0)_ — `declaragent up` now auto-discovers `@declaragent/source-*` packages installed in `node_modules`. Kafka, NATS, SQS, AMQP, MQTT all start when installed.
-- **MCP runtime activation** _(0.5.0–0.5.1)_ — stdio + HTTP + SSE + OAuth PKCE + `@server:resource` references.
-- **Channel runtime + `SendMessage`** _(0.5.0)_ — `up` spins every channel in `channels.json`; skills can call `SendMessage({kind:'channel', …})` without plugin wiring.
-- **Plugin runtime activation** _(0.5.0)_ — consented plugins load at `up` time, contributing tools / skills / commands / hooks.
-- **Non-memory RPC transports + `RequestAgent`** _(0.5.0)_ — `declaragent fleet run` honors every transport kind declared in `capabilities.yaml`; `RequestAgent` is appended to the per-agent tool list when `rpc-peers.yaml` is present.
+</div>
