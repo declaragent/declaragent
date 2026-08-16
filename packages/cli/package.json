@@ -1,6 +1,6 @@
 {
   "name": "@declaragent/cli",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "description": "The Declaragent CLI — REPL, runtime daemon (up/ps/logs/down), event sources, channels, MCP, fleets, and deploy artifact generation for the declarative AI agent platform.",
   "license": "Apache-2.0",
   "type": "module",
@@ -32,8 +32,8 @@
     "postinstall": "node ./bin/postinstall.js"
   },
   "dependencies": {
-    "@declaragent/core": "^0.6.0",
-    "@declaragent/plugin-agent-rpc": "^5.0.0",
+    "@declaragent/core": "^0.6.1",
+    "@declaragent/plugin-agent-rpc": "^5.1.0",
     "ink": "^5.0.1",
     "ink-text-input": "^6.0.0",
     "react": "^18.3.1",

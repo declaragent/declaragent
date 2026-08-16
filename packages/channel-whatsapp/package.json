@@ -23,10 +23,10 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@declaragent/core": "^0.6.0"
+    "@declaragent/core": "^0.6.1"
   },
   "devDependencies": {
-    "@declaragent/testkit": "^5.0.0"
+    "@declaragent/testkit": "^6.0.0"
   },
   "declaragent": {
     "kind": "channel-adapter",

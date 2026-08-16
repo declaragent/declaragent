@@ -1,5 +1,33 @@
 # @declaragent/cli
 
+## 0.7.8
+
+### Patch Changes
+
+- 1e85914: `fleet deploy` gains its first real adapter (WS6): **`createKubectlDeployTarget`**, registered by default for `deploy.targets{}.<key>.kind: kubectl`. It deploys the `fleet render --target k8s` output per agent — `kubectl apply` the agent manifest (namespace manifest first), stamp `DECLARAGENT_FLEET_VERSION` (+ injected env) via `kubectl set env`, then block on `kubectl rollout status`; health checks read `availableReplicas`, rollback is `kubectl rollout undo`. Config keys pass through fleet.yaml: `renderDir` (default `./render`), `namespace` (default fleet name), `context`, `rolloutTimeoutSec`. Verified live on minikube: `declaragent fleet deploy --target k8s` brought up a two-agent fleet with rolling strategy, per-agent rollout waits, artifact reporting, and the deploy history ledger. The kubectl shell-out is injectable, so the adapter is fully unit-tested without a cluster.
+- 87ae87a: WS2 — outbound envelope signing wired into the fleet runtime (RELEASE_0_8_0_PLAN.md §B1, the hard blocker for the 0.8.0 zero-trust flip):
+
+  - **`buildOutboundSigner`** (plugin-agent-rpc): sign-side counterpart of `buildAuthVerifyRegistry`. Builds one provider per peer with an `auth:` block and returns a `signOutbound`-compatible hook that dispatches on the envelope's destination — outbound to peer B is signed with the credentials shared with B (HMAC: the pair's secret + keyId). Destinations without an `auth:` block keep the legacy `internal` stamp, so mixed fleets sign exactly where a verifier expects a signature.
+  - **Response-leg signing**: `createRespondHook` accepts `signOutbound`, replacing the hard-coded `auth:{kind:'internal'}` on replies.
+  - **`fleet run` wires both legs**: signers are built at boot from the fleet-root and per-agent `rpc-peers.yaml` (same per-agent-wins selection as the verify registries) and threaded into every `RequestAgent` tool (request leg) and every worker's respond hook (response leg). A signer that cannot be built under `rpc.auth` (e.g. unresolvable `secretRef`) **aborts boot** with an actionable error instead of shipping a fleet whose delegations would all be rejected.
+  - **`fleet audit-rpc` sign-side findings**: peers without an `auth:` block are reported (`no-auth-block`, fails `--strict` — at 0.8.0 outbound to them breaks) and `provider: oidc` peers are flagged as verify-only for the built-in signer.
+
+  With this, the WS2 flagship scenario passes: strict verify ON + HMAC configured on both sides → built-in delegation succeeds end-to-end with both legs signed (previously rejected `wrong-kind`).
+
+- 69c84ee: 0.8.0 strict-mode window wired + the two remaining warn-windows (RELEASE_0_8_0_PLAN.md §3/§4):
+
+  - **Soak/nightly fleets now run the zero-trust posture**: the multi-process harness scaffold stamps `rpc.auth.enabled: true` on every agent and an hmac `auth:` block on every peer (including the test driver, secret via `env:DECLARAGENT_SOAK_HMAC_SECRET`). The soak driver signs every request, the workers verify fail-closed with the production `buildAuthVerifyRegistry` and sign every response with `buildOutboundSigner`, and the soak asserts zero unsigned replies — the 24h run measures the signed path the 0.8.0 flip makes default.
+  - **Always-on drift guard** (`zero-trust-window.test.ts`): scaffolds the harness fleet and runs the real `fleet audit-rpc --strict --json --dry-run-with-flag` CLI against it on every test run — stripping auth from the harness fails CI immediately.
+  - **Nightly + weekly workflows** run with `DECLARAGENT_RPC_AUTH_DEFAULT=on` (the 0.8.0 preview), starting the ≥14-green-night window.
+  - **Flip-2 warn-window** (`up`): when `controlPlane.auth` is enabled but `allowLoopback` is unset, boot now warns that the default (true) flips to false at 0.8.0.
+  - **Flip-3 warn-window** (`up`): unknown top-level `agent.yaml` keys (the `rcp:` typo class) are now warned at boot, naming the 0.8.0 strict-schema failure and pointing at `agent validate`.
+  - **Release flow**: `version-packages` re-formats with Biome after `changeset version`, so Version Packages PRs stop landing npm-formatted package.jsons that red the (now branch-protection-required) lint check.
+
+- Updated dependencies [8a36fd3]
+- Updated dependencies [87ae87a]
+  - @declaragent/core@0.6.1
+  - @declaragent/plugin-agent-rpc@5.1.0
+
 ## 0.7.7
 
 ### Patch Changes
