@@ -133,6 +133,9 @@ feature worth building; the docs now describe shipped behavior only.
 | #66 | Version tokens in docs-site prose — inject the real npm version at build time (Docusaurus token/component) + lint against stale literals | DOCS_TRUTH_PLAN Wave 3 mechanism 5 |
 | #67 | Defaults-matrix test — one table-driven spec asserting each documented default (metrics port, webhook port, drain deadline, subagentDepthCap, maxTokens, burst) against the exported constants | DOCS_TRUTH_PLAN Wave 3 mechanism 6 |
 | #68 | Reference-resolver CI — migrate evidence-doc citations (AGENTS.md, FIRST_PRINCIPLES_*) to `symbol @ path` form and assert the symbol exists in the file | DOCS_TRUTH_PLAN Wave 3 mechanism 8 |
+| #69 | Skill-template event variables: document `{{__event}}` + `target.inputs` as the dispatcher-provided variables, and add a template-vars lint so shipped skills can't reference undefined ones (the oncall-escalator `{{alerts}}` bug shipped broken; found live in the 2026-08 k8s sandbox) | oncall-escalator template, skills reference |
+| #70 | `tools.defaults: []` is indistinguishable from absent (`declared.length === 0` in resolve-tools; loader erases the distinction) — a zero-tool agent cannot be declared. Must be fixed before/with the 0.8.0 tools default flip | resolve-tools.ts, load-agent.ts |
+| #71 | k8s renderer: first-class `skills/` delivery (second ConfigMap + mount, matching the documented follow-up) instead of operator-side overlays | k8s-renderer.ts |
 
 ---
 

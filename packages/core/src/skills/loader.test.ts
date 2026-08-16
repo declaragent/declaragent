@@ -142,4 +142,22 @@ describe('loadSkills', () => {
     expect(result.skills[0]?.descriptor.kind).toBe('skill');
     expect(result.skills[0]?.descriptor.source).toEqual({ type: 'user' });
   });
+
+  test('loads skills exposed as symlinks (Kubernetes ConfigMap volume layout)', async () => {
+    // ConfigMap volumes expose files as `name.md -> ..data/name.md`
+    // symlinks; the walker must not drop them (isFile() is false for
+    // symlink dirents). Mirror that layout exactly.
+    const skillsDir = path.join(tmpRoot, 'skills');
+    const dataDir = path.join(skillsDir, '..data-snapshot');
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(
+      path.join(dataDir, 'classify.md'),
+      '---\nname: classify\ndescription: D\n---\nbody',
+      'utf8',
+    );
+    await fs.symlink(path.join(dataDir, 'classify.md'), path.join(skillsDir, 'classify.md'));
+    const result = await loadSkills({ sources: [{ tier: { type: 'user' }, dir: skillsDir }] });
+    expect(result.errors).toEqual([]);
+    expect(result.skills.map((s) => s.descriptor.id)).toEqual(['skill:user:classify']);
+  });
 });

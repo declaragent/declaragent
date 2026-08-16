@@ -21,10 +21,11 @@ outputs:
 
 # Triage skill
 
-You received an Alertmanager firing:
+You received an Alertmanager firing. The framed inbound event (the
+webhook's JSON body is in its payload) is:
 
 ```
-{{alerts}}
+{{__event}}
 ```
 
 Produce a single Slack message summarizing the firing. Follow this

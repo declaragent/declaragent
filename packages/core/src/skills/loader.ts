@@ -100,7 +100,11 @@ async function readSkillFiles(dir: string): Promise<string[]> {
   }
   const out: string[] = [];
   for (const entry of entries) {
-    if (entry.isFile() && entry.name.endsWith('.md')) {
+    // Symlinks count: Kubernetes ConfigMap volumes expose every file as a
+    // symlink into the `..data` snapshot dir, so `isFile()` alone silently
+    // drops every ConfigMap-mounted skill. A symlink that doesn't resolve
+    // to a readable file surfaces as a per-file load error downstream.
+    if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith('.md')) {
       out.push(path.join(dir, entry.name));
     }
   }
