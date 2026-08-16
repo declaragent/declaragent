@@ -76,6 +76,7 @@ import {
 import { createLLMHandlerFactory } from './fleet-run-llm-handler.js';
 import { auditDbPath, sessionsDbPath } from './paths.js';
 import { createProviderFromCreds } from './provider-factory.js';
+import { wrapProviderWithRateLimit } from './provider-rate-limit.js';
 import { getPreset } from './providers-registry.js';
 import { buildTransportFactories } from './transport-factories.js';
 import { evaluateZeroTrustPreview, formatZeroTrustBootReject } from './zero-trust-preview.js';
@@ -1032,7 +1033,14 @@ export async function fleetRun(args: FleetRunArgs = {}, deps: FleetRunDeps = {})
       );
       return 1;
     }
-    const provider = createProviderFromCreds({ creds });
+    // Same token-bucket policy as `up` (docs-truth Wave 1: the docs'
+    // "token bucket wraps every provider" claim previously held for
+    // `up` only — fleet-run built a bare provider).
+    const provider = wrapProviderWithRateLimit({
+      provider: createProviderFromCreds({ creds }),
+      providerId: creds.providerId,
+      io,
+    });
     sessionStore = createSqliteSessionStore({ path: sessionsDbPath() });
     const defaultModel = resolveDefaultModel(creds.providerId);
     makeHandler = createLLMHandlerFactory({

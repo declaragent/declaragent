@@ -75,7 +75,6 @@ import {
   createSqliteMemoryStore,
   createSqliteSessionStore,
   createToolRateLimitGate,
-  defaultRateForProvider,
   dlqDropRoute,
   dlqRequeueRoute,
   dlqRoute,
@@ -99,7 +98,6 @@ import {
   startHeartbeat,
   startOtelSdk,
   statusRoute,
-  withProviderRateLimit,
 } from '@declaragent/core';
 import type { ResolveLogPaths } from '@declaragent/core';
 import { type AuthVerifyRegistry, buildAuthVerifyRegistry } from '@declaragent/plugin-agent-rpc';
@@ -117,6 +115,7 @@ import {
 import { auditDbPath, configDir, sessionsDbPath } from './paths.js';
 import { type PluginRuntime, startPluginRuntime } from './plugins-runtime.js';
 import { createProviderFromCreds } from './provider-factory.js';
+import { wrapProviderWithRateLimit } from './provider-rate-limit.js';
 import { resolveRuntimeTools } from './resolve-tools.js';
 import { type StartAgentSourcesResult, startAgentSources } from './run-agent-sources.js';
 import {
@@ -476,7 +475,7 @@ async function runForeground(
   //   DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1 → skip wrapping entirely
   //   DECLARAGENT_PROVIDER_RATE_LIMIT_RPS=<n>  → override the default
   const provider = creds
-    ? wrapProviderWithRateLimit({
+    ? wrapProviderWithMetrics({
         provider: createProviderFromCreds({ creds }),
         providerId: creds.providerId,
         metrics,
@@ -2035,46 +2034,20 @@ function buildUpStatusSnapshot(state: UpState, running: RunningAgent[]): UpStatu
  * @since 0.6.0-slice.2
  */
 /**
- * Apply the default provider-level rate limiter from Slice 4. Emits
- * wait counters + a histogram through the shared metrics registry so
- * the Prometheus endpoint surfaces the throttle activity. Env var
- * escape hatches:
- *
- *   - `DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1` bypasses the wrap
- *     entirely. Useful for load tests + offline backfills.
- *   - `DECLARAGENT_PROVIDER_RATE_LIMIT_RPS=<n>` overrides the preset's
- *     default. Floating-point values accepted.
+ * Apply the default provider-level rate limiter from Slice 4, threading
+ * throttle activity into the shared Prometheus registry. The wrap
+ * itself (env-var escape hatches included) lives in the shared
+ * `provider-rate-limit.ts` module so `fleet run` applies the same
+ * policy.
  *
  * @since 0.6.0-slice.4
  */
-function wrapProviderWithRateLimit(opts: {
+function wrapProviderWithMetrics(opts: {
   provider: LLMProvider;
   providerId: string;
   metrics: PrometheusRegistry;
   io: UpIO;
 }): LLMProvider {
-  if (process.env.DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE === '1') {
-    opts.io.out('  rate-limit: disabled via DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE\n');
-    return opts.provider;
-  }
-  const override = process.env.DECLARAGENT_PROVIDER_RATE_LIMIT_RPS;
-  let rate: number;
-  if (override !== undefined && override !== '') {
-    const parsed = Number.parseFloat(override);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      rate = parsed;
-    } else {
-      opts.io.err(
-        `⚠ DECLARAGENT_PROVIDER_RATE_LIMIT_RPS="${override}" is not a positive number; using default.\n`,
-      );
-      rate = defaultRateForProvider(opts.providerId);
-    }
-  } else {
-    rate = defaultRateForProvider(opts.providerId);
-  }
-  opts.io.out(
-    `  rate-limit: ${rate} rps (provider=${opts.providerId}; env DECLARAGENT_PROVIDER_RATE_LIMIT_RPS overrides, DECLARAGENT_PROVIDER_RATE_LIMIT_DISABLE=1 opts out)\n`,
-  );
   const waitsCounter = opts.metrics.counter(
     'declaragent.provider.rate_limit.waits',
     'Provider rate-limiter wait events',
@@ -2083,8 +2056,10 @@ function wrapProviderWithRateLimit(opts: {
     'declaragent.provider.rate_limit.wait_ms',
     'Provider rate-limiter wait duration in ms',
   );
-  return withProviderRateLimit(opts.provider, {
-    ratePerSec: rate,
+  return wrapProviderWithRateLimit({
+    provider: opts.provider,
+    providerId: opts.providerId,
+    io: opts.io,
     onWait: (waitMs) => {
       waitsCounter.inc(1, { provider: opts.providerId });
       waitMsHistogram.observe(waitMs, { provider: opts.providerId });

@@ -13,7 +13,7 @@ RUN chmod +x /usr/local/bin/declaragent \\
 USER agent
 ENV DECLARAGENT_CONFIG_DIR=/etc/declaragent
 EXPOSE 8787 9464
-ENTRYPOINT ["/usr/local/bin/declaragent", "run"]
+ENTRYPOINT ["/usr/local/bin/declaragent", "up"]
 `;
 }
 

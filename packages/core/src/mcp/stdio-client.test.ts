@@ -440,3 +440,39 @@ describe('defaultBackoff', () => {
     expect(defaultBackoff(20)).toBe(30_000);
   });
 });
+
+// ── Kill-on-shutdown (THREAT_MODEL: SIGTERM on close, SIGKILL after grace) ──
+
+import { createStdioConnectFn } from './stdio-client.js';
+
+describe('createStdioConnectFn kill-on-shutdown', () => {
+  test('close() SIGTERMs a well-behaved child and resolves', async () => {
+    const connect = createStdioConnectFn({ type: 'stdio', command: 'cat' }, undefined, 1_000);
+    const conn = await connect();
+    const start = Date.now();
+    await conn.close();
+    // cat exits on stdin close / SIGTERM well inside the grace window.
+    expect(Date.now() - start).toBeLessThan(1_000);
+  });
+
+  test('close() SIGKILLs a child that ignores SIGTERM after the grace window', async () => {
+    const connect = createStdioConnectFn(
+      {
+        type: 'stdio',
+        command: 'bash',
+        args: ['-c', 'trap "" TERM; while :; do sleep 0.05; done'],
+      },
+      undefined,
+      150,
+    );
+    const conn = await connect();
+    // Give bash time to install the TERM trap before we start killing.
+    await new Promise((r) => setTimeout(r, 300));
+    const start = Date.now();
+    await conn.close();
+    const elapsed = Date.now() - start;
+    // Must outlive the grace window (SIGTERM was ignored) but not hang.
+    expect(elapsed).toBeGreaterThanOrEqual(100);
+    expect(elapsed).toBeLessThan(5_000);
+  });
+});

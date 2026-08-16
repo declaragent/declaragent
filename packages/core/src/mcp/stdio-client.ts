@@ -412,9 +412,13 @@ function parseResourceRead(result: unknown): readonly MCPResourceContents[] {
  * Each invocation spawns a fresh subprocess and wires its stdio into a
  * `JSONRPCConnection`.
  */
+/** Grace between SIGTERM on close and the SIGKILL fallback (THREAT_MODEL §kill-on-shutdown). */
+export const STDIO_KILL_GRACE_MS = 5_000;
+
 export function createStdioConnectFn(
   config: StdioTransportConfig,
   logger: Logger = NOOP_LOGGER,
+  killGraceMs: number = STDIO_KILL_GRACE_MS,
 ): ConnectFn {
   // Lazy-import the runtime dependency so this module is still importable
   // outside Bun (e.g. for typechecking under tsc).
@@ -452,18 +456,44 @@ export function createStdioConnectFn(
 
     const stdin = proc.stdin as { write(buf: Uint8Array): number; flush(): void; end(): void };
 
-    return importJSONRPC().then(({ createJSONRPCConnection }) =>
-      createJSONRPCConnection({
-        read: proc.stdout as ReadableStream<Uint8Array>,
-        write: (chunk) => {
-          stdin.write(chunk);
-          stdin.flush();
-        },
-        closeWrite: () => {
-          stdin.end();
-        },
-      }),
-    );
+    const { createJSONRPCConnection } = await importJSONRPC();
+    const conn = createJSONRPCConnection({
+      read: proc.stdout as ReadableStream<Uint8Array>,
+      write: (chunk) => {
+        stdin.write(chunk);
+        stdin.flush();
+      },
+      closeWrite: () => {
+        stdin.end();
+      },
+    });
+    // Kill-on-shutdown (THREAT_MODEL): closing the adapter must not leave
+    // the child running. SIGTERM immediately alongside the graceful close,
+    // SIGKILL if the process is still alive after the grace window — a
+    // hung server can otherwise stall `conn.close()` forever (it waits
+    // for reader EOF).
+    return {
+      ...conn,
+      close: async () => {
+        const drained = conn.close().catch(() => {});
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          // already exited
+        }
+        const graceTimer = setTimeout(() => {
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            // already exited
+          }
+        }, killGraceMs);
+        (graceTimer as unknown as { unref?: () => void }).unref?.();
+        await (proc.exited as Promise<unknown>).catch(() => {});
+        clearTimeout(graceTimer);
+        await drained;
+      },
+    };
   };
 }
 
