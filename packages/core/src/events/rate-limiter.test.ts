@@ -136,6 +136,9 @@ describe('PerTargetRateLimiter', () => {
   });
 
   test('snapshot exposes per-bucket available counts', () => {
+    // Fixed clock — the wall-clock default makes the exact available
+    // counts flaky on loaded CI runners (refill accrues between allow()
+    // and snapshot()).
     const l = new PerTargetRateLimiter({
       spec: {
         byTarget: [
@@ -143,6 +146,7 @@ describe('PerTargetRateLimiter', () => {
           { target: 'broadcast', ratePerSec: 3, burst: 3 },
         ],
       },
+      now: () => 0,
     });
     l.allow({ type: 'skill', name: 'x', inputs: {} });
     l.allow({ type: 'broadcast' });
