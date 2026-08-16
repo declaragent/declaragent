@@ -1,0 +1,61 @@
+name: Website
+
+# Deploys the marketing site (website/ → Cloudflare Pages project
+# `declaragent`, serving declaragent.dev + www + d9t.dev).
+#
+# Two triggers matter:
+#   - push to main touching website/ (or this workflow / the injector)
+#   - Release workflow completion — an npm publish changes the version
+#     the site must advertise, even when website/ itself didn't change.
+#     The deploy is idempotent (Pages dedupes by content hash), so the
+#     extra runs on non-publishing Release completions are cheap no-ops.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'scripts/website-inject-version.ts'
+      - '.github/workflows/website.yml'
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: website-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Stamp npm version + deploy to Cloudflare Pages
+    # workflow_run fires regardless of the Release outcome — only deploy
+    # after a successful one. Other triggers pass through.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Stamp published npm version into the page
+        # Fetches @declaragent/cli's `latest` dist-tag from the registry
+        # and rewrites the three version spots in website/index.html.
+        # Fails loudly if a spot's pattern drifted.
+        run: bun scripts/website-inject-version.ts
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: declaragent
+          directory: website
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          branch: main
